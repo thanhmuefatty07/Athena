@@ -1,0 +1,30 @@
+[package]
+name = "athena-core-v2"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+description = "Audited reference vertical slice for permissioned, freshness-aware agent retrieval"
+
+[dependencies]
+bytes = "1.10"
+blake3 = "1.8"
+rand = "0.9"
+rand_distr = "0.5"
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "stream"] }
+scraper = "=0.27.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+url = "2.5"
+futures-util = "0.3"
+
+[dev-dependencies]
+
+[profile.release]
+lto = "thin"
+codegen-units = 8
+panic = "unwind"
+
+[profile.bench]
+inherits = "release"

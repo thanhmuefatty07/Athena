@@ -1,0 +1,18 @@
+{
+  "label": "EXAMPLE ONLY: not measured Athena numbers",
+  "period_days": 30,
+  "client_requests": 1000000,
+  "deduped_origin_attempts": 850000,
+  "conditional_attempts": 220000,
+  "browser_attempts": 35000,
+  "contracted_proxy_attempts": 30000,
+  "egress_gb": "200",
+  "egress_usd_per_gb": "0.05",
+  "proxy_billable_gb": "1.35",
+  "proxy_usd_per_gb": "4.00",
+  "server_provisioning_usd": "120",
+  "browser_compute_usd": "0",
+  "storage_logs_monitoring_usd": "10",
+  "other_variable_usd_per_origin_attempt": "0",
+  "gross_sale_price_per_million_usd": "129"
+}

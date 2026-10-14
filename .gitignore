@@ -1,0 +1,6 @@
+/target/
+*.profraw
+*.profdata
+perf.data
+results/
+.env
