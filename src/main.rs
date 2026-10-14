@@ -1,9 +1,9 @@
 //! Offline deterministic demonstrator: run with `cargo run -- file.html https://example.org/ [query]`
 use athena_core_v2::{aae::export_jsonl, projection::parse_html};
-use std::{env,fs,process};
+use std::{env, fs, process};
 use url::Url;
 fn main() {
-    let args:Vec<String> = env::args().collect();
+    let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: athena-core-v2 <file.html> <https-base-url> [query]");
         process::exit(2);

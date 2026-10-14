@@ -21,7 +21,9 @@ pub enum FetchError {
     Network(reqwest::Error),
 }
 impl fmt::Display for FetchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{self:?}") }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 impl std::error::Error for FetchError {}
 
@@ -57,13 +59,19 @@ pub struct Fetched {
 }
 
 fn verified_host<'a>(url: &'a Url, policy: &FetchPolicy) -> Result<&'a str, FetchError> {
-    if url.scheme() != "https" || url.port_or_known_default() != Some(443)
-        || !url.username().is_empty() || url.password().is_some()
+    if url.scheme() != "https"
+        || url.port_or_known_default() != Some(443)
+        || !url.username().is_empty()
+        || url.password().is_some()
         || url.fragment().is_some()
-    { return Err(FetchError::InvalidUrl); }
+    {
+        return Err(FetchError::InvalidUrl);
+    }
     let host = url.host_str().ok_or(FetchError::InvalidUrl)?;
     // Avoid literal-IP origins in this baseline: separate dedicated policy required.
-    if host.parse::<std::net::IpAddr>().is_ok() { return Err(FetchError::DeniedHost); }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Err(FetchError::DeniedHost);
+    }
     if !policy.allowed_hosts.contains(&host.to_ascii_lowercase()) {
         return Err(FetchError::DeniedHost);
     }
@@ -71,19 +79,28 @@ fn verified_host<'a>(url: &'a Url, policy: &FetchPolicy) -> Result<&'a str, Fetc
 }
 
 pub async fn fetch_https(
-    url: &Url, policy: &FetchPolicy, conditional_etag: Option<&str>,
+    url: &Url,
+    policy: &FetchPolicy,
+    conditional_etag: Option<&str>,
 ) -> Result<Fetched, FetchError> {
     let host = verified_host(url, policy)?;
-    if policy.max_body_bytes == 0 || policy.max_dns_answers == 0 { return Err(FetchError::InvalidUrl); }
+    if policy.max_body_bytes == 0 || policy.max_dns_answers == 0 {
+        return Err(FetchError::InvalidUrl);
+    }
     // Validate EVERY answer and pin ONLY validated socket addresses to the actual request.
     // Never validate with one DNS lookup and let reqwest perform a second uncontrolled lookup.
-    let answers = tokio::net::lookup_host((host, 443)).await
+    let answers = tokio::net::lookup_host((host, 443))
+        .await
         .map_err(|_| FetchError::ResolveFailed)?;
     let mut addrs: Vec<SocketAddr> = answers.collect();
     addrs.sort_unstable();
     addrs.dedup();
-    if addrs.is_empty() { return Err(FetchError::ResolveFailed); }
-    if addrs.len() > policy.max_dns_answers { return Err(FetchError::TooManyAddresses); }
+    if addrs.is_empty() {
+        return Err(FetchError::ResolveFailed);
+    }
+    if addrs.len() > policy.max_dns_answers {
+        return Err(FetchError::TooManyAddresses);
+    }
     if addrs.iter().any(|addr| !is_public_candidate(addr.ip())) {
         return Err(FetchError::DeniedAddress);
     }
@@ -97,10 +114,15 @@ pub async fn fetch_https(
         .timeout(policy.request_timeout)
         .resolve_to_addrs(host, &addrs)
         .user_agent("AthenaPermittedFetcher/0.1 (contact: operator-configured)")
-        .build().map_err(FetchError::Network)?;
-    let mut request = client.get(url.clone())
+        .build()
+        .map_err(FetchError::Network)?;
+    let mut request = client
+        .get(url.clone())
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .header(reqwest::header::ACCEPT, "text/html,application/json;q=0.9,text/plain;q=0.5");
+        .header(
+            reqwest::header::ACCEPT,
+            "text/html,application/json;q=0.9,text/plain;q=0.5",
+        );
     if let Some(etag) = conditional_etag {
         let value = reqwest::header::HeaderValue::from_str(etag)
             .map_err(|_| FetchError::InvalidValidator)?;
@@ -108,17 +130,28 @@ pub async fn fetch_https(
     }
     let response = request.send().await.map_err(FetchError::Network)?;
     let status = response.status().as_u16();
-    let content_type = response.headers().get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let etag = response.headers().get(ETAG)
-        .and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let encoding = response.headers().get(CONTENT_ENCODING)
-        .and_then(|v| v.to_str().ok()).unwrap_or("identity");
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let etag = response
+        .headers()
+        .get(ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let encoding = response
+        .headers()
+        .get(CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("identity");
     if !encoding.eq_ignore_ascii_case("identity") {
         return Err(FetchError::UnsupportedContentEncoding);
     }
-    if let Some(len) = response.content_length() {
-        if len > policy.max_body_bytes as u64 { return Err(FetchError::TooLarge); }
+    if let Some(len) = response.content_length()
+        && len > policy.max_body_bytes as u64
+    {
+        return Err(FetchError::TooLarge);
     }
     // A non-2xx response is observable evidence (including 304 and 429), not
     // automatically a successful content fetch. Upper layer classifies it.
@@ -131,8 +164,13 @@ pub async fn fetch_https(
         }
         data.extend_from_slice(&part);
     }
-    Ok(Fetched { final_url: url.clone(), status, content_type,
-        etag, payload: data.freeze() })
+    Ok(Fetched {
+        final_url: url.clone(),
+        status,
+        content_type,
+        etag,
+        payload: data.freeze(),
+    })
 }
 
 #[cfg(test)]
@@ -146,6 +184,12 @@ mod tests {
         assert!(verified_host(&Url::parse("https://evil.com/").unwrap(), &p).is_err());
         assert!(verified_host(&Url::parse("https://127.0.0.1/").unwrap(), &p).is_err());
         assert!(verified_host(&Url::parse("https://example.com:444/").unwrap(), &p).is_err());
-        assert!(verified_host(&Url::parse("https://user:password@example.com/").unwrap(), &p).is_err());
+        assert!(
+            verified_host(
+                &Url::parse("https://user:password@example.com/").unwrap(),
+                &p
+            )
+            .is_err()
+        );
     }
 }

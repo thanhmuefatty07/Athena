@@ -1,7 +1,12 @@
 //! Async singleflight: one leader per equal key until completion or cancellation.
 //! Complete request semantics (URL, method, tenant/auth, headers varying response,
 //! representation, freshness policy, etc.) MUST be encoded into K.
-use std::{collections::HashMap, future::Future, hash::Hash, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    future::Future,
+    hash::Hash,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::watch;
 
 type SharedResult<V, E> = Result<Arc<V>, Arc<E>>;
@@ -23,7 +28,9 @@ impl<V, E> Clone for State<V, E> {
     }
 }
 
-struct Flight<V, E> { sender: watch::Sender<State<V, E>> }
+struct Flight<V, E> {
+    sender: watch::Sender<State<V, E>>,
+}
 
 #[derive(Debug)]
 pub enum FlightError<E> {
@@ -36,13 +43,20 @@ pub struct SingleFlight<K, V, E> {
 }
 
 impl<K, V, E> Default for SingleFlight<K, V, E> {
-    fn default() -> Self { Self { active: Mutex::new(HashMap::new()) } }
+    fn default() -> Self {
+        Self {
+            active: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl<K, V, E> SingleFlight<K, V, E>
-where K: Eq + Hash + Clone,
+where
+    K: Eq + Hash + Clone,
 {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub async fn call<F, Fut>(&self, key: K, fetch: F) -> Result<Arc<V>, FlightError<E>>
     where
@@ -63,7 +77,10 @@ where K: Eq + Hash + Clone,
         };
         if leader {
             let mut guard = LeaderGuard {
-                active: &self.active, key, flight: Arc::clone(&flight), complete: false,
+                active: &self.active,
+                key,
+                flight: Arc::clone(&flight),
+                complete: false,
             };
             let answer: SharedResult<V, E> = fetch().await.map(Arc::new).map_err(Arc::new);
             // Unlike send(), send_replace() records a result even with zero receivers.
@@ -76,11 +93,13 @@ where K: Eq + Hash + Clone,
                 // The borrow guard MUST be dropped before awaiting changed().
                 let state = { (*rx.borrow()).clone() };
                 match state {
-                    State::Running => {},
+                    State::Running => {}
                     State::Done(result) => return result.map_err(FlightError::Fetch),
                     State::Cancelled => return Err(FlightError::Cancelled),
                 }
-                if rx.changed().await.is_err() { return Err(FlightError::Cancelled); }
+                if rx.changed().await.is_err() {
+                    return Err(FlightError::Cancelled);
+                }
             }
         }
     }
@@ -95,7 +114,10 @@ struct LeaderGuard<'a, K: Eq + Hash, V, E> {
 impl<K: Eq + Hash, V, E> LeaderGuard<'_, K, V, E> {
     fn remove_if_current(&self) {
         let mut table = self.active.lock().unwrap_or_else(|e| e.into_inner());
-        if table.get(&self.key).is_some_and(|v| Arc::ptr_eq(v, &self.flight)) {
+        if table
+            .get(&self.key)
+            .is_some_and(|v| Arc::ptr_eq(v, &self.flight))
+        {
             table.remove(&self.key);
         }
     }
@@ -117,7 +139,10 @@ impl<K: Eq + Hash, V, E> Drop for LeaderGuard<'_, K, V, E> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::{sync::Barrier, time::{sleep, Duration}};
+    use tokio::{
+        sync::Barrier,
+        time::{Duration, sleep},
+    };
 
     #[tokio::test(flavor = "current_thread")]
     async fn concurrent_joiners_share_one_fetch() {
@@ -135,10 +160,14 @@ mod tests {
                     starts.fetch_add(1, Ordering::SeqCst);
                     sleep(Duration::from_millis(40)).await;
                     Ok(777)
-                }).await.unwrap()
+                })
+                .await
+                .unwrap()
             }));
         }
-        for task in tasks { assert_eq!(*task.await.unwrap(), 777); }
+        for task in tasks {
+            assert_eq!(*task.await.unwrap(), 777);
+        }
         assert_eq!(starts.load(Ordering::SeqCst), 1);
     }
 
@@ -154,9 +183,11 @@ mod tests {
         let sf = Arc::new(SingleFlight::<u32, u32, ()>::new());
         let clone = Arc::clone(&sf);
         let task = tokio::spawn(async move {
-            clone.call(7, || async {
-                std::future::pending::<Result<u32, ()>>().await
-            }).await
+            clone
+                .call(7, || async {
+                    std::future::pending::<Result<u32, ()>>().await
+                })
+                .await
         });
         sleep(Duration::from_millis(5)).await;
         task.abort();

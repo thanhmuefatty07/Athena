@@ -9,9 +9,38 @@ pub const NONE: NodeId = u32::MAX;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Tag {
-    Root, Text, Main, Article, Section, Div, P, H1, H2, H3, H4,
-    Table, Thead, Tbody, Tfoot, Tr, Th, Td, Ul, Ol, Li, A,
-    Pre, Code, Nav, Footer, Header, Aside, Form, Script, Style, Unknown,
+    Root,
+    Text,
+    Main,
+    Article,
+    Section,
+    Div,
+    P,
+    H1,
+    H2,
+    H3,
+    H4,
+    Table,
+    Thead,
+    Tbody,
+    Tfoot,
+    Tr,
+    Th,
+    Td,
+    Ul,
+    Ol,
+    Li,
+    A,
+    Pre,
+    Code,
+    Nav,
+    Footer,
+    Header,
+    Aside,
+    Form,
+    Script,
+    Style,
+    Unknown,
 }
 
 /// 32-byte payload, alignment 4, stored contiguously.
@@ -37,9 +66,16 @@ const _: () = assert!(std::mem::size_of::<Node>() == 32);
 impl Node {
     fn root() -> Self {
         Self {
-            parent: NONE, first_child: NONE, last_child: NONE,
-            next_sibling: NONE, source_start: 0, source_len: 0,
-            attributes_id: NONE, tag: Tag::Root, flags: 0, depth: 0,
+            parent: NONE,
+            first_child: NONE,
+            last_child: NONE,
+            next_sibling: NONE,
+            source_start: 0,
+            source_len: 0,
+            attributes_id: NONE,
+            tag: Tag::Root,
+            flags: 0,
+            depth: 0,
         }
     }
 }
@@ -75,7 +111,9 @@ impl DomArena {
     }
 
     #[inline]
-    pub fn nodes(&self) -> &[Node] { &self.nodes }
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
 
     pub fn set_attribute_id(&mut self, id: NodeId, index: u32) -> Result<(), ArenaError> {
         let n = self.nodes.get_mut(id as usize).ok_or(ArenaError::BadNode)?;
@@ -84,13 +122,23 @@ impl DomArena {
     }
 
     pub fn append_child(
-        &mut self, parent: NodeId, tag: Tag, source: Option<(usize, usize)>,
+        &mut self,
+        parent: NodeId,
+        tag: Tag,
+        source: Option<(usize, usize)>,
     ) -> Result<NodeId, ArenaError> {
         let p = usize::try_from(parent).map_err(|_| ArenaError::BadParent)?;
-        if p >= self.nodes.len() { return Err(ArenaError::BadParent); }
+        if p >= self.nodes.len() {
+            return Err(ArenaError::BadParent);
+        }
         // Reserve u32::MAX as a sentinel (therefore the last valid ID is MAX-1).
-        if self.nodes.len() >= NONE as usize { return Err(ArenaError::TooManyNodes); }
-        let depth = self.nodes[p].depth.checked_add(1).ok_or(ArenaError::TooDeep)?;
+        if self.nodes.len() >= NONE as usize {
+            return Err(ArenaError::TooManyNodes);
+        }
+        let depth = self.nodes[p]
+            .depth
+            .checked_add(1)
+            .ok_or(ArenaError::TooDeep)?;
         let (start, len) = match source {
             Some((start, len)) => {
                 let end = start.checked_add(len).ok_or(ArenaError::BadRange)?;
@@ -104,9 +152,16 @@ impl DomArena {
         let id = self.nodes.len() as NodeId;
         let prev = self.nodes[p].last_child;
         self.nodes.push(Node {
-            parent, first_child: NONE, last_child: NONE, next_sibling: NONE,
-            source_start: start, source_len: len, attributes_id: NONE,
-            tag, flags: 0, depth,
+            parent,
+            first_child: NONE,
+            last_child: NONE,
+            next_sibling: NONE,
+            source_start: start,
+            source_len: len,
+            attributes_id: NONE,
+            tag,
+            flags: 0,
+            depth,
         });
         if prev == NONE {
             self.nodes[p].first_child = id;
@@ -123,7 +178,9 @@ impl DomArena {
     pub fn raw_text(&self, id: NodeId) -> Result<&str, ArenaError> {
         let node = self.nodes.get(id as usize).ok_or(ArenaError::BadNode)?;
         let start = node.source_start as usize;
-        let end = start.checked_add(node.source_len as usize).ok_or(ArenaError::BadRange)?;
+        let end = start
+            .checked_add(node.source_len as usize)
+            .ok_or(ArenaError::BadRange)?;
         let bytes = self.raw.get(start..end).ok_or(ArenaError::BadRange)?;
         std::str::from_utf8(bytes).map_err(|_| ArenaError::BadRange)
     }
@@ -161,7 +218,10 @@ mod tests {
     #[test]
     fn bounds_and_utf8_are_checked() {
         let mut a = DomArena::new(Bytes::from_static(b"\xc3\xa9"), 1);
-        assert_eq!(a.append_child(0, Tag::Text, Some((2, 1))), Err(ArenaError::BadRange));
+        assert_eq!(
+            a.append_child(0, Tag::Text, Some((2, 1))),
+            Err(ArenaError::BadRange)
+        );
         let id = a.append_child(0, Tag::Text, Some((1, 1))).unwrap();
         assert_eq!(a.raw_text(id), Err(ArenaError::BadRange));
     }
