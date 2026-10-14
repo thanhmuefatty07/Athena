@@ -1,0 +1,350 @@
+[{"stream_name":"stdout","time":1.440125009,"data":"[2026-10-14 19:57:10] === Athena Cluster 3: Dependencies \u0026 Concurrency Start ===\n"}
+,{"stream_name":"stdout","time":1.440415846,"data":"[2026-10-14 19:57:10] CMD: rustc --version (cwd=None)\n"}
+,{"stream_name":"stdout","time":1.452725407,"data":"[2026-10-14 19:57:10] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":1.452782349,"data":"\n"}
+,{"stream_name":"stdout","time":1.452972575,"data":"[2026-10-14 19:57:10] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":27.383923939,"data":"[2026-10-14 19:57:36] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stderr","time":48.211429996,"data":"/kaggle/src/script.py:54: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":48.211494171,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":48.218365991,"data":"[2026-10-14 19:57:57] === R1: Evaluating rand 0.9.5/0.5.1 vs rand 0.10.3/0.6.0 on Linux ===\n"}
+,{"stream_name":"stdout","time":48.219018237,"data":"[2026-10-14 19:57:57] CMD: cargo build --release (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":65.124394327,"data":"[2026-10-14 19:58:13] CMD: ./target/release/r1-bench (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":65.27640795,"data":"[2026-10-14 19:58:14] rand 0.9.5: 147.41 ns/sample, mean_err=0.000025, var_err=0.000085\n"}
+,{"stream_name":"stdout","time":65.276970118,"data":"[2026-10-14 19:58:14] CMD: cargo build --release (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":73.278952557,"data":"[2026-10-14 19:58:22] CMD: ./target/release/r1-bench-10 (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":73.428026958,"data":"[2026-10-14 19:58:22] rand 0.10.3: 145.28 ns/sample, mean_err=0.000286, var_err=0.000045\n"}
+,{"stream_name":"stdout","time":73.42807624,"data":"[2026-10-14 19:58:22] === R8: Concurrency \u0026 SingleFlight Stress Testing ===\n"}
+,{"stream_name":"stdout","time":73.428769888,"data":"[2026-10-14 19:58:22] CMD: cargo build --release (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":202.079901384,"data":"[2026-10-14 20:00:30] FAILED (code 101):     Updating crates.io index\n"}
+,{"stream_name":"stdout","time":202.07995809,"data":"     Locking 218 packages to highest Rust 1.99.0 compatible versions\n"}
+,{"stream_name":"stdout","time":202.07996567,"data":" Downloading crates ...\n"}
+,{"stream_name":"stdout","time":202.079970007,"data":"  Downloaded arrayvec v0.7.8\n"}
+,{"stream_name":"stdout","time":202.079974145,"data":"  Downloaded atomic-waker v1.1.2\n"}
+,{"stream_name":"stdout","time":202.079978215,"data":"  Downloaded errno v0.3.14\n"}
+,{"stream_name":"stdout","time":202.079982367,"data":"  Downloaded form_urlencoded v1.2.2\n"}
+,{"stream_name":"stdout","time":202.079986398,"data":"  Downloaded fnv v1.0.7\n"}
+,{"stream_name":"stdout","time":202.079990295,"data":"  Downloaded equivalent v1.0.3\n"}
+,{"stream_name":"stdout","time":202.079994216,"data":"  Downloaded futures-core v0.3.34\n"}
+,{"stream_name":"stdout","time":202.079998162,"data":"  Downloaded futures-sink v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080002052,"data":"  Downloaded ego-tree v0.11.0\n"}
+,{"stream_name":"stdout","time":202.080012027,"data":"  Downloaded fastrand v2.5.0\n"}
+,{"stream_name":"stdout","time":202.080016567,"data":"  Downloaded find-msvc-tools v0.1.14\n"}
+,{"stream_name":"stdout","time":202.080020635,"data":"  Downloaded fs_extra v1.3.0\n"}
+,{"stream_name":"stdout","time":202.080037173,"data":"  Downloaded futures-channel v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080040778,"data":"  Downloaded futures-task v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080043569,"data":"  Downloaded getopts v0.2.24\n"}
+,{"stream_name":"stdout","time":202.080046317,"data":"  Downloaded quinn-udp v0.5.16\n"}
+,{"stream_name":"stdout","time":202.080049022,"data":"  Downloaded bitflags v2.13.2\n"}
+,{"stream_name":"stdout","time":202.080051695,"data":"  Downloaded base64 v0.23.1\n"}
+,{"stream_name":"stdout","time":202.08005437,"data":"  Downloaded http-body-util v0.1.5\n"}
+,{"stream_name":"stdout","time":202.080057375,"data":"  Downloaded ipnet v2.12.2\n"}
+,{"stream_name":"stdout","time":202.080060055,"data":"  Downloaded futures-io v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080062992,"data":"  Downloaded selectors v0.38.0\n"}
+,{"stream_name":"stdout","time":202.080068427,"data":"  Downloaded rustls-pki-types v1.15.1\n"}
+,{"stream_name":"stdout","time":202.08007321,"data":"  Downloaded getrandom v0.2.17\n"}
+,{"stream_name":"stdout","time":202.080075779,"data":"  Downloaded litemap v0.8.3\n"}
+,{"stream_name":"stdout","time":202.080078644,"data":"  Downloaded parking_lot v0.12.5\n"}
+,{"stream_name":"stdout","time":202.080081289,"data":"  Downloaded serde_derive v1.0.229\n"}
+,{"stream_name":"stdout","time":202.080083987,"data":"  Downloaded hyper-util v0.1.21\n"}
+,{"stream_name":"stdout","time":202.080086648,"data":"  Downloaded rustc_version v0.4.1\n"}
+,{"stream_name":"stdout","time":202.080089286,"data":"  Downloaded futures-macro v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080091889,"data":"  Downloaded hashbrown v0.17.1\n"}
+,{"stream_name":"stdout","time":202.080094649,"data":"  Downloaded icu_locale_core v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080097256,"data":"  Downloaded indexmap v2.14.2\n"}
+,{"stream_name":"stdout","time":202.080099872,"data":"  Downloaded rustc-hash v2.1.3\n"}
+,{"stream_name":"stdout","time":202.080102455,"data":"  Downloaded cfg_aliases v0.2.2\n"}
+,{"stream_name":"stdout","time":202.080105115,"data":"  Downloaded displaydoc v0.2.7\n"}
+,{"stream_name":"stdout","time":202.080107689,"data":"  Downloaded semver v1.0.28\n"}
+,{"stream_name":"stdout","time":202.080110278,"data":"  Downloaded siphasher v1.0.4\n"}
+,{"stream_name":"stdout","time":202.080112897,"data":"  Downloaded lock_api v0.4.14\n"}
+,{"stream_name":"stdout","time":202.080115635,"data":"  Downloaded parking_lot_core v0.9.12\n"}
+,{"stream_name":"stdout","time":202.080118265,"data":"  Downloaded phf v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080120881,"data":"  Downloaded signal-hook-registry v1.4.8\n"}
+,{"stream_name":"stdout","time":202.080123542,"data":"  Downloaded slab v0.4.12\n"}
+,{"stream_name":"stdout","time":202.080126155,"data":"  Downloaded thiserror-impl v2.0.21\n"}
+,{"stream_name":"stdout","time":202.080128751,"data":"  Downloaded dunce v1.0.5\n"}
+,{"stream_name":"stdout","time":202.080131336,"data":"  Downloaded http-body v1.1.0\n"}
+,{"stream_name":"stdout","time":202.080133949,"data":"  Downloaded percent-encoding v2.3.2\n"}
+,{"stream_name":"stdout","time":202.080136587,"data":"  Downloaded phf_codegen v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080139216,"data":"  Downloaded aws-lc-rs v1.18.2\n"}
+,{"stream_name":"stdout","time":202.080141875,"data":"  Downloaded jobserver v0.1.35\n"}
+,{"stream_name":"stdout","time":202.080144472,"data":"  Downloaded lru-slab v0.1.3\n"}
+,{"stream_name":"stdout","time":202.080147087,"data":"  Downloaded new_debug_unreachable v1.0.6\n"}
+,{"stream_name":"stdout","time":202.080154235,"data":"  Downloaded openssl-probe v0.2.1\n"}
+,{"stream_name":"stdout","time":202.080158058,"data":"  Downloaded phf_generator v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080160668,"data":"  Downloaded phf_shared v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080163392,"data":"  Downloaded pkg-config v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080166019,"data":"  Downloaded potential_utf v0.1.6\n"}
+,{"stream_name":"stdout","time":202.080168674,"data":"  Downloaded precomputed-hash v0.1.1\n"}
+,{"stream_name":"stdout","time":202.080173376,"data":"  Downloaded quote v1.0.47\n"}
+,{"stream_name":"stdout","time":202.080176101,"data":"  Downloaded rand_pcg v0.10.2\n"}
+,{"stream_name":"stdout","time":202.080178719,"data":"  Downloaded rustls-native-certs v0.8.5\n"}
+,{"stream_name":"stdout","time":202.08018137,"data":"  Downloaded rustls-platform-verifier v0.7.1\n"}
+,{"stream_name":"stdout","time":202.080184051,"data":"  Downloaded scopeguard v1.2.0\n"}
+,{"stream_name":"stdout","time":202.080186645,"data":"  Downloaded want v0.3.2\n"}
+,{"stream_name":"stdout","time":202.080191226,"data":"  Downloaded cmake v0.1.58\n"}
+,{"stream_name":"stdout","time":202.080214188,"data":"  Downloaded cssparser-macros v0.7.1\n"}
+,{"stream_name":"stdout","time":202.080220215,"data":"  Downloaded dtoa-short v0.3.5\n"}
+,{"stream_name":"stdout","time":202.080226092,"data":"  Downloaded httparse v1.10.1\n"}
+,{"stream_name":"stdout","time":202.080230928,"data":"  Downloaded hyper-rustls v0.27.10\n"}
+,{"stream_name":"stdout","time":202.080236137,"data":"  Downloaded idna_adapter v1.2.2\n"}
+,{"stream_name":"stdout","time":202.080241404,"data":"  Downloaded markup5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":202.080247265,"data":"  Downloaded phf_macros v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080252571,"data":"  Downloaded pin-project-lite v0.2.17\n"}
+,{"stream_name":"stdout","time":202.080258786,"data":"  Downloaded scraper v0.27.0\n"}
+,{"stream_name":"stdout","time":202.080266048,"data":"  Downloaded servo_arc v0.4.3\n"}
+,{"stream_name":"stdout","time":202.080271337,"data":"  Downloaded stable_deref_trait v1.2.1\n"}
+,{"stream_name":"stdout","time":202.080278709,"data":"  Downloaded subtle v2.6.1\n"}
+,{"stream_name":"stdout","time":202.080284427,"data":"  Downloaded tower-layer v0.3.3\n"}
+,{"stream_name":"stdout","time":202.080290269,"data":"  Downloaded constant_time_eq v0.4.2\n"}
+,{"stream_name":"stdout","time":202.080295518,"data":"  Downloaded dtoa v1.0.11\n"}
+,{"stream_name":"stdout","time":202.080301218,"data":"  Downloaded http v1.5.0\n"}
+,{"stream_name":"stdout","time":202.080307199,"data":"  Downloaded icu_provider v2.3.1\n"}
+,{"stream_name":"stdout","time":202.080312335,"data":"  Downloaded log v0.4.34\n"}
+,{"stream_name":"stdout","time":202.080317593,"data":"  Downloaded once_cell v1.21.4\n"}
+,{"stream_name":"stdout","time":202.080330064,"data":"  Downloaded proc-macro2 v1.0.107\n"}
+,{"stream_name":"stdout","time":202.080334212,"data":"  Downloaded syn v3.0.9\n"}
+,{"stream_name":"stdout","time":202.080336851,"data":"  Downloaded zerovec-derive v0.11.6\n"}
+,{"stream_name":"stdout","time":202.08033948,"data":"  Downloaded html5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":202.080342184,"data":"  Downloaded icu_collections v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080344917,"data":"  Downloaded synstructure v0.14.0\n"}
+,{"stream_name":"stdout","time":202.080347524,"data":"  Downloaded tinyvec v1.13.3\n"}
+,{"stream_name":"stdout","time":202.080350141,"data":"  Downloaded zerotrie v0.2.5\n"}
+,{"stream_name":"stdout","time":202.080358812,"data":"  Downloaded bytes v1.12.1\n"}
+,{"stream_name":"stdout","time":202.08036182,"data":"  Downloaded cssparser v0.37.0\n"}
+,{"stream_name":"stdout","time":202.080364478,"data":"  Downloaded derive_more v2.1.1\n"}
+,{"stream_name":"stdout","time":202.08036712,"data":"  Downloaded futures-util v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080387233,"data":"  Downloaded icu_normalizer_data v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080393586,"data":"  Downloaded mio v1.2.4\n"}
+,{"stream_name":"stdout","time":202.080399144,"data":"  Downloaded quinn v0.11.12\n"}
+,{"stream_name":"stdout","time":202.080405135,"data":"  Downloaded rustls-webpki v0.103.15\n"}
+,{"stream_name":"stdout","time":202.080411089,"data":"  Downloaded serde v1.0.229\n"}
+,{"stream_name":"stdout","time":202.080416138,"data":"  Downloaded unicode-ident v1.0.27\n"}
+,{"stream_name":"stdout","time":202.080421096,"data":"  Downloaded h2 v0.4.20\n"}
+,{"stream_name":"stdout","time":202.080426128,"data":"  Downloaded reqwest v0.13.5\n"}
+,{"stream_name":"stdout","time":202.080431282,"data":"  Downloaded try-lock v0.2.5\n"}
+,{"stream_name":"stdout","time":202.080438181,"data":"  Downloaded derive_more-impl v2.1.1\n"}
+,{"stream_name":"stdout","time":202.080448274,"data":"  Downloaded icu_properties v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080451187,"data":"  Downloaded tokio-util v0.7.20\n"}
+,{"stream_name":"stdout","time":202.080453867,"data":"  Downloaded idna v1.1.0\n"}
+,{"stream_name":"stdout","time":202.080456496,"data":"  Downloaded cc v1.8.0\n"}
+,{"stream_name":"stdout","time":202.080459136,"data":"  Downloaded icu_properties_data v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080461775,"data":"  Downloaded tendril v0.5.1\n"}
+,{"stream_name":"stdout","time":202.080464527,"data":"  Downloaded url v2.5.8\n"}
+,{"stream_name":"stdout","time":202.080467137,"data":"  Downloaded zerofrom-derive v0.1.8\n"}
+,{"stream_name":"stdout","time":202.080469761,"data":"  Downloaded hyper v1.12.0\n"}
+,{"stream_name":"stdout","time":202.080473349,"data":"  Downloaded shlex v2.0.1\n"}
+,{"stream_name":"stdout","time":202.080492452,"data":"  Downloaded socket2 v0.6.5\n"}
+,{"stream_name":"stdout","time":202.080498944,"data":"  Downloaded sync_wrapper v1.0.2\n"}
+,{"stream_name":"stdout","time":202.080504873,"data":"  Downloaded tokio-rustls v0.26.6\n"}
+,{"stream_name":"stdout","time":202.080510608,"data":"  Downloaded smallvec v1.16.3\n"}
+,{"stream_name":"stdout","time":202.080516687,"data":"  Downloaded zerofrom v0.1.8\n"}
+,{"stream_name":"stdout","time":202.080522392,"data":"  Downloaded zeroize v1.9.1\n"}
+,{"stream_name":"stdout","time":202.080546664,"data":"  Downloaded blake3 v1.8.7\n"}
+,{"stream_name":"stdout","time":202.080558345,"data":"  Downloaded writeable v0.6.4\n"}
+,{"stream_name":"stdout","time":202.080565103,"data":"  Downloaded quinn-proto v0.11.19\n"}
+,{"stream_name":"stdout","time":202.080570618,"data":"  Downloaded unicode-width v0.2.2\n"}
+,{"stream_name":"stdout","time":202.080575845,"data":"  Downloaded yoke v0.8.3\n"}
+,{"stream_name":"stdout","time":202.080581618,"data":"  Downloaded tracing-core v0.1.36\n"}
+,{"stream_name":"stdout","time":202.080587776,"data":"  Downloaded rustls v0.23.46\n"}
+,{"stream_name":"stdout","time":202.080603784,"data":"  Downloaded syn v2.0.119\n"}
+,{"stream_name":"stdout","time":202.080609596,"data":"  Downloaded tower-http v0.6.11\n"}
+,{"stream_name":"stdout","time":202.080618826,"data":"  Downloaded tower v0.5.3\n"}
+,{"stream_name":"stdout","time":202.080624325,"data":"  Downloaded tower-service v0.3.3\n"}
+,{"stream_name":"stdout","time":202.080638563,"data":"  Downloaded tracing v0.1.44\n"}
+,{"stream_name":"stdout","time":202.080644232,"data":"  Downloaded zerovec v0.11.8\n"}
+,{"stream_name":"stdout","time":202.080649776,"data":"  Downloaded string_cache v0.9.0\n"}
+,{"stream_name":"stdout","time":202.080654513,"data":"  Downloaded string_cache_codegen v0.6.1\n"}
+,{"stream_name":"stdout","time":202.080659494,"data":"  Downloaded tinystr v0.8.4\n"}
+,{"stream_name":"stdout","time":202.080665261,"data":"  Downloaded icu_normalizer v2.3.0\n"}
+,{"stream_name":"stdout","time":202.080671158,"data":"  Downloaded yoke-derive v0.8.4\n"}
+,{"stream_name":"stdout","time":202.080677444,"data":"  Downloaded thiserror v2.0.21\n"}
+,{"stream_name":"stdout","time":202.080683795,"data":"  Downloaded tokio-macros v2.7.2\n"}
+,{"stream_name":"stdout","time":202.080689201,"data":"  Downloaded utf8_iter v1.0.4\n"}
+,{"stream_name":"stdout","time":202.080694654,"data":"  Downloaded untrusted v0.9.0\n"}
+,{"stream_name":"stdout","time":202.080700023,"data":"  Downloaded tokio v1.53.3\n"}
+,{"stream_name":"stdout","time":202.080705964,"data":"  Downloaded web_atoms v0.2.6\n"}
+,{"stream_name":"stdout","time":202.080711704,"data":"  Downloaded ring v0.17.14\n"}
+,{"stream_name":"stdout","time":202.080717212,"data":"  Downloaded aws-lc-sys v0.46.0\n"}
+,{"stream_name":"stdout","time":202.080722099,"data":"   Compiling proc-macro2 v1.0.107\n"}
+,{"stream_name":"stdout","time":202.080727506,"data":"   Compiling unicode-ident v1.0.27\n"}
+,{"stream_name":"stdout","time":202.080732878,"data":"   Compiling quote v1.0.47\n"}
+,{"stream_name":"stdout","time":202.080738347,"data":"   Compiling libc v0.2.190\n"}
+,{"stream_name":"stdout","time":202.080744063,"data":"   Compiling smallvec v1.16.3\n"}
+,{"stream_name":"stdout","time":202.080749864,"data":"   Compiling cfg-if v1.0.5\n"}
+,{"stream_name":"stdout","time":202.080756383,"data":"   Compiling stable_deref_trait v1.2.1\n"}
+,{"stream_name":"stdout","time":202.08076156,"data":"   Compiling parking_lot_core v0.9.12\n"}
+,{"stream_name":"stderr","time":202.080761671,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stdout","time":202.080766835,"data":"   Compiling scopeguard v1.2.0\n"}
+,{"stream_name":"stdout","time":202.080777781,"data":"   Compiling shlex v2.0.1\n"}
+,{"stream_name":"stdout","time":202.080783347,"data":"   Compiling find-msvc-tools v0.1.14\n"}
+,{"stream_name":"stdout","time":202.080789455,"data":"   Compiling lock_api v0.4.14\n"}
+,{"stream_name":"stdout","time":202.08079514,"data":"   Compiling siphasher v1.0.4\n"}
+,{"stream_name":"stdout","time":202.080800641,"data":"   Compiling syn v3.0.9\n"}
+,{"stream_name":"stdout","time":202.080806149,"data":"   Compiling phf_shared v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080811681,"data":"   Compiling fastrand v2.5.0\n"}
+,{"stream_name":"stdout","time":202.080817088,"data":"   Compiling phf_generator v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080823048,"data":"   Compiling itoa v1.0.18\n"}
+,{"stream_name":"stdout","time":202.080829347,"data":"   Compiling jobserver v0.1.35\n"}
+,{"stream_name":"stdout","time":202.080834975,"data":"   Compiling bytes v1.12.1\n"}
+,{"stream_name":"stdout","time":202.080840751,"data":"   Compiling cc v1.8.0\n"}
+,{"stream_name":"stdout","time":202.080845841,"data":"   Compiling parking_lot v0.12.5\n"}
+,{"stream_name":"stdout","time":202.080851029,"data":"   Compiling pin-project-lite v0.2.17\n"}
+,{"stream_name":"stdout","time":202.080855927,"data":"   Compiling pkg-config v0.3.34\n"}
+,{"stream_name":"stdout","time":202.080861007,"data":"   Compiling dunce v1.0.5\n"}
+,{"stream_name":"stdout","time":202.080873935,"data":"   Compiling futures-core v0.3.34\n"}
+,{"stream_name":"stdout","time":202.08088511,"data":"   Compiling fs_extra v1.3.0\n"}
+,{"stream_name":"stdout","time":202.08089275,"data":"   Compiling cmake v0.1.58\n"}
+,{"stream_name":"stdout","time":202.080898106,"data":"   Compiling errno v0.3.14\n"}
+,{"stream_name":"stdout","time":202.080905184,"data":"   Compiling signal-hook-registry v1.4.8\n"}
+,{"stream_name":"stdout","time":202.080910881,"data":"   Compiling socket2 v0.6.5\n"}
+,{"stream_name":"stdout","time":202.080917004,"data":"   Compiling mio v1.2.4\n"}
+,{"stream_name":"stdout","time":202.080922852,"data":"   Compiling aws-lc-sys v0.46.0\n"}
+,{"stream_name":"stdout","time":202.080928875,"data":"   Compiling syn v2.0.119\n"}
+,{"stream_name":"stdout","time":202.08093448,"data":"   Compiling once_cell v1.21.4\n"}
+,{"stream_name":"stdout","time":202.080939749,"data":"   Compiling phf_codegen v0.13.1\n"}
+,{"stream_name":"stdout","time":202.080944971,"data":"   Compiling writeable v0.6.4\n"}
+,{"stream_name":"stdout","time":202.080950033,"data":"   Compiling synstructure v0.14.0\n"}
+,{"stream_name":"stdout","time":202.080955333,"data":"   Compiling zeroize v1.9.1\n"}
+,{"stream_name":"stdout","time":202.08096039,"data":"   Compiling litemap v0.8.3\n"}
+,{"stream_name":"stdout","time":202.08096551,"data":"   Compiling aws-lc-rs v1.18.2\n"}
+,{"stream_name":"stdout","time":202.080970797,"data":"   Compiling http v1.5.0\n"}
+,{"stream_name":"stdout","time":202.080975953,"data":"   Compiling zerofrom-derive v0.1.8\n"}
+,{"stream_name":"stdout","time":202.080983284,"data":"   Compiling zerofrom v0.1.8\n"}
+,{"stream_name":"stdout","time":202.080989069,"data":"   Compiling yoke-derive v0.8.4\n"}
+,{"stream_name":"stdout","time":202.08117495,"data":"   Compiling zerovec-derive v0.11.6\n"}
+,{"stream_name":"stdout","time":202.081187975,"data":"   Compiling yoke v0.8.3\n"}
+,{"stream_name":"stdout","time":202.081193025,"data":"   Compiling displaydoc v0.2.7\n"}
+,{"stream_name":"stdout","time":202.08119825,"data":"   Compiling zerovec v0.11.8\n"}
+,{"stream_name":"stdout","time":202.081202935,"data":"   Compiling tokio-macros v2.7.2\n"}
+,{"stream_name":"stdout","time":202.081207158,"data":"   Compiling zerotrie v0.2.5\n"}
+,{"stream_name":"stdout","time":202.081211254,"data":"   Compiling slab v0.4.12\n"}
+,{"stream_name":"stdout","time":202.081215256,"data":"   Compiling tokio v1.53.3\n"}
+,{"stream_name":"stdout","time":202.081219224,"data":"   Compiling tinystr v0.8.4\n"}
+,{"stream_name":"stdout","time":202.081223297,"data":"   Compiling potential_utf v0.1.6\n"}
+,{"stream_name":"stdout","time":202.081227352,"data":"   Compiling icu_locale_core v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081231485,"data":"   Compiling icu_properties_data v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081235444,"data":"   Compiling icu_normalizer_data v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081239436,"data":"   Compiling utf8_iter v1.0.4\n"}
+,{"stream_name":"stdout","time":202.08124335,"data":"   Compiling icu_collections v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081247474,"data":"   Compiling icu_provider v2.3.1\n"}
+,{"stream_name":"stdout","time":202.081253183,"data":"   Compiling phf_macros v0.13.1\n"}
+,{"stream_name":"stdout","time":202.08125749,"data":"   Compiling rustls-pki-types v1.15.1\n"}
+,{"stream_name":"stdout","time":202.081263415,"data":"   Compiling new_debug_unreachable v1.0.6\n"}
+,{"stream_name":"stdout","time":202.081267454,"data":"   Compiling phf v0.13.1\n"}
+,{"stream_name":"stdout","time":202.081286061,"data":"   Compiling http-body v1.1.0\n"}
+,{"stream_name":"stdout","time":202.081291788,"data":"   Compiling futures-macro v0.3.34\n"}
+,{"stream_name":"stdout","time":202.081297009,"data":"   Compiling tracing-core v0.1.36\n"}
+,{"stream_name":"stdout","time":202.081301136,"data":"   Compiling string_cache_codegen v0.6.1\n"}
+,{"stream_name":"stdout","time":202.081305021,"data":"   Compiling rustls v0.23.46\n"}
+,{"stream_name":"stdout","time":202.081309009,"data":"   Compiling zerocopy v0.8.63\n"}
+,{"stream_name":"stdout","time":202.081312972,"data":"   Compiling httparse v1.10.1\n"}
+,{"stream_name":"stdout","time":202.081316898,"data":"   Compiling precomputed-hash v0.1.1\n"}
+,{"stream_name":"stdout","time":202.081320785,"data":"   Compiling log v0.4.34\n"}
+,{"stream_name":"stdout","time":202.081324818,"data":"   Compiling untrusted v0.9.0\n"}
+,{"stream_name":"stdout","time":202.081328603,"data":"   Compiling getrandom v0.3.4\n"}
+,{"stream_name":"stdout","time":202.08133253,"data":"   Compiling futures-sink v0.3.34\n"}
+,{"stream_name":"stdout","time":202.081336511,"data":"   Compiling hashbrown v0.17.1\n"}
+,{"stream_name":"stdout","time":202.081340653,"data":"   Compiling equivalent v1.0.3\n"}
+,{"stream_name":"stdout","time":202.081344613,"data":"   Compiling percent-encoding v2.3.2\n"}
+,{"stream_name":"stdout","time":202.081349317,"data":"   Compiling futures-task v0.3.34\n"}
+,{"stream_name":"stdout","time":202.081354001,"data":"   Compiling futures-util v0.3.34\n"}
+,{"stream_name":"stdout","time":202.081358493,"data":"   Compiling indexmap v2.14.2\n"}
+,{"stream_name":"stdout","time":202.081362742,"data":"   Compiling tokio-util v0.7.20\n"}
+,{"stream_name":"stdout","time":202.081367023,"data":"   Compiling web_atoms v0.2.6\n"}
+,{"stream_name":"stdout","time":202.081371439,"data":"   Compiling tracing v0.1.44\n"}
+,{"stream_name":"stdout","time":202.081376159,"data":"   Compiling icu_normalizer v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081380567,"data":"   Compiling icu_properties v2.3.0\n"}
+,{"stream_name":"stdout","time":202.081385209,"data":"   Compiling tower-service v0.3.3\n"}
+,{"stream_name":"stdout","time":202.081389452,"data":"   Compiling fnv v1.0.7\n"}
+,{"stream_name":"stdout","time":202.081393399,"data":"   Compiling subtle v2.6.1\n"}
+,{"stream_name":"stdout","time":202.081397279,"data":"   Compiling try-lock v0.2.5\n"}
+,{"stream_name":"stdout","time":202.08140123,"data":"   Compiling atomic-waker v1.1.2\n"}
+,{"stream_name":"stdout","time":202.081405625,"data":"   Compiling h2 v0.4.20\n"}
+,{"stream_name":"stdout","time":202.081413762,"data":"   Compiling want v0.3.2\n"}
+,{"stream_name":"stdout","time":202.081418238,"data":"   Compiling idna_adapter v1.2.2\n"}
+,{"stream_name":"stdout","time":202.081422257,"data":"   Compiling string_cache v0.9.0\n"}
+,{"stream_name":"stdout","time":202.081427415,"data":"   Compiling futures-channel v0.3.34\n"}
+,{"stream_name":"stdout","time":202.081439465,"data":"   Compiling libm v0.2.16\n"}
+,{"stream_name":"stdout","time":202.081445676,"data":"   Compiling bitflags v2.13.2\n"}
+,{"stream_name":"stdout","time":202.081454268,"data":"   Compiling serde_core v1.0.229\n"}
+,{"stream_name":"stdout","time":202.081462436,"data":"   Compiling dtoa v1.0.11\n"}
+,{"stream_name":"stdout","time":202.081465183,"data":"   Compiling autocfg v1.5.1\n"}
+,{"stream_name":"stdout","time":202.081467852,"data":"   Compiling dtoa-short v0.3.5\n"}
+,{"stream_name":"stdout","time":202.081470512,"data":"   Compiling hyper v1.12.0\n"}
+,{"stream_name":"stdout","time":202.081473266,"data":"   Compiling num-traits v0.2.19\n"}
+,{"stream_name":"stdout","time":202.081480676,"data":"   Compiling ppv-lite86 v0.2.21\n"}
+,{"stream_name":"stdout","time":202.081483616,"data":"   Compiling rand_core v0.9.5\n"}
+,{"stream_name":"stdout","time":202.081490922,"data":"   Compiling idna v1.1.0\n"}
+,{"stream_name":"stdout","time":202.081493819,"data":"   Compiling form_urlencoded v1.2.2\n"}
+,{"stream_name":"stdout","time":202.081496411,"data":"   Compiling tendril v0.5.1\n"}
+,{"stream_name":"stdout","time":202.08149919,"data":"   Compiling derive_more-impl v2.1.1\n"}
+,{"stream_name":"stdout","time":202.081502061,"data":"   Compiling cssparser-macros v0.7.1\n"}
+,{"stream_name":"stdout","time":202.081504738,"data":"   Compiling selectors v0.38.0\n"}
+,{"stream_name":"stdout","time":202.08150753,"data":"   Compiling sync_wrapper v1.0.2\n"}
+,{"stream_name":"stdout","time":202.081510138,"data":"   Compiling zmij v1.0.23\n"}
+,{"stream_name":"stdout","time":202.081512818,"data":"   Compiling openssl-probe v0.2.1\n"}
+,{"stream_name":"stdout","time":202.081515473,"data":"   Compiling base64 v0.23.1\n"}
+,{"stream_name":"stdout","time":202.081565173,"data":"   Compiling ipnet v2.12.2\n"}
+,{"stream_name":"stdout","time":202.081569906,"data":"   Compiling tower-layer v0.3.3\n"}
+,{"stream_name":"stdout","time":202.081573896,"data":"   Compiling tower v0.5.3\n"}
+,{"stream_name":"stdout","time":202.081577939,"data":"   Compiling hyper-util v0.1.21\n"}
+,{"stream_name":"stdout","time":202.081581929,"data":"   Compiling rustls-native-certs v0.8.5\n"}
+,{"stream_name":"stdout","time":202.081586305,"data":"   Compiling cssparser v0.37.0\n"}
+,{"stream_name":"stdout","time":202.081590521,"data":"   Compiling derive_more v2.1.1\n"}
+,{"stream_name":"stdout","time":202.081594691,"data":"   Compiling markup5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":202.081598786,"data":"   Compiling url v2.5.8\n"}
+,{"stream_name":"stdout","time":202.081602912,"data":"   Compiling rand_chacha v0.9.0\n"}
+,{"stream_name":"stdout","time":202.081606598,"data":"   Compiling blake3 v1.8.7\n"}
+,{"stream_name":"stdout","time":202.081610423,"data":"   Compiling servo_arc v0.4.3\n"}
+,{"stream_name":"stdout","time":202.081614466,"data":"   Compiling unicode-width v0.2.2\n"}
+,{"stream_name":"stdout","time":202.081624732,"data":"   Compiling serde_json v1.0.154\n"}
+,{"stream_name":"stdout","time":202.081627949,"data":"   Compiling serde v1.0.229\n"}
+,{"stream_name":"stdout","time":202.081630541,"data":"   Compiling rustc-hash v2.1.3\n"}
+,{"stream_name":"stdout","time":202.081633225,"data":"   Compiling getopts v0.2.24\n"}
+,{"stream_name":"stdout","time":202.081635876,"data":"   Compiling rand v0.9.5\n"}
+,{"stream_name":"stdout","time":202.081638588,"data":"   Compiling tower-http v0.6.11\n"}
+,{"stream_name":"stdout","time":202.081641165,"data":"   Compiling html5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":202.081643749,"data":"   Compiling http-body-util v0.1.5\n"}
+,{"stream_name":"stdout","time":202.081646392,"data":"   Compiling serde_derive v1.0.229\n"}
+,{"stream_name":"stdout","time":202.081648993,"data":"   Compiling cpufeatures v0.3.1\n"}
+,{"stream_name":"stdout","time":202.081651595,"data":"   Compiling constant_time_eq v0.4.2\n"}
+,{"stream_name":"stdout","time":202.081654327,"data":"   Compiling arrayvec v0.7.8\n"}
+,{"stream_name":"stdout","time":202.081656948,"data":"   Compiling memchr v2.8.3\n"}
+,{"stream_name":"stdout","time":202.081659542,"data":"   Compiling ego-tree v0.11.0\n"}
+,{"stream_name":"stdout","time":202.081662135,"data":"   Compiling scraper v0.27.0\n"}
+,{"stream_name":"stdout","time":202.081668726,"data":"   Compiling rand_distr v0.5.1\n"}
+,{"stream_name":"stdout","time":202.081671528,"data":"   Compiling rustls-webpki v0.103.15\n"}
+,{"stream_name":"stdout","time":202.081674225,"data":"   Compiling tokio-rustls v0.26.6\n"}
+,{"stream_name":"stdout","time":202.081676828,"data":"   Compiling rustls-platform-verifier v0.7.1\n"}
+,{"stream_name":"stdout","time":202.081679533,"data":"   Compiling hyper-rustls v0.27.10\n"}
+,{"stream_name":"stdout","time":202.081682254,"data":"   Compiling reqwest v0.13.5\n"}
+,{"stream_name":"stdout","time":202.08185843,"data":"   Compiling athena-core-v2 v0.1.0 (/tmp/athena_candidate)\n"}
+,{"stream_name":"stdout","time":202.081878816,"data":"   Compiling r8-bench v0.1.0 (/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":202.081884627,"data":"error[E0599]: no method named `execute` found for struct `Arc\u003cSingleFlight\u003c_, _, _\u003e\u003e` in the current scope\n"}
+,{"stream_name":"stdout","time":202.081890409,"data":"  --\u003e src/main.rs:18:28\n"}
+,{"stream_name":"stdout","time":202.081895071,"data":"   |\n"}
+,{"stream_name":"stdout","time":202.081899277,"data":"18 |             let res = sf_c.execute(\u0026key, async move {\n"}
+,{"stream_name":"stdout","time":202.081903828,"data":"   |                       -----^^^^^^^ method not found in `Arc\u003cSingleFlight\u003c_, _, _\u003e\u003e`\n"}
+,{"stream_name":"stdout","time":202.08190855,"data":"\n"}
+,{"stream_name":"stdout","time":202.081912777,"data":"For more information about this error, try `rustc --explain E0599`.\n"}
+,{"stream_name":"stdout","time":202.082102332,"data":"error: could not compile `r8-bench` (bin \"r8-bench\") due to 1 previous error\n"}
+,{"stream_name":"stdout","time":202.082106701,"data":"\n"}
+,{"stream_name":"stderr","time":202.083039734,"data":"  File \"/kaggle/src/script.py\", line 275, in \u003cmodule\u003e\n"}
+,{"stream_name":"stderr","time":202.083064248,"data":"    main()\n"}
+,{"stream_name":"stderr","time":202.083070278,"data":"    ~~~~^^\n"}
+,{"stream_name":"stderr","time":202.083075165,"data":"  File \"/kaggle/src/script.py\", line 261, in main\n"}
+,{"stream_name":"stderr","time":202.083083953,"data":"    r8_res = test_r8_concurrency_singleflight(cand_dir)\n"}
+,{"stream_name":"stderr","time":202.083169256,"data":"  File \"/kaggle/src/script.py\", line 195, in test_r8_concurrency_singleflight\n"}
+,{"stream_name":"stderr","time":202.083175139,"data":"    run_cmd(\"cargo build --release\", cwd=test_dir)\n"}
+,{"stream_name":"stderr","time":202.083180145,"data":"    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":202.083185096,"data":"  File \"/kaggle/src/script.py\", line 36, in run_cmd\n"}
+,{"stream_name":"stderr","time":202.083190031,"data":"    raise RuntimeError(f\"Command failed with code {p.returncode}: {cmd}\")\n"}
+,{"stream_name":"stderr","time":202.083194363,"data":"RuntimeError: Command failed with code 101: cargo build --release\n"}
+,{"stream_name":"stderr","time":205.918757507,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":205.918802078,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":206.683014901,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":206.683051531,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":209.896349799,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":211.955017967,"data":"[NbConvertApp] Writing 408578 bytes to __results__.html\n"}
+]

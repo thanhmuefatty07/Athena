@@ -5,8 +5,33 @@ use crate::ip_policy::is_public_candidate;
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
-use std::{collections::HashSet, fmt, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashSet,
+    fmt,
+    net::{SocketAddr, ToSocketAddrs},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::sync::OwnedSemaphorePermit;
 use url::Url;
+
+async fn blocking_resolve<R, F>(
+    admission: Option<Arc<OwnedSemaphorePermit>>,
+    lookup: F,
+) -> Result<R, FetchError>
+where
+    R: Send + 'static,
+    F: FnOnce() -> std::io::Result<R> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        // OS resolution cannot be forcibly cancelled once its blocking job starts.
+        let _admission = admission;
+        lookup()
+    })
+    .await
+    .map_err(|_| FetchError::ResolveFailed)?
+    .map_err(|_| FetchError::ResolveFailed)
+}
 
 #[derive(Debug)]
 pub enum FetchError {
@@ -18,6 +43,8 @@ pub enum FetchError {
     TooLarge,
     UnsupportedContentEncoding,
     InvalidValidator,
+    InvalidPolicy,
+    Timeout,
     Network(reqwest::Error),
 }
 impl fmt::Display for FetchError {
@@ -67,42 +94,89 @@ fn verified_host<'a>(url: &'a Url, policy: &FetchPolicy) -> Result<&'a str, Fetc
     {
         return Err(FetchError::InvalidUrl);
     }
-    let host = url.host_str().ok_or(FetchError::InvalidUrl)?;
-    // Avoid literal-IP origins in this baseline: separate dedicated policy required.
-    if host.parse::<std::net::IpAddr>().is_ok() {
-        return Err(FetchError::DeniedHost);
-    }
-    if !policy.allowed_hosts.contains(&host.to_ascii_lowercase()) {
+    let host = match url.host() {
+        Some(url::Host::Domain(host)) => host,
+        Some(_) => return Err(FetchError::DeniedHost),
+        None => return Err(FetchError::InvalidUrl),
+    };
+    if !policy.allowed_hosts.contains(host) {
         return Err(FetchError::DeniedHost);
     }
     Ok(host)
 }
 
+pub(crate) fn validate_request(url: &Url, policy: &FetchPolicy) -> Result<(), FetchError> {
+    verified_host(url, policy)?;
+    if policy.max_body_bytes == 0
+        || policy.max_dns_answers == 0
+        || policy.connect_timeout.is_zero()
+        || policy.request_timeout.is_zero()
+    {
+        return Err(FetchError::InvalidPolicy);
+    }
+    Ok(())
+}
+
+/// Low-level dialer; callers own concurrency admission. Engine also guards DNS jobs.
 pub async fn fetch_https(
     url: &Url,
     policy: &FetchPolicy,
     conditional_etag: Option<&str>,
 ) -> Result<Fetched, FetchError> {
+    fetch_https_with_admission(url, policy, conditional_etag, None).await
+}
+
+pub(crate) async fn fetch_https_with_admission(
+    url: &Url,
+    policy: &FetchPolicy,
+    conditional_etag: Option<&str>,
+    admission: Option<Arc<OwnedSemaphorePermit>>,
+) -> Result<Fetched, FetchError> {
+    validate_request(url, policy)?;
+    let validator = conditional_etag
+        .map(reqwest::header::HeaderValue::from_str)
+        .transpose()
+        .map_err(|_| FetchError::InvalidValidator)?;
+    tokio::time::timeout(
+        policy.request_timeout,
+        fetch_pinned(url, policy, validator, admission),
+    )
+    .await
+    .map_err(|_| FetchError::Timeout)?
+}
+
+async fn fetch_pinned(
+    url: &Url,
+    policy: &FetchPolicy,
+    validator: Option<reqwest::header::HeaderValue>,
+    admission: Option<Arc<OwnedSemaphorePermit>>,
+) -> Result<Fetched, FetchError> {
     let host = verified_host(url, policy)?;
-    if policy.max_body_bytes == 0 || policy.max_dns_answers == 0 {
-        return Err(FetchError::InvalidUrl);
-    }
     // Validate EVERY answer and pin ONLY validated socket addresses to the actual request.
     // Never validate with one DNS lookup and let reqwest perform a second uncontrolled lookup.
-    let answers = tokio::net::lookup_host((host, 443))
-        .await
-        .map_err(|_| FetchError::ResolveFailed)?;
-    let mut addrs: Vec<SocketAddr> = answers.collect();
+    let resolver_host = host.to_owned();
+    let answers = blocking_resolve(admission, move || {
+        (resolver_host.as_str(), 443).to_socket_addrs()
+    })
+    .await?;
+    let mut seen = HashSet::new();
+    let mut addrs: Vec<SocketAddr> = Vec::new();
+    for addr in answers {
+        if !is_public_candidate(addr.ip()) {
+            return Err(FetchError::DeniedAddress);
+        }
+        if seen.contains(&addr) {
+            continue;
+        }
+        if addrs.len() == policy.max_dns_answers {
+            return Err(FetchError::TooManyAddresses);
+        }
+        seen.insert(addr);
+        addrs.push(addr);
+    }
     addrs.sort_unstable();
-    addrs.dedup();
     if addrs.is_empty() {
         return Err(FetchError::ResolveFailed);
-    }
-    if addrs.len() > policy.max_dns_answers {
-        return Err(FetchError::TooManyAddresses);
-    }
-    if addrs.iter().any(|addr| !is_public_candidate(addr.ip())) {
-        return Err(FetchError::DeniedAddress);
     }
     // New client per validated resolution has a pooling cost; a production resolver-aware
     // connector should reuse pools keyed by host+validated IP+policy epoch.
@@ -123,9 +197,7 @@ pub async fn fetch_https(
             reqwest::header::ACCEPT,
             "text/html,application/json;q=0.9,text/plain;q=0.5",
         );
-    if let Some(etag) = conditional_etag {
-        let value = reqwest::header::HeaderValue::from_str(etag)
-            .map_err(|_| FetchError::InvalidValidator)?;
+    if let Some(value) = validator {
         request = request.header(IF_NONE_MATCH, value);
     }
     let response = request.send().await.map_err(FetchError::Network)?;
@@ -176,6 +248,44 @@ pub async fn fetch_https(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn cancelled_dns_worker_retains_origin_admission_until_exit() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = Arc::new(Arc::clone(&semaphore).try_acquire_owned().unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let task = tokio::spawn(async move {
+            blocking_resolve(Some(permit), move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .await
+        });
+        started_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        let remaining = semaphore.available_permits();
+        release_tx.send(()).unwrap();
+        assert_eq!(remaining, 0);
+    }
+    #[tokio::test]
+    async fn invalid_validator_is_rejected_before_dns() {
+        let policy = FetchPolicy::for_host("localhost");
+        let url = Url::parse("https://localhost/").unwrap();
+        assert!(matches!(
+            fetch_https(&url, &policy, Some("bad\r\nheader")).await,
+            Err(FetchError::InvalidValidator)
+        ));
+    }
+    #[test]
+    fn ipv6_literals_are_denied_even_if_listed_as_hosts() {
+        let policy = FetchPolicy::for_host("[::1]");
+        assert!(matches!(
+            verified_host(&Url::parse("https://[::1]/").unwrap(), &policy),
+            Err(FetchError::DeniedHost)
+        ));
+    }
     #[test]
     fn whitelist_and_scheme() {
         let p = FetchPolicy::for_host("example.com");

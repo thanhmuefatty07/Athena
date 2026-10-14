@@ -139,32 +139,46 @@ impl<K: Eq + Hash, V, E> Drop for LeaderGuard<'_, K, V, E> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::{
-        sync::Barrier,
-        time::{Duration, sleep},
-    };
+    use tokio::sync::{Barrier, Notify};
 
     #[tokio::test(flavor = "current_thread")]
     async fn concurrent_joiners_share_one_fetch() {
         let sf = Arc::new(SingleFlight::<String, u32, &'static str>::new());
         let starts = Arc::new(AtomicUsize::new(0));
         let barrier = Arc::new(Barrier::new(32));
+        let release = Arc::new(Notify::new());
         let mut tasks = Vec::new();
         for _ in 0..32 {
             let sf = Arc::clone(&sf);
             let starts = Arc::clone(&starts);
             let barrier = Arc::clone(&barrier);
+            let release = Arc::clone(&release);
             tasks.push(tokio::spawn(async move {
                 barrier.wait().await;
                 sf.call("GET /x tenant=A".to_owned(), || async move {
                     starts.fetch_add(1, Ordering::SeqCst);
-                    sleep(Duration::from_millis(40)).await;
+                    release.notified().await;
                     Ok(777)
                 })
                 .await
                 .unwrap()
             }));
         }
+        loop {
+            let followers = sf
+                .active
+                .lock()
+                .unwrap()
+                .values()
+                .next()
+                .map(|flight| flight.sender.receiver_count())
+                .unwrap_or(0);
+            if followers == 31 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        release.notify_one();
         for task in tasks {
             assert_eq!(*task.await.unwrap(), 777);
         }
@@ -182,16 +196,21 @@ mod tests {
     async fn leader_cancellation_clears_entry() {
         let sf = Arc::new(SingleFlight::<u32, u32, ()>::new());
         let clone = Arc::clone(&sf);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             clone
-                .call(7, || async {
+                .call(7, || async move {
+                    started_tx.send(()).unwrap();
                     std::future::pending::<Result<u32, ()>>().await
                 })
                 .await
         });
-        sleep(Duration::from_millis(5)).await;
+        started_rx.await.unwrap();
+        let mut follower = Box::pin(sf.call(7, || async { Ok(999) }));
+        assert!(futures_util::poll!(&mut follower).is_pending());
         task.abort();
         let _ = task.await;
+        assert!(matches!(follower.await, Err(FlightError::Cancelled)));
         assert_eq!(*sf.call(7, || async { Ok(9) }).await.unwrap(), 9);
     }
 }

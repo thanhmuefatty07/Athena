@@ -1,0 +1,205 @@
+[{"stream_name":"stdout","time":1.6129931499999999,"data":"[2026-10-14 20:03:52] === Athena Cluster 3: Dependencies \u0026 Concurrency Start ===\n"}
+,{"stream_name":"stdout","time":1.6131711640000002,"data":"[2026-10-14 20:03:52] CMD: rustc --version (cwd=None)\n"}
+,{"stream_name":"stdout","time":1.6231156740000001,"data":"[2026-10-14 20:03:52] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":1.623147063,"data":"\n"}
+,{"stream_name":"stdout","time":1.6231672480000001,"data":"[2026-10-14 20:03:52] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":28.428244156,"data":"[2026-10-14 20:04:19] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stderr","time":53.739500426,"data":"/kaggle/src/script.py:54: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":53.739536245,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":53.745474116,"data":"[2026-10-14 20:04:44] === R1: Evaluating rand 0.9.5/0.5.1 vs rand 0.10.3/0.6.0 on Linux ===\n"}
+,{"stream_name":"stdout","time":53.746068669,"data":"[2026-10-14 20:04:44] CMD: cargo build --release (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":65.086767563,"data":"[2026-10-14 20:04:55] CMD: ./target/release/r1-bench (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":65.238792626,"data":"[2026-10-14 20:04:55] rand 0.9.5: 147.70 ns/sample, mean_err=0.000063, var_err=0.000026\n"}
+,{"stream_name":"stdout","time":65.239494633,"data":"[2026-10-14 20:04:55] CMD: cargo build --release (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":73.637626956,"data":"[2026-10-14 20:05:04] CMD: ./target/release/r1-bench-10 (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":73.777338831,"data":"[2026-10-14 20:05:04] rand 0.10.3: 135.61 ns/sample, mean_err=0.000007, var_err=0.000011\n"}
+,{"stream_name":"stdout","time":73.777365699,"data":"[2026-10-14 20:05:04] === R8: Concurrency \u0026 SingleFlight Stress Testing ===\n"}
+,{"stream_name":"stdout","time":73.778218435,"data":"[2026-10-14 20:05:04] CMD: cargo build --release (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":227.992379234,"data":"[2026-10-14 20:07:38] CMD: ./target/release/r8-bench (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":228.055442147,"data":"[2026-10-14 20:07:38] SingleFlight Stress: 500 reqs -\u003e 50 origin calls (Deduplication: 10.00x in 51ms)\n"}
+,{"stream_name":"stdout","time":228.055690373,"data":"[2026-10-14 20:07:38] === R3 \u0026 IP Policy: SSRF Address Validation ===\n"}
+,{"stream_name":"stdout","time":228.056898813,"data":"[2026-10-14 20:07:38] CMD: cargo build --release (cwd=/tmp/ssrf_bench)\n"}
+,{"stream_name":"stdout","time":353.017806286,"data":"[2026-10-14 20:09:43] FAILED (code 101):     Updating crates.io index\n"}
+,{"stream_name":"stdout","time":353.01789186,"data":"     Locking 216 packages to highest Rust 1.99.0 compatible versions\n"}
+,{"stream_name":"stdout","time":353.017901551,"data":"   Compiling proc-macro2 v1.0.107\n"}
+,{"stream_name":"stdout","time":353.017907213,"data":"   Compiling quote v1.0.47\n"}
+,{"stream_name":"stdout","time":353.017913123,"data":"   Compiling unicode-ident v1.0.27\n"}
+,{"stream_name":"stdout","time":353.017919378,"data":"   Compiling libc v0.2.190\n"}
+,{"stream_name":"stdout","time":353.017924735,"data":"   Compiling smallvec v1.16.3\n"}
+,{"stream_name":"stdout","time":353.017930384,"data":"   Compiling stable_deref_trait v1.2.1\n"}
+,{"stream_name":"stdout","time":353.017936865,"data":"   Compiling find-msvc-tools v0.1.14\n"}
+,{"stream_name":"stdout","time":353.017972752,"data":"   Compiling shlex v2.0.1\n"}
+,{"stream_name":"stdout","time":353.017979127,"data":"   Compiling siphasher v1.0.4\n"}
+,{"stream_name":"stdout","time":353.017983721,"data":"   Compiling phf_shared v0.13.1\n"}
+,{"stream_name":"stdout","time":353.017987808,"data":"   Compiling fastrand v2.5.0\n"}
+,{"stream_name":"stdout","time":353.017993189,"data":"   Compiling phf_generator v0.13.1\n"}
+,{"stream_name":"stdout","time":353.017997689,"data":"   Compiling syn v3.0.9\n"}
+,{"stream_name":"stdout","time":353.01800213,"data":"   Compiling bytes v1.12.1\n"}
+,{"stream_name":"stdout","time":353.018006644,"data":"   Compiling jobserver v0.1.35\n"}
+,{"stream_name":"stdout","time":353.018011232,"data":"   Compiling cfg-if v1.0.5\n"}
+,{"stream_name":"stdout","time":353.018015765,"data":"   Compiling itoa v1.0.18\n"}
+,{"stream_name":"stdout","time":353.018020409,"data":"   Compiling cc v1.8.0\n"}
+,{"stream_name":"stdout","time":353.018025133,"data":"   Compiling pin-project-lite v0.2.17\n"}
+,{"stream_name":"stdout","time":353.018029525,"data":"   Compiling dunce v1.0.5\n"}
+,{"stream_name":"stdout","time":353.018033774,"data":"   Compiling futures-core v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018038551,"data":"   Compiling fs_extra v1.3.0\n"}
+,{"stream_name":"stdout","time":353.018042856,"data":"   Compiling pkg-config v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018046775,"data":"   Compiling socket2 v0.6.5\n"}
+,{"stream_name":"stdout","time":353.018050745,"data":"   Compiling mio v1.2.4\n"}
+,{"stream_name":"stdout","time":353.01805545,"data":"   Compiling cmake v0.1.58\n"}
+,{"stream_name":"stdout","time":353.018060189,"data":"   Compiling syn v2.0.119\n"}
+,{"stream_name":"stdout","time":353.01806428,"data":"   Compiling once_cell v1.21.4\n"}
+,{"stream_name":"stdout","time":353.018069311,"data":"   Compiling phf_codegen v0.13.1\n"}
+,{"stream_name":"stdout","time":353.018073869,"data":"   Compiling zeroize v1.9.1\n"}
+,{"stream_name":"stdout","time":353.018169431,"data":"   Compiling litemap v0.8.3\n"}
+,{"stream_name":"stdout","time":353.018177467,"data":"   Compiling aws-lc-sys v0.46.0\n"}
+,{"stream_name":"stdout","time":353.018181932,"data":"   Compiling aws-lc-rs v1.18.2\n"}
+,{"stream_name":"stdout","time":353.018186505,"data":"   Compiling writeable v0.6.4\n"}
+,{"stream_name":"stdout","time":353.018190894,"data":"   Compiling http v1.5.0\n"}
+,{"stream_name":"stdout","time":353.01819563,"data":"   Compiling synstructure v0.14.0\n"}
+,{"stream_name":"stdout","time":353.018200785,"data":"   Compiling zerofrom-derive v0.1.8\n"}
+,{"stream_name":"stdout","time":353.01820565,"data":"   Compiling yoke-derive v0.8.4\n"}
+,{"stream_name":"stdout","time":353.018210585,"data":"   Compiling zerofrom v0.1.8\n"}
+,{"stream_name":"stdout","time":353.018215096,"data":"   Compiling zerovec-derive v0.11.6\n"}
+,{"stream_name":"stdout","time":353.0182196,"data":"   Compiling yoke v0.8.3\n"}
+,{"stream_name":"stdout","time":353.018225023,"data":"   Compiling displaydoc v0.2.7\n"}
+,{"stream_name":"stdout","time":353.018230048,"data":"   Compiling tokio-macros v2.7.2\n"}
+,{"stream_name":"stdout","time":353.018234668,"data":"   Compiling zerotrie v0.2.5\n"}
+,{"stream_name":"stdout","time":353.0182394,"data":"   Compiling zerovec v0.11.8\n"}
+,{"stream_name":"stdout","time":353.01824431,"data":"   Compiling tokio v1.53.3\n"}
+,{"stream_name":"stdout","time":353.018249033,"data":"   Compiling slab v0.4.12\n"}
+,{"stream_name":"stdout","time":353.018253282,"data":"   Compiling icu_normalizer_data v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018264809,"data":"   Compiling utf8_iter v1.0.4\n"}
+,{"stream_name":"stdout","time":353.018270054,"data":"   Compiling icu_properties_data v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018275379,"data":"   Compiling parking_lot_core v0.9.12\n"}
+,{"stream_name":"stdout","time":353.018280522,"data":"   Compiling phf_macros v0.13.1\n"}
+,{"stream_name":"stdout","time":353.018284721,"data":"   Compiling tinystr v0.8.4\n"}
+,{"stream_name":"stdout","time":353.018289481,"data":"   Compiling icu_locale_core v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018294071,"data":"   Compiling potential_utf v0.1.6\n"}
+,{"stream_name":"stdout","time":353.01829883,"data":"   Compiling icu_collections v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018303418,"data":"   Compiling icu_provider v2.3.1\n"}
+,{"stream_name":"stdout","time":353.018307821,"data":"   Compiling rustls-pki-types v1.15.1\n"}
+,{"stream_name":"stdout","time":353.018312101,"data":"   Compiling scopeguard v1.2.0\n"}
+,{"stream_name":"stdout","time":353.018316728,"data":"   Compiling new_debug_unreachable v1.0.6\n"}
+,{"stream_name":"stdout","time":353.018321407,"data":"   Compiling lock_api v0.4.14\n"}
+,{"stream_name":"stdout","time":353.018335135,"data":"   Compiling phf v0.13.1\n"}
+,{"stream_name":"stdout","time":353.018340607,"data":"   Compiling futures-macro v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018345399,"data":"   Compiling http-body v1.1.0\n"}
+,{"stream_name":"stdout","time":353.018350324,"data":"   Compiling tracing-core v0.1.36\n"}
+,{"stream_name":"stdout","time":353.01835461,"data":"   Compiling string_cache_codegen v0.6.1\n"}
+,{"stream_name":"stdout","time":353.018359482,"data":"   Compiling precomputed-hash v0.1.1\n"}
+,{"stream_name":"stdout","time":353.018364067,"data":"   Compiling untrusted v0.9.0\n"}
+,{"stream_name":"stdout","time":353.018369809,"data":"   Compiling futures-sink v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018374264,"data":"   Compiling hashbrown v0.17.1\n"}
+,{"stream_name":"stdout","time":353.0183787,"data":"   Compiling equivalent v1.0.3\n"}
+,{"stream_name":"stdout","time":353.01838325,"data":"   Compiling percent-encoding v2.3.2\n"}
+,{"stream_name":"stdout","time":353.018388064,"data":"   Compiling zerocopy v0.8.63\n"}
+,{"stream_name":"stdout","time":353.018392757,"data":"   Compiling rustls v0.23.46\n"}
+,{"stream_name":"stdout","time":353.018397187,"data":"   Compiling httparse v1.10.1\n"}
+,{"stream_name":"stdout","time":353.018401695,"data":"   Compiling log v0.4.34\n"}
+,{"stream_name":"stdout","time":353.018406361,"data":"   Compiling futures-task v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018410929,"data":"   Compiling getrandom v0.3.4\n"}
+,{"stream_name":"stdout","time":353.018415453,"data":"   Compiling futures-util v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018420334,"data":"   Compiling indexmap v2.14.2\n"}
+,{"stream_name":"stdout","time":353.018424737,"data":"   Compiling tokio-util v0.7.20\n"}
+,{"stream_name":"stdout","time":353.01842919,"data":"   Compiling web_atoms v0.2.6\n"}
+,{"stream_name":"stdout","time":353.018433974,"data":"   Compiling tracing v0.1.44\n"}
+,{"stream_name":"stdout","time":353.018438223,"data":"   Compiling parking_lot v0.12.5\n"}
+,{"stream_name":"stdout","time":353.018442888,"data":"   Compiling icu_properties v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018447453,"data":"   Compiling icu_normalizer v2.3.0\n"}
+,{"stream_name":"stdout","time":353.018451794,"data":"   Compiling atomic-waker v1.1.2\n"}
+,{"stream_name":"stdout","time":353.018456535,"data":"   Compiling try-lock v0.2.5\n"}
+,{"stream_name":"stdout","time":353.018465701,"data":"   Compiling tower-service v0.3.3\n"}
+,{"stream_name":"stdout","time":353.01846995,"data":"   Compiling fnv v1.0.7\n"}
+,{"stream_name":"stdout","time":353.01847513,"data":"   Compiling subtle v2.6.1\n"}
+,{"stream_name":"stdout","time":353.018479239,"data":"   Compiling h2 v0.4.20\n"}
+,{"stream_name":"stdout","time":353.018484642,"data":"   Compiling want v0.3.2\n"}
+,{"stream_name":"stdout","time":353.01848923,"data":"   Compiling idna_adapter v1.2.2\n"}
+,{"stream_name":"stdout","time":353.018493287,"data":"   Compiling string_cache v0.9.0\n"}
+,{"stream_name":"stdout","time":353.018498531,"data":"   Compiling futures-channel v0.3.34\n"}
+,{"stream_name":"stdout","time":353.018503186,"data":"   Compiling autocfg v1.5.1\n"}
+,{"stream_name":"stdout","time":353.018508076,"data":"   Compiling dtoa v1.0.11\n"}
+,{"stream_name":"stdout","time":353.01851219,"data":"   Compiling bitflags v2.13.2\n"}
+,{"stream_name":"stdout","time":353.018516659,"data":"   Compiling libm v0.2.16\n"}
+,{"stream_name":"stdout","time":353.01852097,"data":"   Compiling serde_core v1.0.229\n"}
+,{"stream_name":"stdout","time":353.018525585,"data":"   Compiling hyper v1.12.0\n"}
+,{"stream_name":"stdout","time":353.01853003,"data":"   Compiling ppv-lite86 v0.2.21\n"}
+,{"stream_name":"stdout","time":353.018534361,"data":"   Compiling dtoa-short v0.3.5\n"}
+,{"stream_name":"stdout","time":353.018539174,"data":"   Compiling num-traits v0.2.19\n"}
+,{"stream_name":"stdout","time":353.018544154,"data":"   Compiling rand_core v0.9.5\n"}
+,{"stream_name":"stdout","time":353.018548778,"data":"   Compiling idna v1.1.0\n"}
+,{"stream_name":"stdout","time":353.018553036,"data":"   Compiling form_urlencoded v1.2.2\n"}
+,{"stream_name":"stdout","time":353.018557897,"data":"   Compiling tendril v0.5.1\n"}
+,{"stream_name":"stdout","time":353.018562405,"data":"   Compiling derive_more-impl v2.1.1\n"}
+,{"stream_name":"stdout","time":353.018566895,"data":"   Compiling cssparser-macros v0.7.1\n"}
+,{"stream_name":"stdout","time":353.018603485,"data":"   Compiling selectors v0.38.0\n"}
+,{"stream_name":"stdout","time":353.018614679,"data":"   Compiling sync_wrapper v1.0.2\n"}
+,{"stream_name":"stdout","time":353.018619469,"data":"   Compiling tower-layer v0.3.3\n"}
+,{"stream_name":"stdout","time":353.018624042,"data":"   Compiling zmij v1.0.23\n"}
+,{"stream_name":"stdout","time":353.018628384,"data":"   Compiling openssl-probe v0.2.1\n"}
+,{"stream_name":"stdout","time":353.018633408,"data":"   Compiling base64 v0.23.1\n"}
+,{"stream_name":"stdout","time":353.018637909,"data":"   Compiling ipnet v2.12.2\n"}
+,{"stream_name":"stdout","time":353.018642696,"data":"   Compiling hyper-util v0.1.21\n"}
+,{"stream_name":"stdout","time":353.018646965,"data":"   Compiling rustls-native-certs v0.8.5\n"}
+,{"stream_name":"stdout","time":353.018651999,"data":"   Compiling derive_more v2.1.1\n"}
+,{"stream_name":"stdout","time":353.018657346,"data":"   Compiling tower v0.5.3\n"}
+,{"stream_name":"stdout","time":353.018661654,"data":"   Compiling cssparser v0.37.0\n"}
+,{"stream_name":"stdout","time":353.018666711,"data":"   Compiling markup5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":353.018671306,"data":"   Compiling url v2.5.8\n"}
+,{"stream_name":"stdout","time":353.018676162,"data":"   Compiling rand_chacha v0.9.0\n"}
+,{"stream_name":"stdout","time":353.018680459,"data":"   Compiling blake3 v1.8.7\n"}
+,{"stream_name":"stdout","time":353.018685859,"data":"   Compiling servo_arc v0.4.3\n"}
+,{"stream_name":"stdout","time":353.018690741,"data":"   Compiling serde v1.0.229\n"}
+,{"stream_name":"stdout","time":353.01870065,"data":"   Compiling rustc-hash v2.1.3\n"}
+,{"stream_name":"stdout","time":353.018705761,"data":"   Compiling unicode-width v0.2.2\n"}
+,{"stream_name":"stdout","time":353.018710364,"data":"   Compiling serde_json v1.0.154\n"}
+,{"stream_name":"stdout","time":353.018714649,"data":"   Compiling getopts v0.2.24\n"}
+,{"stream_name":"stdout","time":353.018719451,"data":"   Compiling rand v0.9.5\n"}
+,{"stream_name":"stdout","time":353.0187242,"data":"   Compiling tower-http v0.6.11\n"}
+,{"stream_name":"stdout","time":353.018728524,"data":"   Compiling html5ever v0.39.0\n"}
+,{"stream_name":"stdout","time":353.018733571,"data":"   Compiling http-body-util v0.1.5\n"}
+,{"stream_name":"stdout","time":353.018738395,"data":"   Compiling serde_derive v1.0.229\n"}
+,{"stream_name":"stdout","time":353.018742865,"data":"   Compiling cpufeatures v0.3.1\n"}
+,{"stream_name":"stdout","time":353.018747494,"data":"   Compiling arrayvec v0.7.8\n"}
+,{"stream_name":"stdout","time":353.018751773,"data":"   Compiling ego-tree v0.11.0\n"}
+,{"stream_name":"stdout","time":353.018756488,"data":"   Compiling memchr v2.8.3\n"}
+,{"stream_name":"stdout","time":353.01876148,"data":"   Compiling constant_time_eq v0.4.2\n"}
+,{"stream_name":"stdout","time":353.018766011,"data":"   Compiling scraper v0.27.0\n"}
+,{"stream_name":"stdout","time":353.018770849,"data":"   Compiling rand_distr v0.5.1\n"}
+,{"stream_name":"stdout","time":353.018775358,"data":"   Compiling rustls-webpki v0.103.15\n"}
+,{"stream_name":"stdout","time":353.018779734,"data":"   Compiling tokio-rustls v0.26.6\n"}
+,{"stream_name":"stdout","time":353.018783876,"data":"   Compiling rustls-platform-verifier v0.7.1\n"}
+,{"stream_name":"stdout","time":353.018788751,"data":"   Compiling hyper-rustls v0.27.10\n"}
+,{"stream_name":"stdout","time":353.018793532,"data":"   Compiling reqwest v0.13.5\n"}
+,{"stream_name":"stdout","time":353.01879837,"data":"   Compiling athena-core-v2 v0.1.0 (/tmp/athena_candidate)\n"}
+,{"stream_name":"stdout","time":353.018802699,"data":"   Compiling ssrf-bench v0.1.0 (/tmp/ssrf_bench)\n"}
+,{"stream_name":"stdout","time":353.018807618,"data":"error[E0432]: unresolved import `athena_core_v2::ip_policy::is_permitted_ip`\n"}
+,{"stream_name":"stdout","time":353.018812334,"data":" --\u003e src/main.rs:1:5\n"}
+,{"stream_name":"stdout","time":353.018817429,"data":"  |\n"}
+,{"stream_name":"stdout","time":353.018821574,"data":"1 | use athena_core_v2::ip_policy::is_permitted_ip;\n"}
+,{"stream_name":"stdout","time":353.0188258,"data":"  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^---------------\n"}
+,{"stream_name":"stdout","time":353.018829801,"data":"  |                                |\n"}
+,{"stream_name":"stdout","time":353.01883429,"data":"  |                                no `is_permitted_ip` in `ip_policy`\n"}
+,{"stream_name":"stdout","time":353.018839831,"data":"\n"}
+,{"stream_name":"stdout","time":353.018845028,"data":"For more information about this error, try `rustc --explain E0432`.\n"}
+,{"stream_name":"stdout","time":353.018849444,"data":"error: could not compile `ssrf-bench` (bin \"ssrf-bench\") due to 1 previous error\n"}
+,{"stream_name":"stdout","time":353.01885455,"data":"\n"}
+,{"stream_name":"stderr","time":353.020463865,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":353.022708159,"data":"  File \"/kaggle/src/script.py\", line 275, in \u003cmodule\u003e\n"}
+,{"stream_name":"stderr","time":353.022748783,"data":"    main()\n"}
+,{"stream_name":"stderr","time":353.0227541,"data":"    ~~~~^^\n"}
+,{"stream_name":"stderr","time":353.022777514,"data":"  File \"/kaggle/src/script.py\", line 262, in main\n"}
+,{"stream_name":"stderr","time":353.02278217,"data":"    ssrf_res = test_ip_policy_and_ssrf(cand_dir)\n"}
+,{"stream_name":"stderr","time":353.022786754,"data":"  File \"/kaggle/src/script.py\", line 248, in test_ip_policy_and_ssrf\n"}
+,{"stream_name":"stderr","time":353.022791488,"data":"    run_cmd(\"cargo build --release\", cwd=test_dir)\n"}
+,{"stream_name":"stderr","time":353.022796139,"data":"    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":353.022800871,"data":"  File \"/kaggle/src/script.py\", line 36, in run_cmd\n"}
+,{"stream_name":"stderr","time":353.022805564,"data":"    raise RuntimeError(f\"Command failed with code {p.returncode}: {cmd}\")\n"}
+,{"stream_name":"stderr","time":353.022857581,"data":"RuntimeError: Command failed with code 101: cargo build --release\n"}
+,{"stream_name":"stderr","time":356.678956212,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":356.678992078,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":357.371933879,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":357.371969991,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":360.667898834,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":362.628999241,"data":"[NbConvertApp] Writing 408574 bytes to __results__.html\n"}
+]

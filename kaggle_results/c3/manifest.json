@@ -1,0 +1,117 @@
+{
+  "cluster": "cluster3_deps_concurrency",
+  "r1_rng": {
+    "rand_0_9": {
+      "empirical_mean": 0.28572297421799964,
+      "empirical_variance": 0.025489594553284534,
+      "mean_error": 8.688503713938367e-06,
+      "n_samples": 1000000,
+      "ns_per_sample": 174.416325,
+      "theoretical_mean": 0.2857142857142857,
+      "theoretical_variance": 0.025510204081632654,
+      "variance_error": 2.060952834812002e-05
+    },
+    "rand_0_10": {
+      "empirical_mean": 0.2859011862786147,
+      "empirical_variance": 0.025519710726381914,
+      "mean_error": 0.0001869005643290178,
+      "n_samples": 1000000,
+      "ns_per_sample": 175.618444,
+      "theoretical_mean": 0.2857142857142857,
+      "theoretical_variance": 0.025510204081632654,
+      "variance_error": 9.506644749260329e-06
+    }
+  },
+  "r8_concurrency": {
+    "actual_origin_fetches": 50,
+    "deduplication_ratio": 10.0,
+    "elapsed_ms": 52,
+    "total_requests": 500,
+    "unique_keys": 50
+  },
+  "ip_policy_ssrf": {
+    "all_matched": true,
+    "details": [
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "127.0.0.1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "10.0.0.1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "172.16.0.1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "192.168.1.1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "169.254.169.254",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "0.0.0.0",
+        "match": true
+      },
+      {
+        "allowed": true,
+        "expected": true,
+        "ip": "8.8.8.8",
+        "match": true
+      },
+      {
+        "allowed": true,
+        "expected": true,
+        "ip": "1.1.1.1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "::1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "fe80::1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "fc00::1",
+        "match": true
+      },
+      {
+        "allowed": false,
+        "expected": false,
+        "ip": "2001:db8::1",
+        "match": true
+      },
+      {
+        "allowed": true,
+        "expected": true,
+        "ip": "2606:4700:4700::1111",
+        "match": true
+      }
+    ],
+    "total_checked": 13
+  },
+  "duration_total_seconds": 317.3402361869812
+}

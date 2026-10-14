@@ -34,6 +34,17 @@ impl fmt::Display for GridError {
 }
 impl std::error::Error for GridError {}
 
+fn resize_row(row: &mut Vec<Option<usize>>, width: usize, max_cols: usize) {
+    if row.capacity() < width {
+        let capacity = width
+            .checked_next_power_of_two()
+            .unwrap_or(max_cols)
+            .min(max_cols);
+        row.reserve_exact(capacity - row.len());
+    }
+    row.resize(width, None);
+}
+
 pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, GridError> {
     if rows.len() > max_rows || max_cols == 0 {
         return Err(GridError::TooLarge);
@@ -42,16 +53,19 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
     if rows.windows(2).any(|pair| pair[0].group > pair[1].group) {
         return Err(GridError::InvalidGroupOrder);
     }
-    let mut slots = vec![vec![None; max_cols]; rows.len()];
+    let mut slots: Vec<Vec<Option<usize>>> = vec![Vec::new(); rows.len()];
     let mut cells = Vec::new();
     let mut width = 0;
+    let mut group_end = 0;
     for (r, row) in rows.iter().enumerate() {
-        let group_end = (r + 1..rows.len())
-            .find(|&i| rows[i].group != row.group)
-            .unwrap_or(rows.len());
+        if r == group_end {
+            group_end = (r + 1..rows.len())
+                .find(|&i| rows[i].group != row.group)
+                .unwrap_or(rows.len());
+        }
         let mut c = 0usize;
         for cell in &row.cells {
-            while c < max_cols && slots[r][c].is_some() {
+            while c < slots[r].len() && slots[r][c].is_some() {
                 c += 1;
             }
             let dc = cell.colspan.clamp(1, 1000);
@@ -66,6 +80,9 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
             }
             let index = cells.len();
             for line in slots.iter_mut().take(r + dr).skip(r) {
+                if line.len() < end_col {
+                    resize_row(line, end_col, max_cols);
+                }
                 for spot in &mut line[c..end_col] {
                     if spot.is_some() {
                         return Err(GridError::Overlap);
@@ -79,7 +96,7 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
         }
     }
     for row in &mut slots {
-        row.truncate(width);
+        resize_row(row, width, max_cols);
     }
     Ok(Grid {
         cells,
@@ -97,6 +114,56 @@ mod tests {
             colspan: cs,
             is_header: false,
         }
+    }
+    #[test]
+    fn sparse_grid_does_not_reserve_maximum_columns_per_row() {
+        let rows = vec![
+            Row {
+                group: 0,
+                cells: vec![cell("x", 1, 1)]
+            };
+            128
+        ];
+        let grid = expand(&rows, 128, 1024).unwrap();
+        assert_eq!(grid.width, 1);
+        assert!(grid.slots.iter().all(|r| r.capacity() <= 8));
+    }
+    #[test]
+    fn allocation_growth_respects_column_budget() {
+        for max_cols in [1, 5, 600] {
+            let rows = [Row {
+                group: 0,
+                cells: vec![cell("x", 1, 1); max_cols],
+            }];
+            let grid = expand(&rows, 1, max_cols).unwrap();
+            assert_eq!(grid.width, max_cols);
+            assert!(grid.slots[0].capacity() <= max_cols);
+        }
+    }
+    #[test]
+    fn overlaps_are_errors_and_group_order_is_validated() {
+        let overlap = [
+            Row {
+                group: 0,
+                cells: vec![cell("a", 1, 1), cell("b", 2, 1)],
+            },
+            Row {
+                group: 0,
+                cells: vec![cell("c", 1, 2)],
+            },
+        ];
+        assert_eq!(expand(&overlap, 2, 3), Err(GridError::Overlap));
+        let reversed = [
+            Row {
+                group: 2,
+                cells: vec![],
+            },
+            Row {
+                group: 1,
+                cells: vec![],
+            },
+        ];
+        assert_eq!(expand(&reversed, 2, 3), Err(GridError::InvalidGroupOrder));
     }
     #[test]
     fn row_and_col_spans() {

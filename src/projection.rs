@@ -20,6 +20,28 @@ pub struct Projection {
     pub links: Vec<String>,
     pub parse_warnings: usize,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct ParseLimits {
+    pub max_html_bytes: usize,
+    pub max_text_bytes: usize,
+    pub max_nodes: usize,
+    pub max_words_per_chunk: usize,
+    pub max_link_bytes: usize,
+    pub max_link_url_bytes: usize,
+}
+impl Default for ParseLimits {
+    fn default() -> Self {
+        Self {
+            max_html_bytes: 4 * 1024 * 1024,
+            max_text_bytes: 4 * 1024 * 1024,
+            max_nodes: 250_000,
+            max_words_per_chunk: 1200,
+            max_link_bytes: 4 * 1024 * 1024,
+            max_link_url_bytes: 8192,
+        }
+    }
+}
 struct Draft {
     parent: NodeId,
     tag: Tag,
@@ -81,7 +103,7 @@ fn skip_subtree(name: &str) -> bool {
 // Every decoded text node belongs to its NEAREST content-bearing ancestor;
 // nested list/table components are not repeatedly flattened (avoids O(N^2)
 // aggregation on deeply nested lists).
-fn build_chunks(dom: &DomArena, max_words_per_chunk: usize) -> Vec<Chunk> {
+fn build_chunks(dom: &DomArena, max_words_per_chunk: usize, link_count: usize) -> Vec<Chunk> {
     let mut chunk_owner: Vec<Option<usize>> = vec![None; dom.nodes().len()];
     let mut chunks = Vec::<Chunk>::new();
     for (id, node) in dom.nodes().iter().enumerate() {
@@ -109,23 +131,41 @@ fn build_chunks(dom: &DomArena, max_words_per_chunk: usize) -> Vec<Chunk> {
             {
                 chunks[index].text.push_str(segment);
             }
-            if node.tag == Tag::A
-                && node.attributes_id != NONE
-                && !chunks[index].links.contains(&node.attributes_id)
-            {
+            if node.tag == Tag::A && node.attributes_id != NONE {
                 chunks[index].links.push(node.attributes_id);
             }
         }
     }
+    // Finish each owner's list after traversal; nested owners can revisit a link.
+    // Node zero is the arena root and never a content owner.
+    let mut last_owner = vec![0u32; link_count];
     for chunk in &mut chunks {
+        chunk.links.retain(|&id| {
+            let previous = &mut last_owner[id as usize];
+            if *previous == chunk.node {
+                return false;
+            }
+            *previous = chunk.node;
+            true
+        });
         // Token count is NOT inferred from word count. This is solely an
         // input-memory/CPU safeguard for text; true LLM budget needs tokenizer.
-        chunk.text = chunk
-            .text
-            .split_whitespace()
-            .take(max_words_per_chunk)
-            .collect::<Vec<_>>()
-            .join(" ");
+        if chunk.role == "preformatted" {
+            if let Some(excluded) = chunk.text.split_whitespace().nth(max_words_per_chunk) {
+                let start = excluded.as_ptr() as usize - chunk.text.as_ptr() as usize;
+                let end = chunk.text[..start].trim_end().len();
+                chunk.text.truncate(end);
+            }
+        } else {
+            let mut normalized = String::new();
+            for word in chunk.text.split_whitespace().take(max_words_per_chunk) {
+                if !normalized.is_empty() {
+                    normalized.push(' ');
+                }
+                normalized.push_str(word);
+            }
+            chunk.text = normalized;
+        }
     }
     chunks.retain(|c| !c.text.is_empty());
     chunks
@@ -137,15 +177,42 @@ pub fn parse_html(
     max_nodes: usize,
     max_words_per_chunk: usize,
 ) -> Result<Projection, &'static str> {
-    if max_nodes == 0 || max_words_per_chunk == 0 || html.len() > u32::MAX as usize {
+    parse_html_with_limits(
+        html,
+        base,
+        ParseLimits {
+            max_nodes,
+            max_words_per_chunk,
+            ..ParseLimits::default()
+        },
+    )
+}
+
+/// Text bytes count decoded UTF-8; link bytes count unique resolved URLs.
+/// max_nodes includes the arena root.
+pub fn parse_html_with_limits(
+    html: &str,
+    base: &Url,
+    limits: ParseLimits,
+) -> Result<Projection, &'static str> {
+    let ParseLimits {
+        max_nodes,
+        max_words_per_chunk,
+        ..
+    } = limits;
+    if max_nodes == 0
+        || max_words_per_chunk == 0
+        || html.len() > limits.max_html_bytes
+        || html.len() > u32::MAX as usize
+    {
         return Err("invalid resource budget");
     }
     let parsed = Html::parse_document(html);
     let parse_warnings = parsed.errors.len();
     let mut text = Vec::<u8>::new();
     let mut drafts = Vec::<Draft>::new();
-    let mut links = Vec::<String>::new();
     let mut link_ids = HashMap::<String, u32>::new();
+    let mut link_bytes = 0usize;
     let mut stack = vec![(parsed.tree.root(), 0u32)];
     while let Some((node, parent)) = stack.pop() {
         let mut next_parent = parent;
@@ -155,7 +222,7 @@ pub fn parse_html(
                 if skip_subtree(el.name()) {
                     visit_children = false;
                 } else {
-                    if drafts.len() >= max_nodes {
+                    if drafts.len() >= max_nodes - 1 {
                         return Err("max DOM nodes exceeded");
                     }
                     let mut link_idx = NONE;
@@ -166,12 +233,20 @@ pub fn parse_html(
                         && target.username().is_empty()
                         && target.password().is_none()
                     {
-                        let value = target.as_str().to_owned();
-                        link_idx = *link_ids.entry(value.clone()).or_insert_with(|| {
-                            let id = links.len() as u32;
-                            links.push(value);
-                            id
-                        });
+                        if let Some(&id) = link_ids.get(target.as_str()) {
+                            link_idx = id;
+                        } else {
+                            if target.as_str().len() > limits.max_link_url_bytes
+                                || target.as_str().len()
+                                    > limits.max_link_bytes.saturating_sub(link_bytes)
+                            {
+                                return Err("resolved link byte budget exceeded");
+                            }
+                            link_bytes += target.as_str().len();
+                            link_idx =
+                                u32::try_from(link_ids.len()).map_err(|_| "link ID overflow")?;
+                            link_ids.insert(target.into(), link_idx);
+                        }
                     }
                     next_parent =
                         u32::try_from(drafts.len() + 1).map_err(|_| "node ID overflow")?;
@@ -185,8 +260,11 @@ pub fn parse_html(
             }
             HtmlNode::Text(content) => {
                 if !content.is_empty() {
-                    if drafts.len() >= max_nodes {
+                    if drafts.len() >= max_nodes - 1 {
                         return Err("max DOM nodes exceeded");
+                    }
+                    if content.text.len() > limits.max_text_bytes.saturating_sub(text.len()) {
+                        return Err("decoded text byte budget exceeded");
                     }
                     let start = text.len();
                     text.extend_from_slice(content.text.as_bytes());
@@ -203,11 +281,14 @@ pub fn parse_html(
         }
         if visit_children {
             // Stack-based traversal prevents source-controlled call-stack recursion.
-            let children: Vec<_> = node.children().collect();
-            for child in children.into_iter().rev() {
+            for child in node.children().rev() {
                 stack.push((child, next_parent));
             }
         }
+    }
+    let mut links = vec![String::new(); link_ids.len()];
+    for (value, id) in link_ids {
+        links[id as usize] = value;
     }
     let mut dom = DomArena::new(Bytes::from(text), drafts.len() + 1);
     for (i, draft) in drafts.into_iter().enumerate() {
@@ -220,7 +301,7 @@ pub fn parse_html(
                 .map_err(|_| "invalid link index")?;
         }
     }
-    let chunks = build_chunks(&dom, max_words_per_chunk);
+    let chunks = build_chunks(&dom, max_words_per_chunk, links.len());
     Ok(Projection {
         dom,
         chunks,
@@ -232,6 +313,112 @@ pub fn parse_html(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn many_unique_links_remain_ordered_and_repeated_ids_are_removed() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let mut html = String::from("<p>");
+        for i in 0..1000 {
+            html.push_str(&format!("<a href='/{i}'>x</a>"));
+        }
+        html.push_str("<a href='/0'>first</a><a href='/999'>last</a><a href='/1'>second</a></p>");
+        let page = parse_html(&html, &base, 5000, 1200).unwrap();
+        assert_eq!(page.chunks[0].links, (0..1000).collect::<Vec<_>>());
+        assert_eq!(page.links.len(), 1000);
+    }
+    #[test]
+    fn decoded_text_bytes_have_an_independent_budget() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let limits = ParseLimits {
+            max_text_bytes: 2,
+            ..ParseLimits::default()
+        };
+        assert!(parse_html_with_limits("<p>é</p>", &base, limits).is_ok());
+        assert!(
+            parse_html_with_limits(
+                "<p>é</p>",
+                &base,
+                ParseLimits {
+                    max_text_bytes: 1,
+                    ..limits
+                }
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn preformatted_text_preserves_lines_and_indentation() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let p = parse_html(
+            "<pre>if ready:\n    run()\n    stop()</pre>",
+            &base,
+            100,
+            100,
+        )
+        .unwrap();
+        assert_eq!(p.chunks[0].text, "if ready:\n    run()\n    stop()");
+    }
+    #[test]
+    fn total_node_budget_includes_arena_root() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let p = parse_html("<p>x</p>", &base, 100, 100).unwrap();
+        let count = p.dom.nodes().len();
+        assert!(parse_html("<p>x</p>", &base, count - 1, 100).is_err());
+        assert_eq!(
+            parse_html("<p>x</p>", &base, count, 100)
+                .unwrap()
+                .dom
+                .nodes()
+                .len(),
+            count
+        );
+    }
+    #[test]
+    fn resolved_link_amplification_is_rejected() {
+        let base = Url::parse(&format!("https://example.org/{}", "x".repeat(8000))).unwrap();
+        let html: String = (0..600).map(|i| format!("<a href='#{i}'>x</a>")).collect();
+        assert!(parse_html(&html, &base, 2000, 100).is_err());
+    }
+    #[test]
+    fn explicit_byte_budgets_accept_the_boundary_and_reject_expansion() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let html = "<p><a href='/a'>one</a><a href='/b'>two</a></p>";
+        let limits = ParseLimits {
+            max_html_bytes: html.len(),
+            max_link_bytes: 42,
+            max_link_url_bytes: 21,
+            ..ParseLimits::default()
+        };
+        assert_eq!(
+            parse_html_with_limits(html, &base, limits)
+                .unwrap()
+                .links
+                .len(),
+            2
+        );
+        for limits in [
+            ParseLimits {
+                max_html_bytes: html.len() - 1,
+                ..limits
+            },
+            ParseLimits {
+                max_link_bytes: 41,
+                ..limits
+            },
+            ParseLimits {
+                max_link_url_bytes: 20,
+                ..limits
+            },
+        ] {
+            assert!(parse_html_with_limits(html, &base, limits).is_err());
+        }
+    }
+    #[test]
+    fn link_order_and_deduplication_survive_nested_block_ownership() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let page = parse_html("<li><a href='/a'>first</a><ul><li><a href='/a'>nested</a></li></ul><a href='/b'>second</a><a href='/a'>repeat</a></li>", &base, 100, 100).unwrap();
+        assert_eq!(page.chunks[0].links, vec![0, 1]);
+        assert_eq!(page.chunks[1].links, vec![0]);
+    }
     #[test]
     fn whitespace_between_inline_nodes_is_preserved() {
         let base = Url::parse("https://example.org/").unwrap();

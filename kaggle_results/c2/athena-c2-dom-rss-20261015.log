@@ -1,0 +1,39 @@
+[{"stream_name":"stdout","time":0.75269901,"data":"[2026-10-14 20:18:33] === Athena Cluster 2: DOM Scalability and RSS Profile Start ===\n"}
+,{"stream_name":"stdout","time":0.75288374,"data":"[2026-10-14 20:18:33] CMD: rustc --version (cwd=None)\n"}
+,{"stream_name":"stdout","time":0.759035928,"data":"[2026-10-14 20:18:33] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":0.759064274,"data":"\n"}
+,{"stream_name":"stdout","time":0.759083423,"data":"[2026-10-14 20:18:33] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":26.690609555,"data":"[2026-10-14 20:18:59] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stderr","time":54.04754324,"data":"/kaggle/src/script.py:54: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":54.047580551,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":54.059612241,"data":"[2026-10-14 20:19:26] CMD: cargo build --locked --release --bin athena-core-v2 (cwd=/tmp/athena_baseline)\n"}
+,{"stream_name":"stdout","time":173.469401872,"data":"[2026-10-14 20:21:26] CMD: cargo build --locked --release --bin athena-core-v2 (cwd=/tmp/athena_candidate)\n"}
+,{"stream_name":"stdout","time":278.730215795,"data":"[2026-10-14 20:23:11] === R5: Link Deduplication Scaling Sweep (100 to 20,000 anchors) ===\n"}
+,{"stream_name":"stdout","time":278.851273727,"data":"[2026-10-14 20:23:11] L=  100: Baseline p50=5.91ms, Candidate p50=5.84ms (Speedup: 1.01x, RSS base=208KB cand=460KB)\n"}
+,{"stream_name":"stdout","time":278.970070355,"data":"[2026-10-14 20:23:11] L=  500: Baseline p50=5.90ms, Candidate p50=5.87ms (Speedup: 1.01x, RSS base=208KB cand=236KB)\n"}
+,{"stream_name":"stdout","time":279.089435258,"data":"[2026-10-14 20:23:11] L= 1000: Baseline p50=5.86ms, Candidate p50=5.87ms (Speedup: 1.00x, RSS base=324KB cand=204KB)\n"}
+,{"stream_name":"stdout","time":279.316492043,"data":"[2026-10-14 20:23:12] L= 2500: Baseline p50=11.24ms, Candidate p50=11.23ms (Speedup: 1.00x, RSS base=4408KB cand=4376KB)\n"}
+,{"stream_name":"stdout","time":279.758770539,"data":"[2026-10-14 20:23:12] L= 5000: Baseline p50=21.93ms, Candidate p50=21.96ms (Speedup: 1.00x, RSS base=7032KB cand=5732KB)\n"}
+,{"stream_name":"stdout","time":280.528948587,"data":"[2026-10-14 20:23:13] L=10000: Baseline p50=43.28ms, Candidate p50=32.59ms (Speedup: 1.33x, RSS base=10368KB cand=9524KB)\n"}
+,{"stream_name":"stdout","time":282.235788102,"data":"[2026-10-14 20:23:15] L=20000: Baseline p50=102.00ms, Candidate p50=64.87ms (Speedup: 1.57x, RSS base=17644KB cand=14996KB)\n"}
+,{"stream_name":"stdout","time":282.236302131,"data":"[2026-10-14 20:23:15] === R2: Deeply Nested DOM Parsing \u0026 Stack Safety ===\n"}
+,{"stream_name":"stdout","time":282.240055559,"data":"[2026-10-14 20:23:15] Depth  50: Success=True, time=3.10ms, output_len=413\n"}
+,{"stream_name":"stdout","time":282.243321511,"data":"[2026-10-14 20:23:15] Depth 100: Success=True, time=2.72ms, output_len=414\n"}
+,{"stream_name":"stdout","time":282.246184165,"data":"[2026-10-14 20:23:15] Depth 200: Success=True, time=2.54ms, output_len=414\n"}
+,{"stream_name":"stdout","time":282.249805084,"data":"[2026-10-14 20:23:15] Depth 400: Success=True, time=3.14ms, output_len=414\n"}
+,{"stream_name":"stdout","time":282.254003964,"data":"[2026-10-14 20:23:15] Depth 500: Success=True, time=3.81ms, output_len=414\n"}
+,{"stream_name":"stdout","time":282.254033189,"data":"[2026-10-14 20:23:15] === HTML5 Entity Decoding and Tree Repair Conformance ===\n"}
+,{"stream_name":"stdout","time":282.25728882,"data":"[2026-10-14 20:23:15] Conformance check 'Entity expansion': PASS (output len=242)\n"}
+,{"stream_name":"stdout","time":282.26004259,"data":"[2026-10-14 20:23:15] Conformance check 'Unclosed table cells': PASS (output len=550)\n"}
+,{"stream_name":"stdout","time":282.262644998,"data":"[2026-10-14 20:23:15] Conformance check 'Unclosed inline tag': PASS (output len=242)\n"}
+,{"stream_name":"stdout","time":282.265263516,"data":"[2026-10-14 20:23:15] Conformance check 'Void elements br and hr': PASS (output len=401)\n"}
+,{"stream_name":"stdout","time":282.267787652,"data":"[2026-10-14 20:23:15] Conformance check 'Script tag stripping': PASS (output len=396)\n"}
+,{"stream_name":"stdout","time":282.270313463,"data":"[2026-10-14 20:23:15] Conformance check 'Unicode and diacritics': PASS (output len=429)\n"}
+,{"stream_name":"stdout","time":282.270856039,"data":"[2026-10-14 20:23:15] === Athena Cluster 2 Completed in 281.52s ===\n"}
+,{"stream_name":"stderr","time":285.304907611,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":285.304947483,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":285.698170109,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":285.698202935,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":287.367107806,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":288.650846655,"data":"[NbConvertApp] Writing 409851 bytes to __results__.html\n"}
+]

@@ -1,0 +1,31 @@
+[{"stream_name":"stdout","time":0.870805045,"data":"[2026-10-14 20:11:18] === Athena Cluster 3: Dependencies \u0026 Concurrency Start ===\n"}
+,{"stream_name":"stdout","time":0.871005648,"data":"[2026-10-14 20:11:18] CMD: rustc --version (cwd=None)\n"}
+,{"stream_name":"stdout","time":0.87803125,"data":"[2026-10-14 20:11:18] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":0.878054192,"data":"\n"}
+,{"stream_name":"stdout","time":0.878059969,"data":"[2026-10-14 20:11:18] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":24.663587167,"data":"[2026-10-14 20:11:42] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stderr","time":54.827026223,"data":"/kaggle/src/script.py:54: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":54.827068398,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":54.833342947,"data":"[2026-10-14 20:12:12] === R1: Evaluating rand 0.9.5/0.5.1 vs rand 0.10.3/0.6.0 on Linux ===\n"}
+,{"stream_name":"stdout","time":54.833792483,"data":"[2026-10-14 20:12:12] CMD: cargo build --release (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":66.133157659,"data":"[2026-10-14 20:12:24] CMD: ./target/release/r1-bench (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":66.311109238,"data":"[2026-10-14 20:12:24] rand 0.9.5: 174.42 ns/sample, mean_err=0.000009, var_err=0.000021\n"}
+,{"stream_name":"stdout","time":66.311734318,"data":"[2026-10-14 20:12:24] CMD: cargo build --release (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":74.514064291,"data":"[2026-10-14 20:12:32] CMD: ./target/release/r1-bench-10 (cwd=/tmp/r1_bench_10)\n"}
+,{"stream_name":"stdout","time":74.693365849,"data":"[2026-10-14 20:12:32] rand 0.10.3: 175.62 ns/sample, mean_err=0.000187, var_err=0.000010\n"}
+,{"stream_name":"stdout","time":74.693399296,"data":"[2026-10-14 20:12:32] === R8: Concurrency \u0026 SingleFlight Stress Testing ===\n"}
+,{"stream_name":"stdout","time":74.693997395,"data":"[2026-10-14 20:12:32] CMD: cargo build --release (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":200.178845997,"data":"[2026-10-14 20:14:38] CMD: ./target/release/r8-bench (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":200.235850745,"data":"[2026-10-14 20:14:38] SingleFlight Stress: 500 reqs -\u003e 50 origin calls (Deduplication: 10.00x in 52ms)\n"}
+,{"stream_name":"stdout","time":200.235899136,"data":"[2026-10-14 20:14:38] === R3 \u0026 IP Policy: SSRF Address Validation ===\n"}
+,{"stream_name":"stdout","time":200.236669696,"data":"[2026-10-14 20:14:38] CMD: cargo build --release (cwd=/tmp/ssrf_bench)\n"}
+,{"stream_name":"stdout","time":318.207891524,"data":"[2026-10-14 20:16:36] CMD: ./target/release/ssrf-bench (cwd=/tmp/ssrf_bench)\n"}
+,{"stream_name":"stdout","time":318.211205412,"data":"[2026-10-14 20:16:36] SSRF Policy: checked 13 addresses, all matched expected policy: True\n"}
+,{"stream_name":"stdout","time":318.211699484,"data":"[2026-10-14 20:16:36] === Athena Cluster 3 Completed in 317.34s ===\n"}
+,{"stream_name":"stderr","time":321.127449812,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":321.12749121,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":321.550850589,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":321.550900071,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":323.348532203,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":324.65520346,"data":"[NbConvertApp] Writing 408522 bytes to __results__.html\n"}
+]

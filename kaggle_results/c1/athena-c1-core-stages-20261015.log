@@ -1,0 +1,70 @@
+[{"stream_name":"stdout","time":1.042917273,"data":"[2026-10-14 19:50:45] === Athena Cluster 1: Core Stages Benchmark Start ===\n"}
+,{"stream_name":"stdout","time":1.050935289,"data":"[2026-10-14 19:50:45] Checking Rust toolchain...\n"}
+,{"stream_name":"stdout","time":1.050974711,"data":"[2026-10-14 19:50:45] CMD: rustc --version --verbose (cwd=None)\n"}
+,{"stream_name":"stdout","time":1.060267838,"data":"[2026-10-14 19:50:45] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":1.060295968,"data":"\n"}
+,{"stream_name":"stdout","time":1.061134177,"data":"[2026-10-14 19:50:45] Installing Rust via rustup...\n"}
+,{"stream_name":"stdout","time":1.06115957,"data":"[2026-10-14 19:50:45] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":20.510406463,"data":"[2026-10-14 19:51:05] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":49.754848588,"data":"[2026-10-14 19:51:34] CMD: rustc --version --verbose (cwd=None)\n"}
+,{"stream_name":"stdout","time":49.773743373,"data":"[2026-10-14 19:51:34] Installed rustc:\n"}
+,{"stream_name":"stdout","time":49.773777024,"data":"rustc 1.99.0 (b940084d7 2026-09-28)\n"}
+,{"stream_name":"stdout","time":49.773783072,"data":"binary: rustc\n"}
+,{"stream_name":"stdout","time":49.773787833,"data":"commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\n"}
+,{"stream_name":"stdout","time":49.773792511,"data":"commit-date: 2026-09-28\n"}
+,{"stream_name":"stdout","time":49.773797019,"data":"host: x86_64-unknown-linux-gnu\n"}
+,{"stream_name":"stdout","time":49.773801473,"data":"release: 1.99.0\n"}
+,{"stream_name":"stdout","time":49.773806025,"data":"LLVM version: 23.1.1\n"}
+,{"stream_name":"stdout","time":49.773810229,"data":"\n"}
+,{"stream_name":"stderr","time":49.777540588,"data":"/kaggle/src/script.py:61: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":49.777579577,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":49.783569214,"data":"[2026-10-14 19:51:34] Unpacked 33122 bytes to /tmp/athena_baseline\n"}
+,{"stream_name":"stdout","time":49.789187422,"data":"[2026-10-14 19:51:34] Unpacked 39919 bytes to /tmp/athena_candidate\n"}
+,{"stream_name":"stdout","time":49.789739712,"data":"[2026-10-14 19:51:34] Building Baseline release binaries...\n"}
+,{"stream_name":"stdout","time":49.789761442,"data":"[2026-10-14 19:51:34] CMD: cargo build --locked --release --bins (cwd=/tmp/athena_baseline)\n"}
+,{"stream_name":"stdout","time":167.506565364,"data":"[2026-10-14 19:53:32] Building Candidate release binaries...\n"}
+,{"stream_name":"stdout","time":167.506829891,"data":"[2026-10-14 19:53:32] CMD: cargo build --locked --release --bins (cwd=/tmp/athena_candidate)\n"}
+,{"stream_name":"stdout","time":281.600316912,"data":"[2026-10-14 19:55:26] Verifying AAE output byte equivalence across fixtures...\n"}
+,{"stream_name":"stdout","time":281.613375524,"data":"[2026-10-14 19:55:26] MATCH: example.html, query 'None': 2632 bytes, SHA=6dabd2dbd3bdf2e4\n"}
+,{"stream_name":"stdout","time":281.617874369,"data":"[2026-10-14 19:55:26] MATCH: example.html, query 'tokio runtime': 2632 bytes, SHA=6dabd2dbd3bdf2e4\n"}
+,{"stream_name":"stdout","time":281.622079676,"data":"[2026-10-14 19:55:26] MATCH: example.html, query 'tài 内容': 2632 bytes, SHA=6dabd2dbd3bdf2e4\n"}
+,{"stream_name":"stdout","time":281.626495032,"data":"[2026-10-14 19:55:26] MATCH: example.html, query 'H100 pricing': 2629 bytes, SHA=07f0778d69a15fb1\n"}
+,{"stream_name":"stdout","time":281.681844002,"data":"[2026-10-14 19:55:26] MATCH: multilingual.html, query 'None': 1257920 bytes, SHA=929fa9d2ac66ed07\n"}
+,{"stream_name":"stdout","time":281.779390788,"data":"[2026-10-14 19:55:26] MATCH: multilingual.html, query 'tokio runtime': 1257915 bytes, SHA=6ad5b8c29dc65df5\n"}
+,{"stream_name":"stdout","time":281.877237793,"data":"[2026-10-14 19:55:26] MATCH: multilingual.html, query 'tài 内容': 1257915 bytes, SHA=881172b591c5e1ff\n"}
+,{"stream_name":"stdout","time":281.973927511,"data":"[2026-10-14 19:55:26] MATCH: multilingual.html, query 'H100 pricing': 1257920 bytes, SHA=929fa9d2ac66ed07\n"}
+,{"stream_name":"stdout","time":281.975025941,"data":"[2026-10-14 19:55:26] Starting Paired Cluster Benchmark: 20 rounds x 250 iters = 5000 samples/stage\n"}
+,{"stream_name":"stdout","time":281.975228163,"data":"[2026-10-14 19:55:26] --- Round 1/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":318.248375043,"data":"[2026-10-14 19:56:02] --- Round 2/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":355.407791508,"data":"[2026-10-14 19:56:39] --- Round 3/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":394.778091222,"data":"[2026-10-14 19:57:19] --- Round 4/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":431.709538465,"data":"[2026-10-14 19:57:56] --- Round 5/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":468.975817505,"data":"[2026-10-14 19:58:33] --- Round 6/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":505.822308112,"data":"[2026-10-14 19:59:10] --- Round 7/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":542.54280042,"data":"[2026-10-14 19:59:47] --- Round 8/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":579.252793642,"data":"[2026-10-14 20:00:23] --- Round 9/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":616.166554584,"data":"[2026-10-14 20:01:00] --- Round 10/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":653.259100216,"data":"[2026-10-14 20:01:37] --- Round 11/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":689.819242824,"data":"[2026-10-14 20:02:14] --- Round 12/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":726.644300813,"data":"[2026-10-14 20:02:51] --- Round 13/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":763.04430805,"data":"[2026-10-14 20:03:27] --- Round 14/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":799.230137442,"data":"[2026-10-14 20:04:03] --- Round 15/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":835.338456982,"data":"[2026-10-14 20:04:39] --- Round 16/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":871.638098838,"data":"[2026-10-14 20:05:16] --- Round 17/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":908.049819649,"data":"[2026-10-14 20:05:52] --- Round 18/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":944.487351045,"data":"[2026-10-14 20:06:29] --- Round 19/20 (Order: baseline -\u003e candidate) ---\n"}
+,{"stream_name":"stdout","time":980.518097732,"data":"[2026-10-14 20:07:05] --- Round 20/20 (Order: candidate -\u003e baseline) ---\n"}
+,{"stream_name":"stdout","time":1017.307003176,"data":"[2026-10-14 20:07:41] Running Paired Cluster Bootstrap Statistical Analysis...\n"}
+,{"stream_name":"stdout","time":1063.22692512,"data":"[2026-10-14 20:08:27] Stage rank: Baseline p50=19.6652ms -\u003e Candidate p50=6.7329ms (+65.76%), CI=(-13.020630999999998, -12.831604) =\u003e ACCEPT (Statistically Significant Improvement)\n"}
+,{"stream_name":"stdout","time":1108.5650998,"data":"[2026-10-14 20:09:13] Stage table: Baseline p50=16.9482ms -\u003e Candidate p50=0.8997ms (+94.69%), CI=(-16.102285000000002, -16.007344) =\u003e ACCEPT (Statistically Significant Improvement)\n"}
+,{"stream_name":"stdout","time":1152.954695287,"data":"[2026-10-14 20:09:57] Stage parse: Baseline p50=7.9367ms -\u003e Candidate p50=7.0455ms (+11.23%), CI=(-1.6039580000000004, -0.7577299999999987) =\u003e ACCEPT (Statistically Significant Improvement)\n"}
+,{"stream_name":"stdout","time":1199.266580054,"data":"[2026-10-14 20:10:43] Stage export: Baseline p50=22.1203ms -\u003e Candidate p50=9.4755ms (+57.16%), CI=(-12.763081, -12.530293999999998) =\u003e ACCEPT (Statistically Significant Improvement)\n"}
+,{"stream_name":"stdout","time":1245.587219233,"data":"[2026-10-14 20:11:30] Stage pipeline: Baseline p50=31.1493ms -\u003e Candidate p50=16.8768ms (+45.82%), CI=(-14.426189999999998, -14.112247999999997) =\u003e ACCEPT (Statistically Significant Improvement)\n"}
+,{"stream_name":"stdout","time":1245.590144963,"data":"[2026-10-14 20:11:30] === Athena Cluster 1 Completed in 1244.55s ===\n"}
+,{"stream_name":"stderr","time":1249.253463478,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":1249.253500098,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":1249.913972358,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":1249.914022944,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":1252.638396148,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":1254.382220738,"data":"[NbConvertApp] Writing 433308 bytes to __results__.html\n"}
+]

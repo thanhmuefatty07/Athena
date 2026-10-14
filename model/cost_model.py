@@ -8,15 +8,19 @@ from decimal import Decimal, localcontext
 from pathlib import Path
 
 def D(x):
-    return Decimal(str(x))
+    value = Decimal(str(x))
+    if not value.is_finite() or value < 0:
+        raise ValueError('Expected a finite nonnegative quantity')
+    return value
 
 def model(p: dict) -> dict:
     with localcontext() as c:
         c.prec = 40
         n = D(p['client_requests'])
-        assert n > 0
+        period = D(p['period_days'])
+        if n == 0 or period == 0:
+            raise ValueError('Requests and period must be positive')
         a = D(p['deduped_origin_attempts'])
-        assert a >= 0
         fixed = D(p['server_provisioning_usd']) + D(p['storage_logs_monitoring_usd'])
         bandwidth = D(p['egress_gb']) * D(p['egress_usd_per_gb'])
         proxy = D(p['proxy_billable_gb']) * D(p['proxy_usd_per_gb'])
@@ -35,9 +39,9 @@ def model(p: dict) -> dict:
             'cogs_usd_per_million':str(cost_million),
             'gross_margin_fraction':str((retail-cost_million)/retail) if retail>0 else None,
             'gross_profit_per_million_usd':str(retail-cost_million),
-            'amortization_monthly_rps':str(n/(D(p['period_days'])*D(86400)))
+            'amortization_monthly_rps':str(n/(period*D(86400)))
         }
 
 if __name__ == '__main__':
     path = Path(sys.argv[1]) if len(sys.argv)>1 else Path(__file__).with_name('inputs.json')
-    print(json.dumps(model(json.loads(path.read_text())), indent=2))
+    print(json.dumps(model(json.loads(path.read_text(), parse_float=Decimal)), indent=2))

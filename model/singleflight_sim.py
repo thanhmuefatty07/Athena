@@ -1,18 +1,24 @@
 """Synthetic singleflight savings: same-key arrivals overlap only while fetch is active.
 Uses seeded synthetic trace; not a measured workload or a production capacity model.
 """
+import math
 import random
 
 def simulate(n=100_000, url_count=1000, arrival_rps=2000.,
              fetch_ms=80., seed=2026):
-    random.seed(seed)
+    if (not isinstance(n, int) or isinstance(n, bool) or n < 1
+            or not isinstance(url_count, int) or isinstance(url_count, bool) or url_count < 1
+            or not math.isfinite(arrival_rps) or arrival_rps <= 0
+            or not math.isfinite(fetch_ms) or fetch_ms < 0):
+        raise ValueError('Invalid simulation parameters')
+    rng = random.Random(seed)
     active_until = {}
     t = 0.
     fetched = 0
     joined = 0
     for _ in range(n):
-        t += random.expovariate(arrival_rps)
-        url = random.randrange(url_count)
+        t += rng.expovariate(arrival_rps)
+        url = rng.randrange(url_count)
         if active_until.get(url, -1.) > t:
             joined += 1
         else:

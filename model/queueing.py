@@ -5,21 +5,21 @@ from __future__ import annotations
 import math
 
 def erlang_c(arrival_rps: float, service_rps_per_worker: float, workers: int) -> dict:
-    if workers < 1 or service_rps_per_worker <= 0 or arrival_rps < 0:
+    if (not isinstance(workers, int) or isinstance(workers, bool) or workers < 1
+            or not math.isfinite(service_rps_per_worker) or service_rps_per_worker <= 0
+            or not math.isfinite(arrival_rps) or arrival_rps < 0):
         raise ValueError('Invalid parameters')
     a = arrival_rps / service_rps_per_worker
     rho = a / workers
     if rho >= 1:
         return {'stable':False, 'utilization':rho, 'p_wait':1.0,
                 'mean_queue_ms': math.inf, 'p95_queue_ms':math.inf}
-    # Log-sum-exp avoids factorial overflow when workers is large.
-    log_terms=[i*math.log(a)-math.lgamma(i+1) if a>0 else (0. if i==0 else -math.inf)
-               for i in range(workers)]
-    tail=(workers*math.log(a)-math.lgamma(workers+1)-math.log1p(-rho)
-          if a>0 else -math.inf)
-    top=max([tail,*log_terms])
-    den=sum(math.exp(v-top) for v in log_terms)+math.exp(tail-top)
-    p_wait=math.exp(tail-top)/den
+    # Erlang-B recurrence followed by C = B/(1-rho+rho*B); O(1) storage.
+    blocking = 1.0
+    for i in range(1, workers + 1):
+        offered_blocked = a * blocking
+        blocking = offered_blocked / (i + offered_blocked)
+    p_wait = blocking / (1 - rho + rho * blocking)
     spare=workers*service_rps_per_worker-arrival_rps
     mean_queue_s=p_wait/spare
     p95_queue_s=max(0., math.log(p_wait/0.05)/spare) if p_wait>0.05 else 0.

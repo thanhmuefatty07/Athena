@@ -1,0 +1,39 @@
+[{"stream_name":"stdout","time":0.844363697,"data":"[2026-10-14 19:51:40] === Athena Cluster 3: Dependencies \u0026 Concurrency Start ===\n"}
+,{"stream_name":"stdout","time":0.844611513,"data":"[2026-10-14 19:51:40] CMD: rustc --version (cwd=None)\n"}
+,{"stream_name":"stdout","time":0.8517165,"data":"[2026-10-14 19:51:40] FAILED (code 127): /bin/sh: 1: rustc: not found\n"}
+,{"stream_name":"stdout","time":0.85174248,"data":"\n"}
+,{"stream_name":"stdout","time":0.851809112,"data":"[2026-10-14 19:51:40] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)\n"}
+,{"stream_name":"stdout","time":22.557809676,"data":"[2026-10-14 19:52:02] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)\n"}
+,{"stream_name":"stderr","time":49.708148208,"data":"/kaggle/src/script.py:54: DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives and reject files or modify their metadata. Use the filter argument to control this behavior.\n"}
+,{"stream_name":"stderr","time":49.708195218,"data":"  tar.extractall(target_dir)\n"}
+,{"stream_name":"stdout","time":49.714241995,"data":"[2026-10-14 19:52:29] === R1: Evaluating rand 0.9.5/0.5.1 vs rand 0.10.3/0.6.0 on Linux ===\n"}
+,{"stream_name":"stdout","time":49.714783389,"data":"[2026-10-14 19:52:29] CMD: cargo build --release (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":59.980821553,"data":"[2026-10-14 19:52:39] CMD: ./target/release/r1-bench (cwd=/tmp/r1_bench)\n"}
+,{"stream_name":"stdout","time":60.119688063,"data":"[2026-10-14 19:52:39] rand 0.9.5: 135.60 ns/sample, mean_err=0.000054, var_err=0.000015\n"}
+,{"stream_name":"stdout","time":60.11973852,"data":"[2026-10-14 19:52:39] === R8: Concurrency \u0026 SingleFlight Stress Testing ===\n"}
+,{"stream_name":"stdout","time":60.120407793,"data":"[2026-10-14 19:52:39] CMD: cargo build --release (cwd=/tmp/r8_bench)\n"}
+,{"stream_name":"stdout","time":60.183308303,"data":"[2026-10-14 19:52:39] FAILED (code 101):     Updating crates.io index\n"}
+,{"stream_name":"stdout","time":60.183338909,"data":"error: no matching package named `athena_core_v2` found\n"}
+,{"stream_name":"stdout","time":60.183345352,"data":"location searched: /tmp/athena_candidate\n"}
+,{"stream_name":"stdout","time":60.183350715,"data":"required by package `r8-bench v0.1.0 (/tmp/r8_bench)`\n"}
+,{"stream_name":"stdout","time":60.183356119,"data":"help: package `athena-core-v2` exists at `/tmp/athena_candidate`\n"}
+,{"stream_name":"stdout","time":60.183361632,"data":"\n"}
+,{"stream_name":"stderr","time":60.18398334,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":60.185016617,"data":"  File \"/kaggle/src/script.py\", line 248, in \u003cmodule\u003e\n"}
+,{"stream_name":"stderr","time":60.185033688,"data":"    main()\n"}
+,{"stream_name":"stderr","time":60.185040377,"data":"    ~~~~^^\n"}
+,{"stream_name":"stderr","time":60.185046156,"data":"  File \"/kaggle/src/script.py\", line 234, in main\n"}
+,{"stream_name":"stderr","time":60.185051998,"data":"    r8_res = test_r8_concurrency_singleflight(cand_dir)\n"}
+,{"stream_name":"stderr","time":60.185057956,"data":"  File \"/kaggle/src/script.py\", line 168, in test_r8_concurrency_singleflight\n"}
+,{"stream_name":"stderr","time":60.185063079,"data":"    run_cmd(\"cargo build --release\", cwd=test_dir)\n"}
+,{"stream_name":"stderr","time":60.185068124,"data":"    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":60.185080767,"data":"  File \"/kaggle/src/script.py\", line 36, in run_cmd\n"}
+,{"stream_name":"stderr","time":60.185084666,"data":"    raise RuntimeError(f\"Command failed with code {p.returncode}: {cmd}\")\n"}
+,{"stream_name":"stderr","time":60.185100719,"data":"RuntimeError: Command failed with code 101: cargo build --release\n"}
+,{"stream_name":"stderr","time":62.990278914,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":62.99032253,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":63.38188541,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":63.381917181,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":65.879420834,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":67.138327828,"data":"[NbConvertApp] Writing 403783 bytes to __results__.html\n"}
+]

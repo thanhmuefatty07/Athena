@@ -1,0 +1,18 @@
+[2026-10-14 19:51:40] === Athena Cluster 3: Dependencies & Concurrency Start ===
+[2026-10-14 19:51:40] CMD: rustc --version (cwd=None)
+[2026-10-14 19:51:40] FAILED (code 127): /bin/sh: 1: rustc: not found
+
+[2026-10-14 19:51:40] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)
+[2026-10-14 19:52:02] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)
+[2026-10-14 19:52:29] === R1: Evaluating rand 0.9.5/0.5.1 vs rand 0.10.3/0.6.0 on Linux ===
+[2026-10-14 19:52:29] CMD: cargo build --release (cwd=/tmp/r1_bench)
+[2026-10-14 19:52:39] CMD: ./target/release/r1-bench (cwd=/tmp/r1_bench)
+[2026-10-14 19:52:39] rand 0.9.5: 135.60 ns/sample, mean_err=0.000054, var_err=0.000015
+[2026-10-14 19:52:39] === R8: Concurrency & SingleFlight Stress Testing ===
+[2026-10-14 19:52:39] CMD: cargo build --release (cwd=/tmp/r8_bench)
+[2026-10-14 19:52:39] FAILED (code 101):     Updating crates.io index
+error: no matching package named `athena_core_v2` found
+location searched: /tmp/athena_candidate
+required by package `r8-bench v0.1.0 (/tmp/r8_bench)`
+help: package `athena-core-v2` exists at `/tmp/athena_candidate`
+

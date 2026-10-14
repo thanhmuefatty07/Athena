@@ -1,0 +1,30 @@
+[2026-10-14 20:18:33] === Athena Cluster 2: DOM Scalability and RSS Profile Start ===
+[2026-10-14 20:18:33] CMD: rustc --version (cwd=None)
+[2026-10-14 20:18:33] FAILED (code 127): /bin/sh: 1: rustc: not found
+
+[2026-10-14 20:18:33] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)
+[2026-10-14 20:18:59] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)
+[2026-10-14 20:19:26] CMD: cargo build --locked --release --bin athena-core-v2 (cwd=/tmp/athena_baseline)
+[2026-10-14 20:21:26] CMD: cargo build --locked --release --bin athena-core-v2 (cwd=/tmp/athena_candidate)
+[2026-10-14 20:23:11] === R5: Link Deduplication Scaling Sweep (100 to 20,000 anchors) ===
+[2026-10-14 20:23:11] L=  100: Baseline p50=5.91ms, Candidate p50=5.84ms (Speedup: 1.01x, RSS base=208KB cand=460KB)
+[2026-10-14 20:23:11] L=  500: Baseline p50=5.90ms, Candidate p50=5.87ms (Speedup: 1.01x, RSS base=208KB cand=236KB)
+[2026-10-14 20:23:11] L= 1000: Baseline p50=5.86ms, Candidate p50=5.87ms (Speedup: 1.00x, RSS base=324KB cand=204KB)
+[2026-10-14 20:23:12] L= 2500: Baseline p50=11.24ms, Candidate p50=11.23ms (Speedup: 1.00x, RSS base=4408KB cand=4376KB)
+[2026-10-14 20:23:12] L= 5000: Baseline p50=21.93ms, Candidate p50=21.96ms (Speedup: 1.00x, RSS base=7032KB cand=5732KB)
+[2026-10-14 20:23:13] L=10000: Baseline p50=43.28ms, Candidate p50=32.59ms (Speedup: 1.33x, RSS base=10368KB cand=9524KB)
+[2026-10-14 20:23:15] L=20000: Baseline p50=102.00ms, Candidate p50=64.87ms (Speedup: 1.57x, RSS base=17644KB cand=14996KB)
+[2026-10-14 20:23:15] === R2: Deeply Nested DOM Parsing & Stack Safety ===
+[2026-10-14 20:23:15] Depth  50: Success=True, time=3.10ms, output_len=413
+[2026-10-14 20:23:15] Depth 100: Success=True, time=2.72ms, output_len=414
+[2026-10-14 20:23:15] Depth 200: Success=True, time=2.54ms, output_len=414
+[2026-10-14 20:23:15] Depth 400: Success=True, time=3.14ms, output_len=414
+[2026-10-14 20:23:15] Depth 500: Success=True, time=3.81ms, output_len=414
+[2026-10-14 20:23:15] === HTML5 Entity Decoding and Tree Repair Conformance ===
+[2026-10-14 20:23:15] Conformance check 'Entity expansion': PASS (output len=242)
+[2026-10-14 20:23:15] Conformance check 'Unclosed table cells': PASS (output len=550)
+[2026-10-14 20:23:15] Conformance check 'Unclosed inline tag': PASS (output len=242)
+[2026-10-14 20:23:15] Conformance check 'Void elements br and hr': PASS (output len=401)
+[2026-10-14 20:23:15] Conformance check 'Script tag stripping': PASS (output len=396)
+[2026-10-14 20:23:15] Conformance check 'Unicode and diacritics': PASS (output len=429)
+[2026-10-14 20:23:15] === Athena Cluster 2 Completed in 281.52s ===

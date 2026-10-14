@@ -3,6 +3,7 @@
 //! into control directives, preserving framing against content injection.
 use crate::{projection::Projection, rank::highlight_indices};
 use serde::Serialize;
+use std::io::{self, BufWriter, Write};
 use url::Url;
 
 #[derive(Debug, Serialize)]
@@ -31,9 +32,25 @@ enum Frame<'a> {
         block_count: usize,
     },
 }
-fn json_line(frame: &Frame<'_>, out: &mut String) -> Result<(), serde_json::Error> {
-    out.push_str(&serde_json::to_string(frame)?);
-    out.push('\n');
+struct Output {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+impl Write for Output {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(io::Error::other("AAE output byte budget exceeded"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+fn json_line(frame: &Frame<'_>, out: &mut impl Write) -> Result<(), serde_json::Error> {
+    serde_json::to_writer(&mut *out, frame)?;
+    out.write_all(b"\n").map_err(serde_json::Error::io)?;
     Ok(())
 }
 
@@ -44,14 +61,49 @@ pub fn export_jsonl(
     query: Option<&str>,
     highlight_limit: usize,
 ) -> Result<String, serde_json::Error> {
-    let mut out = String::new();
-    let all_text = page
-        .chunks
-        .iter()
-        .map(|x| x.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let digest = blake3::hash(all_text.as_bytes()).to_hex().to_string();
+    export_jsonl_with_limit(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        16 * 1024 * 1024,
+    )
+}
+
+/// A complete envelope or an error; the cap counts UTF-8 JSON bytes and newlines.
+pub fn export_jsonl_with_limit(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+) -> Result<String, serde_json::Error> {
+    let mut out = BufWriter::with_capacity(
+        8192,
+        Output {
+            bytes: Vec::new(),
+            limit: max_output_bytes,
+        },
+    );
+    let mut content = blake3::Hasher::new();
+    {
+        // Bounded batching lets BLAKE3 hash multiple chunks together without a page copy.
+        let mut digest_input = BufWriter::with_capacity(8192, &mut content);
+        for (i, chunk) in page.chunks.iter().enumerate() {
+            if i != 0 {
+                digest_input
+                    .write_all(b"\n")
+                    .map_err(serde_json::Error::io)?;
+            }
+            digest_input
+                .write_all(chunk.text.as_bytes())
+                .map_err(serde_json::Error::io)?;
+        }
+        digest_input.flush().map_err(serde_json::Error::io)?;
+    }
+    let digest = content.finalize().to_hex().to_string();
     json_line(
         &Frame::Meta {
             version: "aae/1",
@@ -66,12 +118,14 @@ pub fn export_jsonl(
     let highlights = query
         .map(|q| highlight_indices(&page.chunks, q, highlight_limit))
         .unwrap_or_default();
-    let mut ordering = highlights.clone();
-    for i in 0..page.chunks.len() {
-        if !highlights.contains(&i) {
-            ordering.push(i);
-        }
+    let mut highlighted = vec![false; page.chunks.len()];
+    for &i in &highlights {
+        highlighted[i] = true;
     }
+    let ordering = highlights
+        .iter()
+        .copied()
+        .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
     for i in ordering {
         let chunk = &page.chunks[i];
         let mut hasher = blake3::Hasher::new();
@@ -87,7 +141,7 @@ pub fn export_jsonl(
                 role: chunk.role,
                 text: &chunk.text,
                 links: &chunk.links,
-                highlight: highlights.contains(&i),
+                highlight: highlighted[i],
             },
             &mut out,
         )?;
@@ -107,13 +161,64 @@ pub fn export_jsonl(
         },
         &mut out,
     )?;
-    Ok(out)
+    let out = out
+        .into_inner()
+        .map_err(|e| serde_json::Error::io(e.into_error()))?;
+    String::from_utf8(out.bytes).map_err(|e| serde_json::Error::io(io::Error::other(e)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::projection::parse_html;
+    #[test]
+    fn output_cap_counts_escaped_bytes_and_end_frame() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let large = format!("<p>{}</p>", "\"\\内容".repeat(2500));
+        for html in ["<p>A &amp; B\n\"quoted\" 内容</p>", &large] {
+            let page = parse_html(html, &base, 100, 100).unwrap();
+            let expected = export_jsonl(&page, &base, 17, None, 0).unwrap();
+            assert_eq!(
+                export_jsonl_with_limit(&page, &base, 17, None, 0, expected.len()).unwrap(),
+                expected
+            );
+            assert!(
+                export_jsonl_with_limit(&page, &base, 17, None, 0, expected.len() - 1)
+                    .unwrap_err()
+                    .is_io()
+            );
+            assert!(export_jsonl_with_limit(&page, &base, 17, None, 0, 0).is_err());
+        }
+    }
+    #[test]
+    fn incremental_content_hash_preserves_joined_text_contract() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let chunk = "x".repeat(5000);
+        let batched = format!("<p>{chunk}</p><p>{chunk}</p>");
+        let direct = format!("<p>{}</p>", "x".repeat(20_000));
+        for html in [
+            "",
+            "<p>Alpha</p>",
+            "<p>Alpha</p><p>Beta</p>",
+            &batched,
+            &direct,
+        ] {
+            let page = parse_html(html, &base, 100, 100).unwrap();
+            let joined = page
+                .chunks
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let output = export_jsonl(&page, &base, 0, Some("Beta"), 1).unwrap();
+            let meta: serde_json::Value =
+                serde_json::from_str(output.lines().next().unwrap()).unwrap();
+            assert_eq!(
+                meta["content_hash"],
+                blake3::hash(joined.as_bytes()).to_hex().as_str()
+            );
+        }
+    }
     #[test]
     fn content_cannot_forge_control_frame() {
         let base = Url::parse("https://example.org/").unwrap();

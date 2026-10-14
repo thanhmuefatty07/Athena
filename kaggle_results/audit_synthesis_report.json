@@ -1,0 +1,167 @@
+{
+  "export": {
+    "samples_per_arm": 5000,
+    "baseline": {
+      "mean_ms": 22.236903120199965,
+      "p50_ms": 22.12027,
+      "p95_ms": 23.815264,
+      "p99_ms": 26.925764,
+      "round_median_autocorrelation": 0.42840180167441155
+    },
+    "candidate": {
+      "mean_ms": 9.605031995000008,
+      "p50_ms": 9.475509,
+      "p95_ms": 10.949609,
+      "p99_ms": 11.628124999999999,
+      "round_median_autocorrelation": -0.005072145162160867
+    },
+    "p50_reduction_percent": 57.16368290260472,
+    "ci_95_bonferroni": {
+      "delta_p50_ms": [
+        -12.802054,
+        -12.493098999999999
+      ],
+      "delta_p95_ms": [
+        -13.747813999999998,
+        -12.514115
+      ],
+      "delta_p99_ms": [
+        -16.585881,
+        -13.481599
+      ]
+    },
+    "decision": "ACCEPT (Statistically Significant Superiority)"
+  },
+  "parse": {
+    "samples_per_arm": 5000,
+    "baseline": {
+      "mean_ms": 8.234341517999995,
+      "p50_ms": 7.936656,
+      "p95_ms": 9.511879,
+      "p99_ms": 10.485242000000001,
+      "round_median_autocorrelation": -0.15873316472712182
+    },
+    "candidate": {
+      "mean_ms": 7.128229095000008,
+      "p50_ms": 7.045538,
+      "p95_ms": 7.879613000000001,
+      "p99_ms": 9.477917000000001,
+      "round_median_autocorrelation": 0.13005435690153624
+    },
+    "p50_reduction_percent": 11.227877332720487,
+    "ci_95_bonferroni": {
+      "delta_p50_ms": [
+        -1.7209869999999992,
+        -0.7288620000000003
+      ],
+      "delta_p95_ms": [
+        -1.9920959999999983,
+        -1.1277089999999976
+      ],
+      "delta_p99_ms": [
+        -2.5351730000000003,
+        0.21083100000000066
+      ]
+    },
+    "decision": "ACCEPT (Statistically Significant Superiority)"
+  },
+  "pipeline": {
+    "samples_per_arm": 5000,
+    "baseline": {
+      "mean_ms": 31.42684226879991,
+      "p50_ms": 31.149324,
+      "p95_ms": 34.820481,
+      "p99_ms": 38.448149,
+      "round_median_autocorrelation": 0.08718863990907645
+    },
+    "candidate": {
+      "mean_ms": 17.01223192020001,
+      "p50_ms": 16.876815,
+      "p95_ms": 18.064212,
+      "p99_ms": 20.940736,
+      "round_median_autocorrelation": 0.2170523606491898
+    },
+    "p50_reduction_percent": 45.81964282756184,
+    "ci_95_bonferroni": {
+      "delta_p50_ms": [
+        -14.482282000000005,
+        -14.067423000000002
+      ],
+      "delta_p95_ms": [
+        -18.056103,
+        -14.774393999999997
+      ],
+      "delta_p99_ms": [
+        -18.421650000000003,
+        -14.529900000000001
+      ]
+    },
+    "decision": "ACCEPT (Statistically Significant Superiority)"
+  },
+  "rank": {
+    "samples_per_arm": 5000,
+    "baseline": {
+      "mean_ms": 19.736508659400023,
+      "p50_ms": 19.665249,
+      "p95_ms": 21.006082,
+      "p99_ms": 22.728842,
+      "round_median_autocorrelation": 0.10224930713578424
+    },
+    "candidate": {
+      "mean_ms": 6.803486439399987,
+      "p50_ms": 6.732913,
+      "p95_ms": 7.300758,
+      "p99_ms": 8.318375,
+      "round_median_autocorrelation": 0.24876659442899324
+    },
+    "p50_reduction_percent": 65.7623811424915,
+    "ci_95_bonferroni": {
+      "delta_p50_ms": [
+        -13.044974,
+        -12.805430000000001
+      ],
+      "delta_p95_ms": [
+        -14.085872000000002,
+        -13.363724999999999
+      ],
+      "delta_p99_ms": [
+        -15.680881999999999,
+        -12.93708
+      ]
+    },
+    "decision": "ACCEPT (Statistically Significant Superiority)"
+  },
+  "table": {
+    "samples_per_arm": 5000,
+    "baseline": {
+      "mean_ms": 17.06709615479997,
+      "p50_ms": 16.948245,
+      "p95_ms": 18.031428,
+      "p99_ms": 19.816784000000002,
+      "round_median_autocorrelation": 0.2548746413020503
+    },
+    "candidate": {
+      "mean_ms": 0.9157106421999992,
+      "p50_ms": 0.899709,
+      "p95_ms": 1.061627,
+      "p99_ms": 1.299608,
+      "round_median_autocorrelation": 0.2749368739199433
+    },
+    "p50_reduction_percent": 94.69143265276139,
+    "ci_95_bonferroni": {
+      "delta_p50_ms": [
+        -16.121535,
+        -15.993607
+      ],
+      "delta_p95_ms": [
+        -17.32363,
+        -16.668263
+      ],
+      "delta_p99_ms": [
+        -20.150370000000002,
+        -17.212535
+      ]
+    },
+    "decision": "ACCEPT (Statistically Significant Superiority)"
+  }
+}

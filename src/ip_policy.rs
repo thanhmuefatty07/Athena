@@ -60,8 +60,18 @@ pub fn public_ipv6(ip: Ipv6Addr) -> bool {
     if in_prefix(0x20020000000000000000000000000000, 16) {
         return false;
     }
-    if in_prefix(0x20010000000000000000000000000000, 32) {
+    if in_prefix(0x3fff0000000000000000000000000000, 20) {
         return false;
+    }
+    if in_prefix(0x20010000000000000000000000000000, 23) {
+        // IANA protocol-assignment space is non-global except its listed allocations.
+        return [1, 2, 3]
+            .into_iter()
+            .any(|last| value == 0x20010001000000000000000000000000 + last)
+            || in_prefix(0x20010003000000000000000000000000, 32)
+            || in_prefix(0x20010004011200000000000000000000, 48)
+            || in_prefix(0x20010020000000000000000000000000, 28)
+            || in_prefix(0x20010030000000000000000000000000, 28);
     }
     true
 }
@@ -99,5 +109,25 @@ mod tests {
             assert!(!is_public_candidate(ip.parse().unwrap()), "{ip}");
         }
         assert!(is_public_candidate("2606:4700:4700::1111".parse().unwrap()));
+    }
+    #[test]
+    fn non_public_ipv6_special_purpose_prefixes_are_denied() {
+        for ip in [
+            "2001:2::1",
+            "2001:10::1",
+            "2001:1ff::1",
+            "3fff::1",
+            "3fff:fff::1",
+        ] {
+            assert!(!is_public_candidate(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:4860:4860::8888",
+            "3ffe::1",
+        ] {
+            assert!(is_public_candidate(ip.parse().unwrap()), "{ip}");
+        }
     }
 }

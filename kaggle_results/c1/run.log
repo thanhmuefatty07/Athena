@@ -1,0 +1,61 @@
+[2026-10-14 19:50:45] === Athena Cluster 1: Core Stages Benchmark Start ===
+[2026-10-14 19:50:45] Checking Rust toolchain...
+[2026-10-14 19:50:45] CMD: rustc --version --verbose (cwd=None)
+[2026-10-14 19:50:45] FAILED (code 127): /bin/sh: 1: rustc: not found
+
+[2026-10-14 19:50:45] Installing Rust via rustup...
+[2026-10-14 19:50:45] CMD: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable (cwd=None)
+[2026-10-14 19:51:05] CMD: rustup toolchain install 1.99.0 || rustup default stable (cwd=None)
+[2026-10-14 19:51:34] CMD: rustc --version --verbose (cwd=None)
+[2026-10-14 19:51:34] Installed rustc:
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+[2026-10-14 19:51:34] Unpacked 33122 bytes to /tmp/athena_baseline
+[2026-10-14 19:51:34] Unpacked 39919 bytes to /tmp/athena_candidate
+[2026-10-14 19:51:34] Building Baseline release binaries...
+[2026-10-14 19:51:34] CMD: cargo build --locked --release --bins (cwd=/tmp/athena_baseline)
+[2026-10-14 19:53:32] Building Candidate release binaries...
+[2026-10-14 19:53:32] CMD: cargo build --locked --release --bins (cwd=/tmp/athena_candidate)
+[2026-10-14 19:55:26] Verifying AAE output byte equivalence across fixtures...
+[2026-10-14 19:55:26] MATCH: example.html, query 'None': 2632 bytes, SHA=6dabd2dbd3bdf2e4
+[2026-10-14 19:55:26] MATCH: example.html, query 'tokio runtime': 2632 bytes, SHA=6dabd2dbd3bdf2e4
+[2026-10-14 19:55:26] MATCH: example.html, query 'tài 内容': 2632 bytes, SHA=6dabd2dbd3bdf2e4
+[2026-10-14 19:55:26] MATCH: example.html, query 'H100 pricing': 2629 bytes, SHA=07f0778d69a15fb1
+[2026-10-14 19:55:26] MATCH: multilingual.html, query 'None': 1257920 bytes, SHA=929fa9d2ac66ed07
+[2026-10-14 19:55:26] MATCH: multilingual.html, query 'tokio runtime': 1257915 bytes, SHA=6ad5b8c29dc65df5
+[2026-10-14 19:55:26] MATCH: multilingual.html, query 'tài 内容': 1257915 bytes, SHA=881172b591c5e1ff
+[2026-10-14 19:55:26] MATCH: multilingual.html, query 'H100 pricing': 1257920 bytes, SHA=929fa9d2ac66ed07
+[2026-10-14 19:55:26] Starting Paired Cluster Benchmark: 20 rounds x 250 iters = 5000 samples/stage
+[2026-10-14 19:55:26] --- Round 1/20 (Order: baseline -> candidate) ---
+[2026-10-14 19:56:02] --- Round 2/20 (Order: candidate -> baseline) ---
+[2026-10-14 19:56:39] --- Round 3/20 (Order: baseline -> candidate) ---
+[2026-10-14 19:57:19] --- Round 4/20 (Order: candidate -> baseline) ---
+[2026-10-14 19:57:56] --- Round 5/20 (Order: baseline -> candidate) ---
+[2026-10-14 19:58:33] --- Round 6/20 (Order: candidate -> baseline) ---
+[2026-10-14 19:59:10] --- Round 7/20 (Order: baseline -> candidate) ---
+[2026-10-14 19:59:47] --- Round 8/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:00:23] --- Round 9/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:01:00] --- Round 10/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:01:37] --- Round 11/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:02:14] --- Round 12/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:02:51] --- Round 13/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:03:27] --- Round 14/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:04:03] --- Round 15/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:04:39] --- Round 16/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:05:16] --- Round 17/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:05:52] --- Round 18/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:06:29] --- Round 19/20 (Order: baseline -> candidate) ---
+[2026-10-14 20:07:05] --- Round 20/20 (Order: candidate -> baseline) ---
+[2026-10-14 20:07:41] Running Paired Cluster Bootstrap Statistical Analysis...
+[2026-10-14 20:08:27] Stage rank: Baseline p50=19.6652ms -> Candidate p50=6.7329ms (+65.76%), CI=(-13.020630999999998, -12.831604) => ACCEPT (Statistically Significant Improvement)
+[2026-10-14 20:09:13] Stage table: Baseline p50=16.9482ms -> Candidate p50=0.8997ms (+94.69%), CI=(-16.102285000000002, -16.007344) => ACCEPT (Statistically Significant Improvement)
+[2026-10-14 20:09:57] Stage parse: Baseline p50=7.9367ms -> Candidate p50=7.0455ms (+11.23%), CI=(-1.6039580000000004, -0.7577299999999987) => ACCEPT (Statistically Significant Improvement)
+[2026-10-14 20:10:43] Stage export: Baseline p50=22.1203ms -> Candidate p50=9.4755ms (+57.16%), CI=(-12.763081, -12.530293999999998) => ACCEPT (Statistically Significant Improvement)
+[2026-10-14 20:11:30] Stage pipeline: Baseline p50=31.1493ms -> Candidate p50=16.8768ms (+45.82%), CI=(-14.426189999999998, -14.112247999999997) => ACCEPT (Statistically Significant Improvement)
+[2026-10-14 20:11:30] === Athena Cluster 1 Completed in 1244.55s ===

@@ -1,40 +1,50 @@
-# Athena V2 — source-first audited implementation blueprint
+# Athena V2 — verified reference core
 
-**Primary deliverable:** [MASTER_BLUEPRINT.md](MASTER_BLUEPRINT.md), 500+ lines of Vietnamese technical design with requirements, math, security, performance plan, cited standards and go/no-go gates.
+[MASTER_BLUEPRINT.md](MASTER_BLUEPRINT.md) describes the product architecture. [ENGINEERING_REVIEW.md](ENGINEERING_REVIEW.md) records the 14 October 2026 source/dependency review, local verification, measured comparisons and remaining evidence gaps.
 
-**Runnable-oriented Rust reference:** `src/` — network policy + pinned HTTPS, singleflight cancellation, 32-byte node arena, HTML5 projection, span grid, lexical BM25, AAE JSONL, pipeline and cost-aware tier sampler.
+The current implementation is a Rust reference library and offline CLI: pinned HTTPS policy, cancellation-aware singleflight, 32-byte DOM arena, HTML5 projection, table-span grid, lexical BM25, AAE JSONL and a cost-aware tier sampler. Python models cover hypothetical Decimal costs, M/M/c queues, synthetic coalescing and probability intervals. This is not yet a deployed crawler service.
 
-**Numerical models:** `model/` — editable example inputs, Decimal COGS model, queueing Erlang-C, synthetic coalescing trace, Wilson/Clopper-Pearson statistics.
+## Verification
 
-## Verification status (must not be misrepresented)
-
-The Python numerical programs have been run, and the inputs are labeled hypothetical. **No Rust compiler was present in the authoring environment, so the source has not yet passed cargo check, tests, clippy, fuzz or performance benchmarks.** Fix build errors before integrating. This is a *reference vertical slice* and an exhaustive architecture plan, not a finished commercial crawler. Browser sandbox, robots policy, persistent caching, streaming network AAE, distributed scheduling and billing remain to implement.
-
-## Test on a machine with Rust toolchain
+Rust 1.99.0, Windows x86_64: local Rust/Python tests, Clippy and release builds are recorded in the engineering review. The committed lockfile is used; rustls was patched to 0.23.46 after four advisory matches. No dependency was added. Remote Linux CI, production networking, fuzz/Loom/Miri, ARM64 and peak RSS remain unverified.
 
 ```bash
-rustup toolchain install 1.99.0
-cargo generate-lockfile
-cargo fmt --all
-cargo check --all-targets
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo build --release
-cargo run --release --bin athena-core-v2 -- fixtures/example.html https://example.org/ benchmark
-cargo run --release --bin bench_html -- fixtures/example.html https://example.org/ 1000 benchmark
+cargo fmt --all -- --check
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --locked --release
+python -m unittest model.test_models
+cargo audit --json
+cargo deny --locked check advisories bans sources
+```
+
+## Run and measure
+
+```bash
+cargo run --locked --release --bin athena-core-v2 -- fixtures/example.html https://example.org/ benchmark
+cargo run --locked --release --bin bench_html -- fixtures/example.html https://example.org/ 100 benchmark
+cargo run --locked --release --bin bench_core -- rank 1000 100
 python model/cost_model.py model/inputs.json
 python model/queueing.py
 python model/singleflight_sim.py
 python model/statistics.py
+python -m model.benchmark results/baseline results/candidate --rounds 7 --output results/benchmark-comparison.json
 ```
 
-Commit `Cargo.lock` after validating dependencies and rerun CI with `--locked` once present. Pin GitHub Actions to audited SHAs before production.
+Use module execution for `model.benchmark`: it imports Python's standard `statistics`, while this repository also has `model/statistics.py`. The comparison requires preserved baseline/candidate release executables and lockfiles. They are available in this workspace under ignored `results/`; a clean clone must build both snapshots with the same toolchain/profile and copy the identical `bench_core` harness into the baseline before building. See the review for the starting revision, fixture hashes, measurements and rejected intermediate versions. Benchmarks are warm offline CPU measurements, not production network latency.
 
-## Production constraints
+## Resource and compatibility contracts
 
-- Only access domains after source permission, robots, rate and privacy checks (upstream policy service is NOT implemented here).
-- `src/network.rs` intentionally avoids connection pooling by constructing a client per pinned resolution. Do not bypass DNS-to-connect policy in pursuit of performance; implement a validated pooled connector.
-- The current public-address classifier is defense-in-depth, not proof of public reachability; use IANA tables, egress firewall and network-isolation validation in production.
-- AAE JSONL currently builds a `String`, not live network stream; query highlights are prioritized but the page is not yet compressed to a token budget.
-- `src/table.rs` handles an isolated row-model; HTML table extraction, `scope/headers` and WHATWG conformance still need integration.
-- The sampled cost-aware bandit is a heuristic; compare against deterministic baselines before routing production requests.
+- `parse_html` keeps its signature and applies default `ParseLimits`: HTML, decoded text and unique resolved URL bytes each 4 MiB; each resolved URL 8192 bytes; the requested node budget includes the arena root. Use `parse_html_with_limits` to configure these budgets explicitly.
+- Preformatted chunks preserve line breaks and indentation. Other chunks retain whitespace normalization and word truncation. Link IDs retain encounter order and per-owner deduplication, including nested content blocks.
+- `export_jsonl` keeps its signature with a 16 MiB escaped JSONL cap including newlines/end frame. `export_jsonl_with_limit` returns a complete envelope or an error. Hash and JSON writers use bounded 8 KiB buffers. Byte limits are logical data limits, not total allocator/RSS limits.
+- `Engine::new` admits at most 32 times the configured worker count, including coalesced followers. `Engine::with_pending_limit` configures that cap; zero denies admission. Overload and total caller deadline are explicit errors. Started DNS/parser/export blocking work keeps its corresponding permits until it exits; cancellation does not forcibly terminate it. The low-level `fetch_https` API delegates concurrency admission to its caller.
+- Source/representation keys include effective host and fetch limits, timeouts, policy label and tenant partition. Every caller still requires upstream source authorization before entering the engine.
+
+Inputs exceeding new budgets intentionally return errors. New `FetchError`/`PipelineError` variants require updating exhaustive downstream matches; no external consumers were available to compile. The original AAE schema is retained; exact output equivalence is checked on the benchmark corpus, not promised for every floating-point ranking case.
+
+## Integration gates
+
+The HTML5 parser still constructs its tree before projection node/text quotas. Measure parser RSS/CPU under malformed input and establish containment before exposing untrusted production traffic. Persistent caching/freshness, robots/source authorization, per-tenant fairness, browser isolation, streaming backpressure, token budgets, billing and operations remain planned.
+
+The dialer creates a client per validated DNS resolution. A pooled connector requires verified DNS/IP/policy lifetime semantics and live socket tests. The IP classifier is a conservative filter backed by registry review; production egress isolation remains necessary. The table module handles an isolated row model; HTML table extraction and WHATWG/header semantics remain to integrate. The bandit remains a heuristic requiring labeled evaluation against deterministic baselines.

@@ -1,0 +1,126 @@
+{
+  "cluster": "cluster2_dom_rss",
+  "link_scaling": [
+    {
+      "anchors": 100,
+      "baseline_p50_ms": 5.911588668823242,
+      "candidate_p50_ms": 5.844593048095703,
+      "speedup_ratio": 1.0114628375622094,
+      "baseline_peak_rss_kb": 208,
+      "candidate_peak_rss_kb": 460
+    },
+    {
+      "anchors": 500,
+      "baseline_p50_ms": 5.899190902709961,
+      "candidate_p50_ms": 5.867958068847656,
+      "speedup_ratio": 1.005322606858443,
+      "baseline_peak_rss_kb": 208,
+      "candidate_peak_rss_kb": 236
+    },
+    {
+      "anchors": 1000,
+      "baseline_p50_ms": 5.857229232788086,
+      "candidate_p50_ms": 5.869388580322266,
+      "speedup_ratio": 0.9979283451133317,
+      "baseline_peak_rss_kb": 324,
+      "candidate_peak_rss_kb": 204
+    },
+    {
+      "anchors": 2500,
+      "baseline_p50_ms": 11.244535446166992,
+      "candidate_p50_ms": 11.234521865844727,
+      "speedup_ratio": 1.0008913223403577,
+      "baseline_peak_rss_kb": 4408,
+      "candidate_peak_rss_kb": 4376
+    },
+    {
+      "anchors": 5000,
+      "baseline_p50_ms": 21.934986114501953,
+      "candidate_p50_ms": 21.95596694946289,
+      "speedup_ratio": 0.9990444130741666,
+      "baseline_peak_rss_kb": 7032,
+      "candidate_peak_rss_kb": 5732
+    },
+    {
+      "anchors": 10000,
+      "baseline_p50_ms": 43.27845573425293,
+      "candidate_p50_ms": 32.59396553039551,
+      "speedup_ratio": 1.3278057772348566,
+      "baseline_peak_rss_kb": 10368,
+      "candidate_peak_rss_kb": 9524
+    },
+    {
+      "anchors": 20000,
+      "baseline_p50_ms": 102.00023651123047,
+      "candidate_p50_ms": 64.87417221069336,
+      "speedup_ratio": 1.5722780427927763,
+      "baseline_peak_rss_kb": 17644,
+      "candidate_peak_rss_kb": 14996
+    }
+  ],
+  "deep_dom": [
+    {
+      "depth": 50,
+      "success": true,
+      "duration_ms": 3.098011016845703,
+      "exit_code": 0
+    },
+    {
+      "depth": 100,
+      "success": true,
+      "duration_ms": 2.724170684814453,
+      "exit_code": 0
+    },
+    {
+      "depth": 200,
+      "success": true,
+      "duration_ms": 2.5353431701660156,
+      "exit_code": 0
+    },
+    {
+      "depth": 400,
+      "success": true,
+      "duration_ms": 3.1359195709228516,
+      "exit_code": 0
+    },
+    {
+      "depth": 500,
+      "success": true,
+      "duration_ms": 3.8061141967773438,
+      "exit_code": 0
+    }
+  ],
+  "conformance": [
+    {
+      "description": "Entity expansion",
+      "pass": true,
+      "exit_code": 0
+    },
+    {
+      "description": "Unclosed table cells",
+      "pass": true,
+      "exit_code": 0
+    },
+    {
+      "description": "Unclosed inline tag",
+      "pass": true,
+      "exit_code": 0
+    },
+    {
+      "description": "Void elements br and hr",
+      "pass": true,
+      "exit_code": 0
+    },
+    {
+      "description": "Script tag stripping",
+      "pass": true,
+      "exit_code": 0
+    },
+    {
+      "description": "Unicode and diacritics",
+      "pass": true,
+      "exit_code": 0
+    }
+  ],
+  "duration_total_seconds": 281.51758217811584
+}
