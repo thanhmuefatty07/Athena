@@ -121,4 +121,18 @@ Source authorization/robots, authenticated cache/Vary/304 freshness, pooled reso
 
 Primary references: [reqwest 0.13.5 builder](https://docs.rs/reqwest/0.13.5/reqwest/struct.ClientBuilder.html), [IANA IPv6 registry](https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.txt), [RustSec cargo-audit](https://github.com/rustsec/rustsec/tree/main/cargo-audit). Version-sensitive behavior còn được đọc trực tiếp trong downloaded crate source: Tokio 1.53.3 resolver/blocking lifetime, url 2.5.8 From<Url>, ego-tree reverse children, serde_json writer và BLAKE3 Write.
 
+## Cập nhật harness nghiên cứu — 15/10/2026
+
+Đã sửa bộ đo theo [protocol v2](kaggle_experiments/README.md), giữ nguyên source production và dữ liệu Kaggle legacy. `src/bin/bench_core.rs` bổ sung raw nanoseconds/offsets theo thứ tự gốc, output fingerprint, fixture mode và pipeline không query; giữ summary/default CLI cũ. Hai source dùng cùng harness/lock/profile và target directories riêng. Control preformatted phân biệt hai binary; byte parity bắt buộc trên corpus so sánh.
+
+Sửa statistical gate: không biến dữ liệu thiếu thành 0; p99 tham gia phán quyết; family gồm 54 intervals ba cụm, 30.000 bootstrap draws, seed 42; incomplete/hash mismatch/duplicate/unpaired/screening/legacy không được PASS. Báo cáo ghép kiểm lại raw/manifest, đủ cases/quantiles và giữ REJECT khi có hồi quy. Peak RSS chuyển từ polling statm sang GNU time `%M` trên process mới; exit/timeout/lỗi công cụ không được nuốt. c3 kiểm đúng consumer Bandit và tuple RNG trong scratch, 8 Beta shapes với moment/CDF/central variance diagnostics; không gọi 50 synthetic SingleFlight leaders là 50 HTTP fetches hay 17 IP points là kiểm đủ SSRF.
+
+Bằng chứng local Windows Rust 1.99.0 trong lần sửa harness:
+
+- `python -B -m unittest kaggle_experiments.test_protocol -v`: **26 tests passed**; các lỗi dữ liệu rỗng, bỏ p99, báo cáo rỗng, family thiếu, sai stage và variance sụp đã được tái hiện trước khi sửa. Bootstrap weighted được so với resampling mở rộng độc lập; central moments được đối chiếu Fraction chính xác.
+- `cargo test --locked --all-targets`: **41 unit + 2 integration passed**, không có benchmark được đo bởi test harness. `cargo fmt --all -- --check` và `cargo clippy --locked --all-targets -- -D warnings`: exit 0. Probe Rust được build/Clippy trong scratch cùng dependency hiện tại; không thêm probe vào production module.
+- Hai snapshot được build để kiểm tra chức năng: content/hash/BM25/table oracles đạt; **36** AAE comparisons giống từng byte trên corpus chung. Known semantic control phân biệt baseline/candidate. Candidate qua SingleFlight gated 500 calls/50 keys, request sau flight và leader cancellation, cùng 17 IP points. Đây là oracle hữu hạn, không là chứng nhận tổng quát.
+
+**NOT VERIFIED:** chưa chạy hoặc upload Kaggle protocol v2, chưa đo tốc độ/RSS bằng bộ mới, chưa kiểm tuple RNG 0.10.3/0.6.0 trong Linux, chưa audit advisory mới cho tuple đó; parser/network/rerank alternatives chưa có comparator. Không suy các test local thành kết luận nâng thư viện/core. Người dùng tự chạy ba cụm và cung cấp artifacts trước quyết định triển khai.
+
 

@@ -1,0 +1,257 @@
+{
+  "protocol": "athena-research/2",
+  "family_size": 15,
+  "reported_intervals": 15,
+  "family_alpha": 0.05,
+  "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
+  "quantile_method": "nearest, Python round ties to even",
+  "bootstrap_draws": 30000,
+  "seed": 42,
+  "legacy_input": true,
+  "cases": {
+    "export": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 22.2369031202,
+        "maximum_observed": 36.37801,
+        "quantiles": {
+          "0.5": 22.12027,
+          "0.95": 23.815264,
+          "0.99": 26.925764
+        },
+        "round_median_lag1": 0.4284018016744115,
+        "within_block_lag1_median": 0.6664879119284008
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 9.605031995000001,
+        "maximum_observed": 14.799316,
+        "quantiles": {
+          "0.5": 9.475509,
+          "0.95": 10.949609,
+          "0.99": 11.628124999999999
+        },
+        "round_median_lag1": -0.005072145162160925,
+        "within_block_lag1_median": 0.4499753567161299
+      },
+      "delta_intervals": {
+        "0.5": [
+          -12.822333999999998,
+          -12.474550000000002
+        ],
+        "0.95": [
+          -13.787698000000002,
+          -12.459463000000001
+        ],
+        "0.99": [
+          -16.697688999999997,
+          -13.296169000000003
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "Legacy evidence lacks v2 provenance/correctness gates"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "parse": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 8.234341517999999,
+        "maximum_observed": 16.184568,
+        "quantiles": {
+          "0.5": 7.936656,
+          "0.95": 9.511879,
+          "0.99": 10.485242000000001
+        },
+        "round_median_lag1": -0.15873316472712193,
+        "within_block_lag1_median": 0.5168169416693255
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 7.128229094999999,
+        "maximum_observed": 13.211991,
+        "quantiles": {
+          "0.5": 7.045538,
+          "0.95": 7.879613000000001,
+          "0.99": 9.477917000000001
+        },
+        "round_median_lag1": 0.13005435690153574,
+        "within_block_lag1_median": 0.5560233513752295
+      },
+      "delta_intervals": {
+        "0.5": [
+          -1.7635949999999987,
+          -0.711462
+        ],
+        "0.95": [
+          -2.024851,
+          -1.0304199999999994
+        ],
+        "0.99": [
+          -2.724079999999997,
+          0.33965900000000104
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded",
+        "Legacy evidence lacks v2 provenance/correctness gates"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "pipeline": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 31.4268422688,
+        "maximum_observed": 44.794785,
+        "quantiles": {
+          "0.5": 31.149324,
+          "0.95": 34.820481,
+          "0.99": 38.448149
+        },
+        "round_median_lag1": 0.08718863990907633,
+        "within_block_lag1_median": 0.6030989236890508
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 17.0122319202,
+        "maximum_observed": 33.509743,
+        "quantiles": {
+          "0.5": 16.876815,
+          "0.95": 18.064212,
+          "0.99": 20.940736
+        },
+        "round_median_lag1": 0.21705236064918976,
+        "within_block_lag1_median": 0.5367975827917527
+      },
+      "delta_intervals": {
+        "0.5": [
+          -14.524839999999998,
+          -14.028363999999996
+        ],
+        "0.95": [
+          -18.124620999999998,
+          -14.747691999999997
+        ],
+        "0.99": [
+          -18.577426000000003,
+          -14.126193
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded",
+        "Legacy evidence lacks v2 provenance/correctness gates"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rank": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 19.7365086594,
+        "maximum_observed": 29.142301999999997,
+        "quantiles": {
+          "0.5": 19.665249,
+          "0.95": 21.006082,
+          "0.99": 22.728842
+        },
+        "round_median_lag1": 0.10224930713578426,
+        "within_block_lag1_median": 0.6138668986015012
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 6.8034864394,
+        "maximum_observed": 11.275508,
+        "quantiles": {
+          "0.5": 6.732913,
+          "0.95": 7.300758,
+          "0.99": 8.318375
+        },
+        "round_median_lag1": 0.2487665944289933,
+        "within_block_lag1_median": 0.4427396734259576
+      },
+      "delta_intervals": {
+        "0.5": [
+          -13.068157000000001,
+          -12.786120999999998
+        ],
+        "0.95": [
+          -14.141572,
+          -13.314366999999999
+        ],
+        "0.99": [
+          -15.949337,
+          -12.743286999999999
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "Legacy evidence lacks v2 provenance/correctness gates"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "table": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 17.067096154799998,
+        "maximum_observed": 27.357524,
+        "quantiles": {
+          "0.5": 16.948245,
+          "0.95": 18.031428,
+          "0.99": 19.816784000000002
+        },
+        "round_median_lag1": 0.25487464130205023,
+        "within_block_lag1_median": 0.5604022114080794
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 0.9157106422000001,
+        "maximum_observed": 2.203658,
+        "quantiles": {
+          "0.5": 0.899709,
+          "0.95": 1.061627,
+          "0.99": 1.299608
+        },
+        "round_median_lag1": 0.2749368739199433,
+        "within_block_lag1_median": 0.6616028737351896
+      },
+      "delta_intervals": {
+        "0.5": [
+          -16.134739,
+          -15.987430000000002
+        ],
+        "0.95": [
+          -17.407204,
+          -16.627565
+        ],
+        "0.99": [
+          -20.210715,
+          -17.126347
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded",
+        "Legacy evidence lacks v2 provenance/correctness gates"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    }
+  },
+  "overall_decision": "HOLD",
+  "scope": "Performance evidence; not core/library deployment approval",
+  "source_samples": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\c1\\samples.jsonl",
+  "inputs": {
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\c1\\samples.jsonl": "47178ed36787fe130c04228ad603d166046eac630510329d9e78473dc7c7df77"
+  }
+}

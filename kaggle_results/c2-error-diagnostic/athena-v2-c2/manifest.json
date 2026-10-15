@@ -1,0 +1,351 @@
+{
+  "protocol": "athena-research/2",
+  "cluster": "c2",
+  "bundle_id": "74cdfa94d6e3d337ecd46a3b97d1579649c87da8f5006a0f4f3e0b5a2d27bef3",
+  "status": "FAILED",
+  "started_at": "2026-10-15T07:25:39.832416+00:00",
+  "spec": {
+    "run_kind": "confirm",
+    "simultaneous_family_size": 54,
+    "cases": [
+      {
+        "id": "links-100",
+        "stage": "fixture",
+        "size": 100,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-100",
+        "stage": "rss",
+        "size": 100,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-500",
+        "stage": "fixture",
+        "size": 500,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-500",
+        "stage": "rss",
+        "size": 500,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-1000",
+        "stage": "fixture",
+        "size": 1000,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-1000",
+        "stage": "rss",
+        "size": 1000,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-2500",
+        "stage": "fixture",
+        "size": 2500,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-2500",
+        "stage": "rss",
+        "size": 2500,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-5000",
+        "stage": "fixture",
+        "size": 5000,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-5000",
+        "stage": "rss",
+        "size": 5000,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-10000",
+        "stage": "fixture",
+        "size": 10000,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-10000",
+        "stage": "rss",
+        "size": 10000,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      },
+      {
+        "id": "links-20000",
+        "stage": "fixture",
+        "size": 20000,
+        "rounds": 20,
+        "iterations": 250,
+        "unit": "ms",
+        "quantiles": [
+          0.5,
+          0.95,
+          0.99
+        ]
+      },
+      {
+        "id": "rss-20000",
+        "stage": "rss",
+        "size": 20000,
+        "rounds": 20,
+        "iterations": 1,
+        "unit": "KiB",
+        "quantiles": [
+          0.5
+        ]
+      }
+    ],
+    "drift_threshold": 0.5,
+    "family_alpha": 0.05,
+    "wall_budget_seconds": 5400
+  },
+  "checks": {
+    "environment": {
+      "status": "PASS",
+      "evidence": {
+        "rust_version": "1.99.0",
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "source_integrity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "73ca1c5a2e1b8cfd3fc8757b55c79026358d768a31fac8073c3627f48d137974",
+        "candidate": "e7b19fb9b148c6040532b8f57f60e99b524ceb18bff19207c98cc663d4c752de"
+      }
+    }
+  },
+  "commands": [
+    {
+      "argv": [
+        "curl",
+        "--proto",
+        "=https",
+        "--tlsv1.2",
+        "-sSf",
+        "https://sh.rustup.rs"
+      ],
+      "cwd": "None",
+      "exit_code": 0,
+      "wall_ns": 241115086,
+      "stdout_sha256": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "sh",
+        "/kaggle/working/athena-v2-c2/rustup-init.sh",
+        "-y",
+        "--profile",
+        "minimal",
+        "--default-toolchain",
+        "none"
+      ],
+      "cwd": "None",
+      "exit_code": 0,
+      "wall_ns": 491857924,
+      "stdout_sha256": "27341d26076a7995760787cd0d0fa04d7d3be8951ba8b1be93628676a5d96e3b",
+      "stderr_sha256": "6da111bef98220f47225bfcb5493c8d9ec53b1d0cdec62829adc725b07d71d94"
+    },
+    {
+      "argv": [
+        "rustup",
+        "toolchain",
+        "install",
+        "1.99.0",
+        "--profile",
+        "minimal",
+        "--component",
+        "rustfmt",
+        "--component",
+        "clippy"
+      ],
+      "cwd": "None",
+      "exit_code": 0,
+      "wall_ns": 15071343346,
+      "stdout_sha256": "a162658ac6a697e415ded8bbad66b1cdabb9f58a0d240a248fc27fbf3844a9e3",
+      "stderr_sha256": "710c895bb69f5ca89c9eb2c09a437c9e826a9647741b5be5aaa16ac3be6ab9fc"
+    },
+    {
+      "argv": [
+        "rustc",
+        "-Vv"
+      ],
+      "cwd": "None",
+      "exit_code": 0,
+      "wall_ns": 20884027,
+      "stdout_sha256": "b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "cargo",
+        "-Vv"
+      ],
+      "cwd": "None",
+      "exit_code": 0,
+      "wall_ns": 50368508,
+      "stdout_sha256": "2106ad2f6d2494210f01796652ddf5c620d7955ad5e1a4ef2b55500aee9ceab0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "snapshots": {
+    "baseline": {
+      "archive_sha256": "73ca1c5a2e1b8cfd3fc8757b55c79026358d768a31fac8073c3627f48d137974",
+      "source_files": {
+        "Cargo.lock": "3a0581ae917cff35e9297860931f0cd79171fecd1e4fac8682a08fe467cc531e",
+        "Cargo.toml": "b4ec8d0e86e46f9a5433b3d7a2c91a5382df76b150b22668cf626793d9b05850",
+        "fixtures/example.html": "011bad274fbb92d0e58a9d5f50572fe1285ae3efb6bbdbed187bf53e584f85af",
+        "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+        "src/aae.rs": "b2f8a454e084dd93b998fc60056b4399daf5eb085f28b850693448bd9f72b96d",
+        "src/arena.rs": "d122002b9d6ff79c210acdb069c60fa72fb39e95b92590a0d7d0ba3a9b304ab9",
+        "src/bandit.rs": "ede3059943f76f575dcf75269eeaf622566ebcf730b6530768f8f1b70d18f4a3",
+        "src/bin/bench_core.rs": "6784a4cd1ad27c7e4b8a6f55c06db8976045a32194f94b79d0194dbde5f2c601",
+        "src/bin/bench_html.rs": "e59bbc6d6fdcfa3059837c793a5b0a3b729a6bc61a8d6eb5b7296983caf92cfe",
+        "src/ip_policy.rs": "3ea7093a1599079dcd2c21692c3d0be59903a733c21c51ed3b16454ed6907a88",
+        "src/lib.rs": "ae67ed6000937f0ac63aab2f7a89a171546bf536b32f9851a5ed6a669784a239",
+        "src/main.rs": "8ade7bd707d6be75c7f8fe84142bdf90ed6c443e4524942715ca911d5d658d95",
+        "src/network.rs": "a210a3a4156f29e8dfba8bb9adcb4703940be42d6fa2e6246155a385897be0c4",
+        "src/orchestrator.rs": "471874429472cc230cb846000794ea8abc2b54d00788f467aee5575219207e56",
+        "src/projection.rs": "668de597252e1e5144d7069c051131beed23776122e9353c4c3132a66598d482",
+        "src/rank.rs": "aca437cfccfe1dd9e9f6f58faf2061ffaf1ffd693b707fa9d5d18401807216fa",
+        "src/singleflight.rs": "31423d5667e31ea5f8ab010870373d2fda6f76e1e9332f7fb8ada92dbc593321",
+        "src/table.rs": "010e32dd6ff2645964c2a049f772fd06372b3848e1c1508c37e4c42902394561",
+        "tests/integration.rs": "89c934a8a5658e914e8e0a752b8b1b35679c79402e495e717802afcef56090b3"
+      },
+      "injected_probe_sha256": "09c4afa8476fad7687e2ec8f319320533329354c7cafb85068852e75770ac967"
+    },
+    "candidate": {
+      "archive_sha256": "e7b19fb9b148c6040532b8f57f60e99b524ceb18bff19207c98cc663d4c752de",
+      "source_files": {
+        "Cargo.lock": "3a0581ae917cff35e9297860931f0cd79171fecd1e4fac8682a08fe467cc531e",
+        "Cargo.toml": "b4ec8d0e86e46f9a5433b3d7a2c91a5382df76b150b22668cf626793d9b05850",
+        "fixtures/example.html": "95d20b47c0dc8acd8f45e41b88a0d1bf4c40d64fc0792712035a4b9d2f10aad8",
+        "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+        "src/aae.rs": "06c2738ca7b0dda779925cd571b0b11d43b1c6f7d9ca0552b9f43cd7dc8bbd3e",
+        "src/arena.rs": "3ac828bf5626b2a9b5c77415d1a1966638c02a6187f451d48b4abf4d8b791311",
+        "src/bandit.rs": "8ea1993b585516ca0c557c99c2303e346283237b08fca6377a014891c9f22070",
+        "src/bin/bench_core.rs": "6784a4cd1ad27c7e4b8a6f55c06db8976045a32194f94b79d0194dbde5f2c601",
+        "src/bin/bench_html.rs": "7d7ac0a6fa6edf61d908ec69415262ecba7734a52425a76a9dc79bbbfaed6199",
+        "src/ip_policy.rs": "b59e0a9c44bce3b57163f85aa70597db5737def41dee88a656ad132b5e518bbd",
+        "src/lib.rs": "5cd6142e2e52e7418c1cb0c4b06133776ebba96ae7ec1a37bc7047242e62fe5c",
+        "src/main.rs": "92d4288b755237fb35e827ad916afba2e589d3ec085818ff23503576309f50fe",
+        "src/network.rs": "901f6d43178aabd3df558e17a44c7d2dae5a2635135dfe3c5686212aab0bdf51",
+        "src/orchestrator.rs": "92349f0a2ce18583e6b4c7c3a7d4fef27510e5b8bbfe3a0083428e5c1e505671",
+        "src/projection.rs": "e99e6fc306c933bf4b23c915aa66916599518f4e72d1b7bfa2cd50cb3f688e6f",
+        "src/rank.rs": "32dd5ce781576ca851152a556237cfb8f42209536f7cb169207119294425ca3d",
+        "src/singleflight.rs": "9306d282eb2620910f0ce19965e42e330213550e2cf4c57809b0b2c106c645ce",
+        "src/table.rs": "02b72d4bf35a87fb6b2ad664030de06d13ff275f181e235d75e32e316f9526b9",
+        "tests/integration.rs": "0cdcbb55de9da11b0026a1d8dc9515a66041d06b5ec7e5c05edb49608c91646c"
+      },
+      "injected_probe_sha256": "09c4afa8476fad7687e2ec8f319320533329354c7cafb85068852e75770ac967"
+    }
+  },
+  "artifacts": {
+    "rustup-init.sh": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af",
+    "samples.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "run.log": "bffc367f2d88248ca8088a213bfaeb40db3ce3c0fcb8aabedffcbc2a24303aa0"
+  },
+  "environment": {
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)\nrelease: 1.99.0\ncommit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e\ncommit-date: 2026-08-27\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.6 (sys:0.21.0 vendored)\nlibcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)\nssl: OpenSSL 3.6.3 9 Jun 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]\n",
+    "python": "3.13.15 (main, Aug  6 2026, 11:06:22) [GCC 13.3.0]",
+    "platform": "Linux-6.18.48+-x86_64-with-glibc2.39",
+    "cpu_count": 4,
+    "cpu_model_flags": "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 79\nmodel name\t: Intel(R) Xeon(R) CPU @ 2.20GHz\nstepping\t: 0\nmicrocode\t: 0xffffffff\ncpu MHz\t\t: 2199.998\ncache size\t: 56320 KB\nphysical id\t: 0\nsiblings\t: 4\ncore id\t\t: 0\ncpu cores\t: 2\napicid\t\t: 0\ninitial apicid\t: 0\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 13\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm rdseed adx smap xsaveopt arat md_clear arch_capabilities\nbugs\t\t: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs taa mmio_stale_data retbleed bhi spectre_v2_user its\nbogomips\t: 4399.99\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 46 bits physical, 48 bits virtual\npower management:\n\nprocessor\t: 1\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 79\nmodel name\t: Intel(R) Xeon(R) CPU @ 2.20GHz\nstepping\t: 0\nmicrocode\t: 0xffffffff\ncpu MHz\t\t: 2199.998\ncache size\t: 56320 KB\nphysical id\t: 0\nsiblings\t: 4\ncore id\t\t: 1\ncpu cores\t: 2\napicid\t\t: 2\ninitial apicid\t: 2\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 13\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm rdseed adx smap xsaveopt arat md_clear arch_capabilities\nbugs\t\t: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs taa mmio_stale_data retbleed bhi spectre_v2_user its\nbogomips\t: 4399.99\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 46 bits physical, 48 bits virtual\npower management:\n\nprocessor\t: 2\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 79\nmodel name\t: Intel(R) Xeon(R) CPU @ 2.20GHz\nstepping\t: 0\nmicrocode\t: 0xffffffff\ncpu MHz\t\t: 2199.998\ncache size\t: 56320 KB\nphysical id\t: 0\nsiblings\t: 4\ncore id\t\t: 0\ncpu cores\t: 2\napicid\t\t: 1\ninitial apicid\t: 1\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 13\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm rdseed adx smap xsaveopt arat md_clear arch_capabilities\nbugs\t\t: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs taa mmio_stale_data retbleed bhi spectre_v2_user its\nbogomips\t: 4399.99\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 46 bits physical, 48 bits virtual\npower management:\n\nprocessor\t: 3\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: 79\nmodel name\t: Intel(R) Xeon(R) CPU @ 2.20GHz\nstepping\t: 0\nmicrocode\t: 0xffffffff\ncpu MHz\t\t: 2199.998\ncache size\t: 56320 KB\nphysical id\t: 0\nsiblings\t: 4\ncore id\t\t: 1\ncpu cores\t: 2\napicid\t\t: 3\ninitial apicid\t: 3\nfpu\t\t: yes\nfpu_exception\t: yes\ncpuid level\t: 13\nwp\t\t: yes\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch pti ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 hle avx2 smep bmi2 erms invpcid rtm rdseed adx smap xsaveopt arat md_clear arch_capabilities\nbugs\t\t: cpu_meltdown spectre_v1 spectre_v2 spec_store_bypass l1tf mds swapgs taa mmio_stale_data retbleed bhi spectre_v2_user its\nbogomips\t: 4399.99\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 46 bits physical, 48 bits virtual\npower management:\n\n",
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "rustflags": "",
+    "image": "gcr.io/kaggle-images/python@sha256:81b1e7c4b4f0f2a7e0a33943c95754b1b7af6b30d65221633a284b6b601cd84a",
+    "cpu.max": "400000 100000",
+    "memory.max": "32212254720"
+  },
+  "finished_at": "2026-10-15T07:25:55.743015+00:00",
+  "error": "FileNotFoundError(2, 'No such file or directory')"
+}

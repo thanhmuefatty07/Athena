@@ -1,0 +1,8 @@
+[{"stream_name":"stdout","time":1150.302464179,"data":"Saved raw evidence: /kaggle/working/athena-v2-c1 ; no automatic core/library approval\n"}
+,{"stream_name":"stderr","time":1153.955064504,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":1153.955109865,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":1154.625296762,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":1154.625336501,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":1157.591192565,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":1159.585355002,"data":"[NbConvertApp] Writing 682585 bytes to __results__.html\n"}
+]

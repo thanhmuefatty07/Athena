@@ -2,6 +2,8 @@
 
 Ngày: 15/10/2026. Trạng thái: **kế hoạch nghiên cứu; chưa chốt triển khai**.
 
+**Cập nhật phạm vi được giao:** người dùng đã cho phép sửa bộ công cụ nghiên cứu/test và kiểm tra chức năng local; người dùng tự chạy benchmark Kaggle. [Hướng dẫn protocol v2](kaggle_experiments/README.md) mô tả các script đã chuẩn bị, ba cụm, oracle, provenance, cách chạy/tải/phân tích và giới hạn coverage R1–R9. Chưa cho phép chuyển các candidate thành thay đổi production core chỉ vì harness đã chạy được. Dữ liệu Kaggle cũ giữ nguyên là legacy.
+
 ## 1. Phạm vi và thứ tự quyết định
 
 Vai trò của tài liệu này là giao việc nghiên cứu, so sánh và kiểm chứng cho agent khác. Thứ tự bắt buộc: **xác định hợp đồng → nghiên cứu thư viện/phương án → thu bằng chứng → quyết định → triển khai thay đổi được chọn**. Không dùng kế hoạch như lệnh viết lại toàn bộ dự án.
@@ -168,7 +170,7 @@ Không tắt public-IP guard hoặc certificate verification của production đ
 5. Peak RSS đo mỗi case trong process mới, cùng input/setup. Ghi rõ RSS bao gồm process/setup/workspace; không dùng cumulative high-water mark nhiều stage để giả làm peak riêng từng stage. Allocations đo riêng khi instrument có thể làm đổi timing.
 6. Screening dùng workload nhỏ để loại phương án sai hoặc quá tốn; không gọi screening là acceptance. Confirmation trên các finalist và đường quan trọng: mặc định thiết kế 20 paired blocks × 250 samples/nhánh/cohort = 5.000 samples. Budget không đủ thì giảm phạm vi công bố hoặc HOLD, không tự hạ gate rồi PASS.
 7. Báo p50/p95/p99 theo cohort và sample count. Với n=20, xác suất thấy ít nhất một sample vượt population p99 chỉ khoảng 1−0.99²⁰≈18,2% nếu iid; không đủ chốt tail. 5.000 samples cũng không tự bảo đảm precision hoặc independence trên VM; cần kiểm tra drift/autocorrelation từ raw data.
-8. Tính CI trên paired blocks, giữ cấu trúc workload; không coi mọi iteration tương quan là sample độc lập. Phương án mặc định: paired cluster bootstrap, resample nguyên cặp round baseline/candidate, 10.000 bootstrap draws với seed ghi trước; tính lại delta quantile trên samples cùng cohort. Family gồm M metrics/cases chốt trước, dùng one-sided mức α=0,05/M (Bonferroni). Giữ round/time order để kiểm drift. CI bootstrap là xấp xỉ có giả định; VM drift hoặc quá ít independent blocks → HOLD. Lưu estimator/seed/method để reviewer tính lại.
+8. Tính CI trên paired blocks, giữ cấu trúc workload; không coi mọi iteration tương quan là sample độc lập. Protocol v2 dùng paired-cluster bootstrap, resample nguyên cặp round baseline/candidate, **30.000 draws, seed 42**; tính lại delta quantile trên samples cùng cohort. Family gồm **54 intervals toàn bộ ba cụm**, hai phía với α=0,05 và Bonferroni α/(2M) cho mỗi đuôi; không đếm riêng 5 stages trong khi công bố 15 intervals. Giữ round/time order để kiểm drift. CI bootstrap là xấp xỉ có giả định; Bonferroni không sửa được interval thiếu coverage. VM drift hoặc quá ít independent blocks → HOLD. RSS/RNG chỉ công bố median block/process và maximum quan sát khi phù hợp, không bịa p99 từ 20 phép đo. Lưu estimator/seed/method để reviewer tính lại.
 9. Muốn claim không hồi quy: mặc định tolerance ε=0 theo yêu cầu. Với metric chi phí/latency/memory, bound trên của delta candidate−baseline phải không dương trong phạm vi thống kê được nêu, hoặc có bounded proof thích hợp. Không tự cho phép hồi quy 3–5%. CI rộng hoặc straddles 0 → **HOLD**, không suy “không significant” thành tương đương.
 10. Báo cả failure rate, budget rejections và lượng nội dung trả đúng. Candidate trả ít nội dung, thất bại sớm hoặc bỏ validation không được ghi là nhanh hơn cho cùng nhiệm vụ. Không khẳng định optimum/no-tradeoff toàn cục từ hữu hạn workloads.
 
@@ -194,4 +196,4 @@ Agent reviewer chốt từng nhóm theo thứ tự:
 
 Kaggle Notebook slug/image/CPU quota, credential validity, Linux evidence, raw timing protocol, parser RSS và nhánh nâng RNG chưa được xác minh. Parser mới, pooled transport, top-K, neural rerank và feature trimming là hướng nghiên cứu có rival/gate; chưa là quyết định triển khai. Security scan đang là draft và bằng chứng source riêng; không thay kết quả Kaggle và không được diễn giải thành chứng nhận an toàn tuyệt đối.
 
-Vòng tiếp theo của agent được giao bắt đầu từ **inventory + experiment spec**, rồi correctness, rồi đo. Người lập kế hoạch chỉ cập nhật hướng và quyết định từ bằng chứng trả về; không tự phát sinh thêm implementation/test trong giai đoạn này.
+Vòng tiếp theo: người dùng chạy các cụm protocol v2, giữ nguyên artifacts và trả bằng chứng; agent phân tích candidate theo từng phạm vi rồi mới chốt core/dependency. Việc sửa harness được phép không mở rộng thành migration core hoặc tự khởi chạy Kaggle.

@@ -1,0 +1,586 @@
+{
+  "protocol": "athena-research/2",
+  "family_size": 54,
+  "reported_intervals": 18,
+  "family_alpha": 0.05,
+  "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
+  "quantile_method": "nearest, Python round ties to even",
+  "bootstrap_draws": 30000,
+  "seed": 42,
+  "legacy_input": false,
+  "cases": {
+    "export": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 24.7428656956,
+        "maximum_observed": 43.165003,
+        "quantiles": {
+          "0.5": 24.606238,
+          "0.95": 27.776145,
+          "0.99": 30.012586
+        },
+        "round_median_lag1": -0.25753731412551545,
+        "within_block_lag1_median": 0.687143978193445
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 10.634144148599999,
+        "maximum_observed": 19.235472,
+        "quantiles": {
+          "0.5": 10.466012,
+          "0.95": 12.040767,
+          "0.99": 13.373494
+        },
+        "round_median_lag1": -0.09477752463301788,
+        "within_block_lag1_median": 0.7418497239287337
+      },
+      "delta_intervals": {
+        "0.5": [
+          -14.345794999999999,
+          -13.843526
+        ],
+        "0.95": [
+          -16.043689999999998,
+          -15.465839000000003
+        ],
+        "0.99": [
+          -19.715882999999998,
+          -14.193538
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "parse": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 9.270731732,
+        "maximum_observed": 17.348937,
+        "quantiles": {
+          "0.5": 9.269547,
+          "0.95": 11.033679,
+          "0.99": 11.742978
+        },
+        "round_median_lag1": -0.020666915447259914,
+        "within_block_lag1_median": 0.6522094168245385
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 9.224330424,
+        "maximum_observed": 17.224719,
+        "quantiles": {
+          "0.5": 9.030662,
+          "0.95": 10.540799,
+          "0.99": 12.996601
+        },
+        "round_median_lag1": 0.20318848867788225,
+        "within_block_lag1_median": 0.7116417901769823
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.6411599999999993,
+          0.38878700000000066
+        ],
+        "0.95": [
+          -0.8153470000000009,
+          0.2301750000000009
+        ],
+        "0.99": [
+          -0.23240700000000025,
+          2.4582870000000003
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "pipeline": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 33.093574051,
+        "maximum_observed": 52.762511,
+        "quantiles": {
+          "0.5": 32.736713,
+          "0.95": 37.183063,
+          "0.99": 39.761498
+        },
+        "round_median_lag1": 0.11947578672997952,
+        "within_block_lag1_median": 0.6361883836429741
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 18.0262030988,
+        "maximum_observed": 34.48763,
+        "quantiles": {
+          "0.5": 17.806708,
+          "0.95": 20.415751,
+          "0.99": 22.219776
+        },
+        "round_median_lag1": 0.2368016615245637,
+        "within_block_lag1_median": 0.7201978788079494
+      },
+      "delta_intervals": {
+        "0.5": [
+          -15.526346,
+          -14.58802
+        ],
+        "0.95": [
+          -17.491607999999996,
+          -16.094468
+        ],
+        "0.99": [
+          -19.614099,
+          -15.356113
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "pipeline_no_query": {
+      "decision": "REJECT",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 12.3051704102,
+        "maximum_observed": 22.967635,
+        "quantiles": {
+          "0.5": 12.097629,
+          "0.95": 14.053645,
+          "0.99": 15.468615
+        },
+        "round_median_lag1": 0.17863301699929082,
+        "within_block_lag1_median": 0.7084362618839771
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 12.856997681000001,
+        "maximum_observed": 23.196542,
+        "quantiles": {
+          "0.5": 12.664806,
+          "0.95": 14.624566,
+          "0.99": 16.112751
+        },
+        "round_median_lag1": 0.11739127810534354,
+        "within_block_lag1_median": 0.712107447269536
+      },
+      "delta_intervals": {
+        "0.5": [
+          0.21546500000000002,
+          0.762557000000001
+        ],
+        "0.95": [
+          -0.08928900000000084,
+          0.8811170000000015
+        ],
+        "0.99": [
+          -1.1769039999999986,
+          3.1612529999999985
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rank": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 21.4992180606,
+        "maximum_observed": 35.605327,
+        "quantiles": {
+          "0.5": 21.248726,
+          "0.95": 24.139838,
+          "0.99": 27.572897
+        },
+        "round_median_lag1": 0.29377942548408315,
+        "within_block_lag1_median": 0.6468930916503975
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 7.4985722658,
+        "maximum_observed": 16.875332,
+        "quantiles": {
+          "0.5": 7.300241,
+          "0.95": 8.584504,
+          "0.99": 10.571595
+        },
+        "round_median_lag1": 0.11597072513397774,
+        "within_block_lag1_median": 0.6531546040642741
+      },
+      "delta_intervals": {
+        "0.5": [
+          -14.124376,
+          -13.669899000000001
+        ],
+        "0.95": [
+          -15.877276000000002,
+          -14.858365000000001
+        ],
+        "0.99": [
+          -20.374948000000003,
+          -14.410008
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "table": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 8.009718701399999,
+        "maximum_observed": 17.809093,
+        "quantiles": {
+          "0.5": 7.872925,
+          "0.95": 9.155586,
+          "0.99": 10.898402
+        },
+        "round_median_lag1": -0.24807603964705885,
+        "within_block_lag1_median": 0.6407832297394105
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 0.75840328,
+        "maximum_observed": 2.683389,
+        "quantiles": {
+          "0.5": 0.73232,
+          "0.95": 0.91897,
+          "0.99": 1.413642
+        },
+        "round_median_lag1": -0.18946364855639639,
+        "within_block_lag1_median": 0.45759420177263277
+      },
+      "delta_intervals": {
+        "0.5": [
+          -7.217377,
+          -7.036984
+        ],
+        "0.95": [
+          -8.496562,
+          -7.798911
+        ],
+        "0.99": [
+          -11.452239,
+          -8.040237
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded"
+      ],
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    }
+  },
+  "overall_decision": "HOLD",
+  "scope": "Performance evidence; not core/library deployment approval",
+  "source_samples": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v2-run-001\\c1\\athena-v2-c1\\samples.jsonl",
+  "inputs": {
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v2-run-001\\c1\\athena-v2-c1\\samples.jsonl": "26e9cd6072c21643db92d4d17c2807dd843e1d7e816dfad52a77dcad2cd3c3c4",
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v2-run-001\\c1\\athena-v2-c1\\manifest.json": "a21653e32686c553437d9dcb0cde4d88ef6b719d28cc4b307d04594a35a5fc26"
+  },
+  "source_manifest": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v2-run-001\\c1\\athena-v2-c1\\manifest.json",
+  "bundle_id": "74cdfa94d6e3d337ecd46a3b97d1579649c87da8f5006a0f4f3e0b5a2d27bef3",
+  "cluster": "c1",
+  "checks": {
+    "environment": {
+      "status": "PASS",
+      "evidence": {
+        "rust_version": "1.99.0",
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "source_integrity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "73ca1c5a2e1b8cfd3fc8757b55c79026358d768a31fac8073c3627f48d137974",
+        "candidate": "e7b19fb9b148c6040532b8f57f60e99b524ceb18bff19207c98cc663d4c752de"
+      }
+    },
+    "build_baseline": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "a3c01b9bb9be2b8e26da8a0d0346290b86dc64281c7dd59593dc9a8cac9cd2f7",
+        "bench_core": "1de7712e09ec202ee55f06cfad1a8d2305338cfd773af995bd4edbd72edba0f0",
+        "research_probe": "b11b429141bb2c3fd2411ad55637d4ebb3647811156fd2a88a1f51447ac127e6"
+      }
+    },
+    "build_candidate": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "6c1cc6bbd8bbca5100408983324169adcc50a0813fc4671b239119d51617c137",
+        "bench_core": "ec797e128d2b78496c391bb2f411c47ba1eaca65d6b467f2b47243dbe9ac1a3a",
+        "research_probe": "aa8d825e07b81b5179162d65e6c6cf88cbffbacfe98dc36805faf249bc18a96f"
+      }
+    },
+    "locked_builds": {
+      "status": "PASS"
+    },
+    "content_baseline": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+      }
+    },
+    "probe_baseline": {
+      "status": "PASS",
+      "evidence": {
+        "bm25_queries": 4,
+        "table_oracles": 4
+      }
+    },
+    "content_candidate": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+      }
+    },
+    "probe_candidate": {
+      "status": "PASS",
+      "evidence": {
+        "bm25_queries": 4,
+        "table_oracles": 4
+      }
+    },
+    "candidate_preformatted": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e",
+        "preformatted": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "variant_identity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "4d36f48ef8e73f323a85180506944f1f3e64eb28e2c95871d7229682f96d2b8c",
+        "candidate": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "byte_parity": {
+      "status": "PASS",
+      "evidence": [
+        {
+          "fixture": "example.html",
+          "query": null,
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "tokio runtime",
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "H100 pricing",
+          "sha256": "07f0778d69a15fb16e2b5b4a0fa45e29ea6837d14e97203466af3010d6fc4b8e"
+        },
+        {
+          "fixture": "entities.html",
+          "query": null,
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "tokio runtime",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "H100 pricing",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "framing.html",
+          "query": null,
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "tokio runtime",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "H100 pricing",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": null,
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "tokio runtime",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "H100 pricing",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": null,
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "tokio runtime",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "H100 pricing",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "links.html",
+          "query": null,
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "tokio runtime",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "H100 pricing",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": null,
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "tokio runtime",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "H100 pricing",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": null,
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "tokio runtime",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "H100 pricing",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": null,
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "tokio runtime",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "H100 pricing",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        }
+      ]
+    }
+  },
+  "coverage": {}
+}

@@ -1,0 +1,455 @@
+{
+  "bundle_id": "74cdfa94d6e3d337ecd46a3b97d1579649c87da8f5006a0f4f3e0b5a2d27bef3",
+  "metadata": {
+    "protocol": "athena-research/2",
+    "baseline_commit": "8de5709e6c47fd57713ca821131579b2e8c25a36",
+    "candidate_commit": "3d3b884fdea33b8d946c6c2b648985939352c318",
+    "comparison": "source-only; identical dependency graph, toolchain, release profile and benchmark harness",
+    "baseline_controls": {
+      "Cargo.toml": {
+        "original_sha256": "63f8092cf9aec48f49b0e626b0d2a137186764b5a0912fc7d11f7377d6a196e5",
+        "controlled_sha256": "b4ec8d0e86e46f9a5433b3d7a2c91a5382df76b150b22668cf626793d9b05850"
+      },
+      "Cargo.lock": {
+        "original_sha256": "2b67d326a650fee6768f32cfc2b3415631dc1b4c412a12912ff05c34e6107879",
+        "controlled_sha256": "3a0581ae917cff35e9297860931f0cd79171fecd1e4fac8682a08fe467cc531e"
+      },
+      "rust-toolchain.toml": {
+        "original_sha256": "80bc888cdb3b0ee3f62db10a3f092c3d99c80fc1612ab1e2490a2466f69b853a",
+        "controlled_sha256": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228"
+      },
+      "src/bin/bench_core.rs": {
+        "original_sha256": null,
+        "controlled_sha256": "6784a4cd1ad27c7e4b8a6f55c06db8976045a32194f94b79d0194dbde5f2c601"
+      }
+    },
+    "baseline_tar_bytes": 33982,
+    "baseline_tar_sha256": "73ca1c5a2e1b8cfd3fc8757b55c79026358d768a31fac8073c3627f48d137974",
+    "baseline_files": {
+      "Cargo.lock": "3a0581ae917cff35e9297860931f0cd79171fecd1e4fac8682a08fe467cc531e",
+      "Cargo.toml": "b4ec8d0e86e46f9a5433b3d7a2c91a5382df76b150b22668cf626793d9b05850",
+      "fixtures/example.html": "011bad274fbb92d0e58a9d5f50572fe1285ae3efb6bbdbed187bf53e584f85af",
+      "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+      "src/aae.rs": "b2f8a454e084dd93b998fc60056b4399daf5eb085f28b850693448bd9f72b96d",
+      "src/arena.rs": "d122002b9d6ff79c210acdb069c60fa72fb39e95b92590a0d7d0ba3a9b304ab9",
+      "src/bandit.rs": "ede3059943f76f575dcf75269eeaf622566ebcf730b6530768f8f1b70d18f4a3",
+      "src/bin/bench_core.rs": "6784a4cd1ad27c7e4b8a6f55c06db8976045a32194f94b79d0194dbde5f2c601",
+      "src/bin/bench_html.rs": "e59bbc6d6fdcfa3059837c793a5b0a3b729a6bc61a8d6eb5b7296983caf92cfe",
+      "src/ip_policy.rs": "3ea7093a1599079dcd2c21692c3d0be59903a733c21c51ed3b16454ed6907a88",
+      "src/lib.rs": "ae67ed6000937f0ac63aab2f7a89a171546bf536b32f9851a5ed6a669784a239",
+      "src/main.rs": "8ade7bd707d6be75c7f8fe84142bdf90ed6c443e4524942715ca911d5d658d95",
+      "src/network.rs": "a210a3a4156f29e8dfba8bb9adcb4703940be42d6fa2e6246155a385897be0c4",
+      "src/orchestrator.rs": "471874429472cc230cb846000794ea8abc2b54d00788f467aee5575219207e56",
+      "src/projection.rs": "668de597252e1e5144d7069c051131beed23776122e9353c4c3132a66598d482",
+      "src/rank.rs": "aca437cfccfe1dd9e9f6f58faf2061ffaf1ffd693b707fa9d5d18401807216fa",
+      "src/singleflight.rs": "31423d5667e31ea5f8ab010870373d2fda6f76e1e9332f7fb8ada92dbc593321",
+      "src/table.rs": "010e32dd6ff2645964c2a049f772fd06372b3848e1c1508c37e4c42902394561",
+      "tests/integration.rs": "89c934a8a5658e914e8e0a752b8b1b35679c79402e495e717802afcef56090b3"
+    },
+    "candidate_tar_bytes": 39593,
+    "candidate_tar_sha256": "e7b19fb9b148c6040532b8f57f60e99b524ceb18bff19207c98cc663d4c752de",
+    "candidate_files": {
+      "Cargo.lock": "3a0581ae917cff35e9297860931f0cd79171fecd1e4fac8682a08fe467cc531e",
+      "Cargo.toml": "b4ec8d0e86e46f9a5433b3d7a2c91a5382df76b150b22668cf626793d9b05850",
+      "fixtures/example.html": "95d20b47c0dc8acd8f45e41b88a0d1bf4c40d64fc0792712035a4b9d2f10aad8",
+      "rust-toolchain.toml": "2ad6f15416572b4836585087f1d4abc53b8fa2dbd616f8dacfaa587ed6714228",
+      "src/aae.rs": "06c2738ca7b0dda779925cd571b0b11d43b1c6f7d9ca0552b9f43cd7dc8bbd3e",
+      "src/arena.rs": "3ac828bf5626b2a9b5c77415d1a1966638c02a6187f451d48b4abf4d8b791311",
+      "src/bandit.rs": "8ea1993b585516ca0c557c99c2303e346283237b08fca6377a014891c9f22070",
+      "src/bin/bench_core.rs": "6784a4cd1ad27c7e4b8a6f55c06db8976045a32194f94b79d0194dbde5f2c601",
+      "src/bin/bench_html.rs": "7d7ac0a6fa6edf61d908ec69415262ecba7734a52425a76a9dc79bbbfaed6199",
+      "src/ip_policy.rs": "b59e0a9c44bce3b57163f85aa70597db5737def41dee88a656ad132b5e518bbd",
+      "src/lib.rs": "5cd6142e2e52e7418c1cb0c4b06133776ebba96ae7ec1a37bc7047242e62fe5c",
+      "src/main.rs": "92d4288b755237fb35e827ad916afba2e589d3ec085818ff23503576309f50fe",
+      "src/network.rs": "901f6d43178aabd3df558e17a44c7d2dae5a2635135dfe3c5686212aab0bdf51",
+      "src/orchestrator.rs": "92349f0a2ce18583e6b4c7c3a7d4fef27510e5b8bbfe3a0083428e5c1e505671",
+      "src/projection.rs": "e99e6fc306c933bf4b23c915aa66916599518f4e72d1b7bfa2cd50cb3f688e6f",
+      "src/rank.rs": "32dd5ce781576ca851152a556237cfb8f42209536f7cb169207119294425ca3d",
+      "src/singleflight.rs": "9306d282eb2620910f0ce19965e42e330213550e2cf4c57809b0b2c106c645ce",
+      "src/table.rs": "02b72d4bf35a87fb6b2ad664030de06d13ff275f181e235d75e32e316f9526b9",
+      "tests/integration.rs": "0cdcbb55de9da11b0026a1d8dc9515a66041d06b5ec7e5c05edb49608c91646c"
+    }
+  },
+  "specifications": {
+    "c1": {
+      "run_kind": "confirm",
+      "simultaneous_family_size": 54,
+      "cases": [
+        {
+          "id": "rank",
+          "stage": "rank",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "table",
+          "stage": "table",
+          "size": 5000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "parse",
+          "stage": "parse",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "export",
+          "stage": "export",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "pipeline",
+          "stage": "pipeline",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "pipeline_no_query",
+          "stage": "pipeline_no_query",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        }
+      ],
+      "drift_threshold": 0.5,
+      "family_alpha": 0.05,
+      "wall_budget_seconds": 5400
+    },
+    "c2": {
+      "run_kind": "confirm",
+      "simultaneous_family_size": 54,
+      "cases": [
+        {
+          "id": "links-100",
+          "stage": "fixture",
+          "size": 100,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-100",
+          "stage": "rss",
+          "size": 100,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-500",
+          "stage": "fixture",
+          "size": 500,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-500",
+          "stage": "rss",
+          "size": 500,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-1000",
+          "stage": "fixture",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-1000",
+          "stage": "rss",
+          "size": 1000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-2500",
+          "stage": "fixture",
+          "size": 2500,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-2500",
+          "stage": "rss",
+          "size": 2500,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-5000",
+          "stage": "fixture",
+          "size": 5000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-5000",
+          "stage": "rss",
+          "size": 5000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-10000",
+          "stage": "fixture",
+          "size": 10000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-10000",
+          "stage": "rss",
+          "size": 10000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        },
+        {
+          "id": "links-20000",
+          "stage": "fixture",
+          "size": 20000,
+          "rounds": 20,
+          "iterations": 250,
+          "unit": "ms",
+          "quantiles": [
+            0.5,
+            0.95,
+            0.99
+          ]
+        },
+        {
+          "id": "rss-20000",
+          "stage": "rss",
+          "size": 20000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "KiB",
+          "quantiles": [
+            0.5
+          ]
+        }
+      ],
+      "drift_threshold": 0.5,
+      "family_alpha": 0.05,
+      "wall_budget_seconds": 5400
+    },
+    "c3": {
+      "run_kind": "confirm",
+      "simultaneous_family_size": 54,
+      "cases": [
+        {
+          "id": "rng-1-1",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 1,
+          "beta": 1
+        },
+        {
+          "id": "rng-2-5",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 2,
+          "beta": 5
+        },
+        {
+          "id": "rng-5-2",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 5,
+          "beta": 2
+        },
+        {
+          "id": "rng-0.5-0.5",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 0.5,
+          "beta": 0.5
+        },
+        {
+          "id": "rng-1000-1000",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 1000,
+          "beta": 1000
+        },
+        {
+          "id": "rng-1-100",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 1,
+          "beta": 100
+        },
+        {
+          "id": "rng-100-1",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 100,
+          "beta": 1
+        },
+        {
+          "id": "rng-1000000-1000000",
+          "stage": "rng",
+          "size": 100000,
+          "rounds": 20,
+          "iterations": 1,
+          "unit": "ns/draw",
+          "quantiles": [
+            0.5
+          ],
+          "alpha": 1000000,
+          "beta": 1000000
+        }
+      ],
+      "drift_threshold": 0.5,
+      "family_alpha": 0.05,
+      "wall_budget_seconds": 5400
+    }
+  },
+  "protocol_sha256": "d7d8051883b59323fd8d23df4a37f3a79a420db05a4359ab4fc5d49a766f15bb",
+  "runner_sha256": "f4ee3ac775ee46541c8e2b7c4575333a3ca618de0c0447fbc09f26f335342d8c",
+  "probe_sha256": "09c4afa8476fad7687e2ec8f319320533329354c7cafb85068852e75770ac967"
+}

@@ -1,146 +1,107 @@
-"""Independent statistical audit and synthesis of Kaggle empirical benchmark results.
-Reads raw samples from c1, c2, c3, re-runs paired cluster bootstrap, checks drift and autocorrelation.
-"""
-import math
+"""Analyze saved evidence only. Never starts a benchmark or rewrites historical data."""
+import argparse
 import json
-import random
 from pathlib import Path
+
+from kaggle_experiments.protocol import (
+    PROTOCOL_VERSION, analyze_measurements, is_digest, load_measurements, quantile, sha256_file,
+)
 
 ROOT = Path(__file__).resolve().parent
 
-def quantile(arr, q):
-    if not arr:
-        return 0.0
-    s = sorted(arr)
-    idx = int(round(q * (len(s) - 1)))
-    return s[idx]
 
-def lag1_autocorrelation(series):
-    if len(series) < 3:
-        return 0.0
-    mean = sum(series) / len(series)
-    denom = sum((x - mean) ** 2 for x in series)
-    if denom == 0:
-        return 0.0
-    numer = sum((series[i] - mean) * (series[i+1] - mean) for i in range(len(series) - 1))
-    return numer / denom
+def combine_reports(paths):
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    if (len(reports) != 3 or {report.get("cluster") for report in reports} != {"c1", "c2", "c3"}
+            or any(report.get("protocol") != PROTOCOL_VERSION or report.get("legacy_input")
+                   or not is_digest(report.get("bundle_id")) or not report.get("cases")
+                   for report in reports)
+            or len({report.get("bundle_id") for report in reports}) != 1):
+        raise ValueError("Combine requires c1/c2/c3 v2 reports from one exact bundle")
+    for report in reports:
+        inputs = report.get("inputs", {})
+        if not inputs or any(not is_digest(digest) or not Path(path).is_file()
+                             or sha256_file(path) != digest for path, digest in inputs.items()):
+            raise ValueError("Analysis inputs are missing or changed")
+        manifest_path, samples_path = report.get("source_manifest"), report.get("source_samples")
+        if manifest_path not in inputs or samples_path not in inputs:
+            raise ValueError("Missing raw/manifest analysis input identity")
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        cases = load_measurements(samples_path, manifest)
+        if (manifest["bundle_id"] != report["bundle_id"] or manifest["cluster"] != report["cluster"]
+                or manifest["spec"]["run_kind"] != "confirm"
+                or report.get("family_size") != manifest["spec"]["simultaneous_family_size"]
+                or set(cases) != set(report["cases"])):
+            raise ValueError("Analysis does not cover its complete confirmatory experiment")
+        for case_id, case in cases.items():
+            result = report["cases"][case_id]
+            expected_count = case["spec"]["rounds"] * case["spec"]["iterations"]
+            if (set(result.get("delta_intervals", {})) != {str(q) for q in case["quantiles"]}
+                    or any(result.get(arm, {}).get("samples") != expected_count
+                           for arm in ("baseline", "candidate"))):
+                raise ValueError("Analysis omitted measurements or quantiles")
+    by_cluster = {report["cluster"]: report for report in reports}
+    def scoped_decision(clusters):
+        decisions = [case["decision"] for cluster in clusters
+                     for case in by_cluster[cluster]["cases"].values()]
+        if "REJECT" in decisions:
+            return "REJECT"
+        return "READY_FOR_SCOPED_REVIEW" if all(value == "PASS_PERFORMANCE" for value in decisions) else "HOLD"
 
-def main():
-    samples_file = ROOT / "c1" / "samples.jsonl"
-    print("Loading raw samples from:", samples_file)
-    
-    data = {}
-    with open(samples_file, "r", encoding="utf-8") as f:
-        for line in f:
-            rec = json.loads(line)
-            st = rec["stage"]
-            r = rec["round"]
-            cand = rec["candidate"]
-            d = rec["duration_ms"]
-            
-            if st not in data:
-                data[st] = {}
-            if r not in data[st]:
-                data[st][r] = {"baseline": [], "candidate": []}
-            data[st][r][cand].append(d)
-            
-    audit_results = {}
-    n_bootstrap = 10000
-    random.seed(42)
-    
-    stages = sorted(data.keys())
-    # Bonferroni correction for family of M stages
-    m_hypotheses = len(stages)
-    alpha = 0.05
-    alpha_bonf = alpha / m_hypotheses
-    lower_idx = int(round((alpha_bonf / 2) * n_bootstrap))
-    upper_idx = int(round((1 - alpha_bonf / 2) * n_bootstrap))
-    
-    print(f"Family of {m_hypotheses} hypotheses, alpha={alpha}, alpha_bonf={alpha_bonf:.4f}")
-    
-    for st in stages:
-        rounds_dict = data[st]
-        round_keys = sorted(rounds_dict.keys())
-        n_rounds = len(round_keys)
-        
-        all_base = [x for r in round_keys for x in rounds_dict[r]["baseline"]]
-        all_cand = [x for r in round_keys for x in rounds_dict[r]["candidate"]]
-        
-        base_p50 = quantile(all_base, 0.50)
-        base_p95 = quantile(all_base, 0.95)
-        base_p99 = quantile(all_base, 0.99)
-        base_mean = sum(all_base) / len(all_base)
-        
-        cand_p50 = quantile(all_cand, 0.50)
-        cand_p95 = quantile(all_cand, 0.95)
-        cand_p99 = quantile(all_cand, 0.99)
-        cand_mean = sum(all_cand) / len(all_cand)
-        
-        # Check autocorrelation across successive blocks to evaluate VM drift
-        round_base_medians = [quantile(rounds_dict[r]["baseline"], 0.50) for r in round_keys]
-        round_cand_medians = [quantile(rounds_dict[r]["candidate"], 0.50) for r in round_keys]
-        ac_base = lag1_autocorrelation(round_base_medians)
-        ac_cand = lag1_autocorrelation(round_cand_medians)
-        
-        p50_diffs, p95_diffs, p99_diffs = [], [], []
-        for _ in range(n_bootstrap):
-            resampled_rounds = [random.choice(round_keys) for _ in range(n_rounds)]
-            b_sample = [x for r in resampled_rounds for x in rounds_dict[r]["baseline"]]
-            c_sample = [x for r in resampled_rounds for x in rounds_dict[r]["candidate"]]
-            
-            p50_diffs.append(quantile(c_sample, 0.50) - quantile(b_sample, 0.50))
-            p95_diffs.append(quantile(c_sample, 0.95) - quantile(b_sample, 0.95))
-            p99_diffs.append(quantile(c_sample, 0.99) - quantile(b_sample, 0.99))
-            
-        p50_diffs.sort()
-        p95_diffs.sort()
-        p99_diffs.sort()
-        
-        ci_p50_bonf = (p50_diffs[lower_idx], p50_diffs[upper_idx])
-        ci_p95_bonf = (p95_diffs[lower_idx], p95_diffs[upper_idx])
-        ci_p99_bonf = (p99_diffs[lower_idx], p99_diffs[upper_idx])
-        
-        reduction_p50 = ((base_p50 - cand_p50) / base_p50) * 100.0 if base_p50 > 0 else 0.0
-        
-        # Strict decision: Candidate is superior if upper Bonferroni bound is strictly negative (< 0) across both p50 and p95!
-        decision = "HOLD"
-        if ci_p50_bonf[1] < 0 and ci_p95_bonf[1] < 0:
-            decision = "ACCEPT (Statistically Significant Superiority)"
-        elif ci_p50_bonf[0] > 0:
-            decision = "REJECT (Statistically Significant Regression)"
-            
-        audit_results[st] = {
-            "samples_per_arm": len(all_base),
-            "baseline": {
-                "mean_ms": base_mean,
-                "p50_ms": base_p50,
-                "p95_ms": base_p95,
-                "p99_ms": base_p99,
-                "round_median_autocorrelation": ac_base
-            },
-            "candidate": {
-                "mean_ms": cand_mean,
-                "p50_ms": cand_p50,
-                "p95_ms": cand_p95,
-                "p99_ms": cand_p99,
-                "round_median_autocorrelation": ac_cand
-            },
-            "p50_reduction_percent": reduction_p50,
-            "ci_95_bonferroni": {
-                "delta_p50_ms": ci_p50_bonf,
-                "delta_p95_ms": ci_p95_bonf,
-                "delta_p99_ms": ci_p99_bonf
-            },
-            "decision": decision
-        }
-        
-        print(f"[{st.upper():8s}] Base p50={base_p50:6.3f}ms -> Cand p50={cand_p50:6.3f}ms ({reduction_p50:+6.2f}%) | "
-              f"Bonf 95% CI: [{ci_p50_bonf[0]:6.3f}, {ci_p50_bonf[1]:6.3f}] ms => {decision}")
-        
-    # Write consolidated report
-    out_file = ROOT / "audit_synthesis_report.json"
-    out_file.write_text(json.dumps(audit_results, indent=2), encoding="utf-8")
-    print("\nAudit report written to:", out_file)
+    matrix = {
+        "cpu_core": {"decision": scoped_decision(("c1", "c2")),
+                     "scope": "rank/table/projection/AAE source changes on measured cohorts only"},
+        "rng_upgrade": {"decision": scoped_decision(("c3",)),
+                        "scope": "exact RNG tuple and Bandit consumer; fresh dependency advisory review still required"},
+        "resource_controls": {"decision": "UNIT_SUPPORTED_INTEGRATION_HOLD",
+                              "scope": "SingleFlight and Engine unit regressions; no live DNS/TLS/egress proof"},
+        "alternative_parser": {"decision": "NOT_RUN", "next": "Implement a bounded scratch comparator before choosing TreeSink/lol_html"},
+        "transport_reuse": {"decision": "NOT_RUN", "next": "Supply a DNS/policy-aware pooling candidate and actual socket experiment"},
+        "table_html_integration": {"decision": "NOT_RUN", "next": "Grid oracles do not validate headers/extraction integration"},
+        "neural_rerank": {"decision": "NOT_RUN", "next": "Labelled corpus and explicit model required"},
+    }
+    return {"protocol": "athena-research/2", "bundle_id": reports[0]["bundle_id"],
+            "decision_matrix": matrix, "overall_decision": "HOLD",
+            "meaning": "Readiness for a bounded core implementation review; never automatic deployment or global-optimum approval",
+            "inputs": {str(path): sha256_file(path) for path in paths}}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--input", type=Path, help="Raw samples.jsonl")
+    operation.add_argument("--combine", nargs=3, type=Path, help="Three analyzed c1/c2/c3 reports")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--output", type=Path, required=True, help="New output file; must not exist")
+    parser.add_argument("--legacy", action="store_true", help="Inspect old data; cannot approve it")
+    parser.add_argument("--bootstrap", type=int, default=30000)
+    args = parser.parse_args(argv)
+    if args.output.exists():
+        parser.error("Output exists; choose a new path to preserve earlier evidence")
+    if not args.combine and not args.manifest and not args.legacy:
+        parser.error("A v2 manifest is required, or explicitly select --legacy")
+    if args.combine:
+        report = combine_reports(args.combine)
+    else:
+        manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else None
+        cases = load_measurements(args.input, manifest)
+        report = analyze_measurements(cases, draws=args.bootstrap, legacy=args.legacy)
+        report["source_samples"] = str(args.input.resolve())
+        report["inputs"] = {str(args.input.resolve()): sha256_file(args.input)}
+        if args.manifest:
+            report["source_manifest"] = str(args.manifest.resolve())
+            report["inputs"][str(args.manifest.resolve())] = sha256_file(args.manifest)
+            report["bundle_id"] = manifest["bundle_id"]
+            report["cluster"] = manifest["cluster"]
+            report["checks"] = manifest["checks"]
+            report["coverage"] = manifest.get("coverage", {})
+    with args.output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, allow_nan=False)
+        stream.write("\n")
+    for case_id, case in report.get("cases", {}).items():
+        print(f"{case_id}: {case['decision']} {case['delta_intervals']} ({case['unit']})")
+    print(f"Saved {args.output}; overall deployment decision remains HOLD")
+
 
 if __name__ == "__main__":
     main()

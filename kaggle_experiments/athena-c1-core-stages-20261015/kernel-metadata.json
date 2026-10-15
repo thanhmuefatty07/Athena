@@ -1,13 +1,12 @@
 {
-  "id": "vnthanhphm/athena-c1-core-stages-20261015",
-  "title": "Athena C1 Core Stages 20261015",
+  "id": "vnthanhphm/athena-c1-core-stages-20261015-v2",
+  "title": "athena c1 core stages 20261015 v2",
   "code_file": "main.py",
   "language": "python",
   "kernel_type": "script",
-  "is_private": "true",
-  "enable_gpu": "false",
-  "enable_tpu": "false",
-  "enable_internet": "true",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": true,
   "dataset_sources": [],
   "competition_sources": [],
   "kernel_sources": []

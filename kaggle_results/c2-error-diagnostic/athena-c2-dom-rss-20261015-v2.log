@@ -1,0 +1,34 @@
+[{"stream_name":"stderr","time":16.858674106,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":16.860422574,"data":"  File \"/kaggle/src/script.py\", line 997, in \u003cmodule\u003e\n"}
+,{"stream_name":"stderr","time":16.860449572,"data":"    execute_cluster('c2', PAYLOAD, SPEC, BUNDLE_ID)\n"}
+,{"stream_name":"stderr","time":16.860454659,"data":"    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860459427,"data":"  File \"/kaggle/src/script.py\", line 984, in execute_cluster\n"}
+,{"stream_name":"stderr","time":16.860465016,"data":"    {\"c1\": execute_c1, \"c2\": execute_c2, \"c3\": execute_c3}[cluster](run, snapshots)\n"}
+,{"stream_name":"stderr","time":16.860469994,"data":"    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860474486,"data":"  File \"/kaggle/src/script.py\", line 775, in execute_c2\n"}
+,{"stream_name":"stderr","time":16.860478922,"data":"    version = run.run([\"/usr/bin/time\", \"--version\"]).decode()\n"}
+,{"stream_name":"stderr","time":16.860507781,"data":"              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860512371,"data":"  File \"/kaggle/src/script.py\", line 459, in run\n"}
+,{"stream_name":"stderr","time":16.86051736,"data":"    process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE,\n"}
+,{"stream_name":"stderr","time":16.860521989,"data":"                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,\n"}
+,{"stream_name":"stderr","time":16.860526511,"data":"                               start_new_session=(os.name == \"posix\"))\n"}
+,{"stream_name":"stderr","time":16.860531759,"data":"  File \"/usr/lib/python3.13/subprocess.py\", line 1039, in __init__\n"}
+,{"stream_name":"stderr","time":16.860536163,"data":"    self._execute_child(args, executable, preexec_fn, close_fds,\n"}
+,{"stream_name":"stderr","time":16.86054044,"data":"    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860544426,"data":"                        pass_fds, cwd, env,\n"}
+,{"stream_name":"stderr","time":16.860549082,"data":"                        ^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860553709,"data":"    ...\u003c5 lines\u003e...\n"}
+,{"stream_name":"stderr","time":16.860558417,"data":"                        gid, gids, uid, umask,\n"}
+,{"stream_name":"stderr","time":16.860562835,"data":"                        ^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860567667,"data":"                        start_new_session, process_group)\n"}
+,{"stream_name":"stderr","time":16.860572217,"data":"                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"}
+,{"stream_name":"stderr","time":16.860576906,"data":"  File \"/usr/lib/python3.13/subprocess.py\", line 1991, in _execute_child\n"}
+,{"stream_name":"stderr","time":16.860582126,"data":"    raise child_exception_type(errno_num, err_msg, err_filename)\n"}
+,{"stream_name":"stderr","time":16.860586756,"data":"FileNotFoundError: [Errno 2] No such file or directory: '/usr/bin/time'\n"}
+,{"stream_name":"stderr","time":19.645162365,"data":"/usr/local/lib/python3.13/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":19.645196891,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":20.076347317,"data":"/usr/local/lib/python3.13/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":20.076384735,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":22.053541208,"data":"[NbConvertApp] Converting notebook __script__.ipynb to html\n"}
+,{"stream_name":"stderr","time":23.84441501,"data":"[NbConvertApp] Writing 689270 bytes to __results__.html\n"}
+]

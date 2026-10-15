@@ -20,6 +20,8 @@ cargo deny --locked check advisories bans sources
 
 ## Run and measure
 
+For the user-run Kaggle core/dependency study, follow [the v2 runbook](kaggle_experiments/README.md). It separates preparation, explicit kernel launch, raw-evidence download and analysis; historical Kaggle reports remain legacy. Preparing scripts never starts a cloud run.
+
 ```bash
 cargo run --locked --release --bin athena-core-v2 -- fixtures/example.html https://example.org/ benchmark
 cargo run --locked --release --bin bench_html -- fixtures/example.html https://example.org/ 100 benchmark

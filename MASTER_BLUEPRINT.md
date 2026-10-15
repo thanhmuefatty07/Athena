@@ -7,6 +7,8 @@
 
 **Ưu tiên hiện tại của người dùng:** lập kế hoạch và định hướng nghiên cứu; chốt triển khai sau khi agent khác cung cấp bằng chứng. [CORE_RESEARCH_PLAN.md](CORE_RESEARCH_PLAN.md) quy định stack Rust, các phương án so sánh, Kaggle và protocol kiểm chứng. Các sửa đổi mã hiện có là draft chưa được chốt; kết quả Windows không thay kết quả Kaggle. Không lấy roadmap dài hạn bên dưới làm lệnh bắt đầu coding.
 
+**Phạm vi bổ sung ngày 15/10/2026:** được sửa harness nghiên cứu để khắc phục sai lệch đo lường; người dùng tự chạy benchmark Kaggle. [Protocol v2 và hướng dẫn chạy](kaggle_experiments/README.md) là hợp đồng thực nghiệm hiện tại. Kết quả legacy không tự duyệt candidate; thay production core cần quyết định theo từng nhóm bằng chứng.
+
 > Mục tiêu: công cụ truy xuất web được cấp phép, phục vụ AI agent, tối thiểu chi phí trên **mỗi kết quả đúng và đủ bằng chứng**, hỗ trợ freshness có thể quan sát, định dạng đầu ra có cấu trúc, ưu tiên hiệu suất hệ thống end-to-end. Không lấy việc vượt CAPTCHA, giả mạo fingerprint, lấy clearance cookie, quét proxy mở hoặc né rate limit làm cơ chế kinh doanh.
 
 ## 0. Phân biệt bằng chứng
