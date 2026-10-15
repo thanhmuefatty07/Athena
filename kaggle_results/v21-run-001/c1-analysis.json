@@ -1,0 +1,672 @@
+{
+  "protocol": "athena-research/2",
+  "analysis_policy": "paired-rounds/2.1",
+  "family_size": 57,
+  "reported_intervals": 21,
+  "family_alpha": 0.05,
+  "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
+  "quantile_method": "nearest, Python round ties to even",
+  "bootstrap_draws": 30000,
+  "seed": 42,
+  "legacy_input": false,
+  "cases": {
+    "export": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 23.462199140200003,
+        "maximum_observed": 37.348361,
+        "quantiles": {
+          "0.5": 23.415913,
+          "0.95": 24.593425,
+          "0.99": 26.255055
+        },
+        "round_median_lag1": 0.06317159249854849,
+        "within_block_lag1_median": 0.6048162714905114
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 11.4026744988,
+        "maximum_observed": 19.797561,
+        "quantiles": {
+          "0.5": 11.358405,
+          "0.95": 11.918031,
+          "0.99": 13.467693
+        },
+        "round_median_lag1": -0.06824509689052732,
+        "within_block_lag1_median": 0.4873405084206829
+      },
+      "delta_intervals": {
+        "0.5": [
+          -12.228752,
+          -11.914699
+        ],
+        "0.95": [
+          -13.11217,
+          -12.206859
+        ],
+        "0.99": [
+          -15.670475,
+          -10.001228
+        ]
+      },
+      "warnings": [
+        "Paired round delta q=0.99: dependence/drift screening threshold exceeded"
+      ],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": 0.018877352082988758,
+        "0.95": -0.3166377402714331,
+        "0.99": -0.6210543813299892
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "export_no_query": {
+      "decision": "REJECT",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 3.0355727878,
+        "maximum_observed": 4.857947,
+        "quantiles": {
+          "0.5": 3.018261,
+          "0.95": 3.222519,
+          "0.99": 3.724029
+        },
+        "round_median_lag1": -0.03732935004005775,
+        "within_block_lag1_median": 0.43967687786840376
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 3.5814283367999997,
+        "maximum_observed": 5.685943,
+        "quantiles": {
+          "0.5": 3.55731,
+          "0.95": 3.796065,
+          "0.99": 4.434877
+        },
+        "round_median_lag1": 0.4729065770552266,
+        "within_block_lag1_median": 0.3768551493720048
+      },
+      "delta_intervals": {
+        "0.5": [
+          0.5062069999999999,
+          0.5607119999999997
+        ],
+        "0.95": [
+          0.4335150000000003,
+          0.7271700000000001
+        ],
+        "0.99": [
+          -0.16520899999999994,
+          1.591774
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.04359926341439319,
+        "0.95": 0.11761445103839488,
+        "0.99": 0.07405694863268453
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "parse": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 8.562158091999999,
+        "maximum_observed": 13.527724,
+        "quantiles": {
+          "0.5": 8.744976,
+          "0.95": 9.602242,
+          "0.99": 10.1566
+        },
+        "round_median_lag1": -0.2301485620534693,
+        "within_block_lag1_median": 0.5089628596717191
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 8.963119773,
+        "maximum_observed": 13.948304,
+        "quantiles": {
+          "0.5": 8.924834,
+          "0.95": 9.417139,
+          "0.99": 10.593928
+        },
+        "round_median_lag1": -0.02232051375825576,
+        "within_block_lag1_median": 0.48482955480783474
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.34254100000000065,
+          1.0985380000000005
+        ],
+        "0.95": [
+          -0.40111399999999975,
+          0.22439699999999974
+        ],
+        "0.99": [
+          -0.7798469999999984,
+          1.57953
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": -0.19074934645230612,
+        "0.95": 0.20131304817650514,
+        "0.99": 0.12981867388630094
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "pipeline": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 32.601105267,
+        "maximum_observed": 48.20701,
+        "quantiles": {
+          "0.5": 32.292125,
+          "0.95": 35.226272,
+          "0.99": 39.361617
+        },
+        "round_median_lag1": 0.05374378372746204,
+        "within_block_lag1_median": 0.5132738267495615
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 19.0815294518,
+        "maximum_observed": 31.266267,
+        "quantiles": {
+          "0.5": 18.908679,
+          "0.95": 20.590608,
+          "0.99": 23.030052
+        },
+        "round_median_lag1": -0.06658395796598489,
+        "within_block_lag1_median": 0.5645299169523729
+      },
+      "delta_intervals": {
+        "0.5": [
+          -13.853470000000002,
+          -13.021899000000001
+        ],
+        "0.95": [
+          -15.349812000000004,
+          -13.673930000000002
+        ],
+        "0.99": [
+          -18.194032999999997,
+          -13.860834999999998
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling",
+        "candidate: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": 0.24656121730910494,
+        "0.95": 0.16722385099538356,
+        "0.99": -0.029116455468630006
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "pipeline_no_query": {
+      "decision": "REJECT",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 13.0483624862,
+        "maximum_observed": 32.192842,
+        "quantiles": {
+          "0.5": 12.518826,
+          "0.95": 16.948628,
+          "0.99": 21.095045
+        },
+        "round_median_lag1": 0.38525534730266503,
+        "within_block_lag1_median": 0.5124784111761045
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 14.3425630452,
+        "maximum_observed": 31.042129,
+        "quantiles": {
+          "0.5": 13.635343,
+          "0.95": 18.484563,
+          "0.99": 22.50986
+        },
+        "round_median_lag1": 0.6424085972774768,
+        "within_block_lag1_median": 0.5045141890709028
+      },
+      "delta_intervals": {
+        "0.5": [
+          0.8319759999999992,
+          1.6489689999999992
+        ],
+        "0.95": [
+          -0.8211429999999993,
+          4.305059999999999
+        ],
+        "0.99": [
+          -1.9403630000000014,
+          6.091103999999998
+        ]
+      },
+      "warnings": [
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling",
+        "candidate: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": -0.041776849364825876,
+        "0.95": 0.2202621059702028,
+        "0.99": 0.17830871637891307
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rank": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 19.7182832172,
+        "maximum_observed": 31.305135,
+        "quantiles": {
+          "0.5": 19.600876,
+          "0.95": 20.979537,
+          "0.99": 24.308624
+        },
+        "round_median_lag1": -0.14397393354502702,
+        "within_block_lag1_median": 0.5651367237282691
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 7.7446371975999995,
+        "maximum_observed": 14.366315,
+        "quantiles": {
+          "0.5": 7.658014,
+          "0.95": 8.398818,
+          "0.99": 10.397585
+        },
+        "round_median_lag1": -0.11905033385216142,
+        "within_block_lag1_median": 0.3281122831420283
+      },
+      "delta_intervals": {
+        "0.5": [
+          -12.074493999999998,
+          -11.798243
+        ],
+        "0.95": [
+          -13.728341,
+          -11.188277999999999
+        ],
+        "0.99": [
+          -16.121565000000004,
+          -10.733555999999998
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": -0.08319347394622836,
+        "0.95": -0.12090179416425063,
+        "0.99": -0.2580697721638583
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "table": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 8.847694884,
+        "maximum_observed": 15.551305,
+        "quantiles": {
+          "0.5": 8.812958,
+          "0.95": 9.384201,
+          "0.99": 10.491131
+        },
+        "round_median_lag1": 0.21069787409068425,
+        "within_block_lag1_median": 0.4117186627289085
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 0.6492148444,
+        "maximum_observed": 1.387337,
+        "quantiles": {
+          "0.5": 0.642119,
+          "0.95": 0.70215,
+          "0.99": 0.818395
+        },
+        "round_median_lag1": 0.2581425238567147,
+        "within_block_lag1_median": 0.13682085778470537
+      },
+      "delta_intervals": {
+        "0.5": [
+          -8.203061,
+          -8.126653
+        ],
+        "0.95": [
+          -8.941492,
+          -8.485244
+        ],
+        "0.99": [
+          -11.422714000000001,
+          -9.024803
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.3009592161232776,
+        "0.95": -0.145407777334448,
+        "0.99": -0.27747824078302963
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    }
+  },
+  "overall_decision": "HOLD",
+  "scope": "Performance evidence; not core/library deployment approval",
+  "source_samples": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c1\\athena-v21-c1\\samples.jsonl",
+  "inputs": {
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c1\\athena-v21-c1\\samples.jsonl": "4d318108e41f8eedc9eae1e254f64f771a6de262d5ade682344b4afad427aedd",
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c1\\athena-v21-c1\\manifest.json": "8bb5121e37dc91dca05f7ad4a2b4d725450d217a484151112c85a4bfb7e91133"
+  },
+  "source_manifest": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c1\\athena-v21-c1\\manifest.json",
+  "bundle_id": "968c02f335cacfb997ed4866d78de84e2e92e221bf96c30ba84167ed2675fe45",
+  "cluster": "c1",
+  "checks": {
+    "environment": {
+      "status": "PASS",
+      "evidence": {
+        "rust_version": "1.99.0",
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "source_integrity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "f95f12a48ff7c187c00daf3067f00e89c60d12ec1cacd85e6fd70ce8cbdd7f62",
+        "candidate": "de7d10111cf1f41d8376cc55445758c58dd3216fa1343f3bd2609f48c1fdd284"
+      }
+    },
+    "build_baseline": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "a3c01b9bb9be2b8e26da8a0d0346290b86dc64281c7dd59593dc9a8cac9cd2f7",
+        "bench_core": "a6134822d5646ecac634ee1bc58cba9a5a31fa0c08e15b08eae796a754d6f4c9",
+        "research_probe": "b11b429141bb2c3fd2411ad55637d4ebb3647811156fd2a88a1f51447ac127e6"
+      }
+    },
+    "build_candidate": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "6c1cc6bbd8bbca5100408983324169adcc50a0813fc4671b239119d51617c137",
+        "bench_core": "14e86a75ed769dcfb7884117940c873a281ed77353355ff7d27906ec907beae8",
+        "research_probe": "aa8d825e07b81b5179162d65e6c6cf88cbffbacfe98dc36805faf249bc18a96f"
+      }
+    },
+    "locked_builds": {
+      "status": "PASS"
+    },
+    "content_baseline": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+      }
+    },
+    "probe_baseline": {
+      "status": "PASS",
+      "evidence": {
+        "bm25_queries": 4,
+        "table_oracles": 4
+      }
+    },
+    "content_candidate": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+      }
+    },
+    "probe_candidate": {
+      "status": "PASS",
+      "evidence": {
+        "bm25_queries": 4,
+        "table_oracles": 4
+      }
+    },
+    "candidate_preformatted": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e",
+        "preformatted": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "variant_identity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "4d36f48ef8e73f323a85180506944f1f3e64eb28e2c95871d7229682f96d2b8c",
+        "candidate": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "byte_parity": {
+      "status": "PASS",
+      "evidence": [
+        {
+          "fixture": "example.html",
+          "query": null,
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "tokio runtime",
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad"
+        },
+        {
+          "fixture": "example.html",
+          "query": "H100 pricing",
+          "sha256": "07f0778d69a15fb16e2b5b4a0fa45e29ea6837d14e97203466af3010d6fc4b8e"
+        },
+        {
+          "fixture": "entities.html",
+          "query": null,
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "tokio runtime",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "entities.html",
+          "query": "H100 pricing",
+          "sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609"
+        },
+        {
+          "fixture": "framing.html",
+          "query": null,
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "tokio runtime",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "framing.html",
+          "query": "H100 pricing",
+          "sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": null,
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "tokio runtime",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "implicit-p.html",
+          "query": "H100 pricing",
+          "sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": null,
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "tokio runtime",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "inline-repair.html",
+          "query": "H100 pricing",
+          "sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9"
+        },
+        {
+          "fixture": "links.html",
+          "query": null,
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "tokio runtime",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "links.html",
+          "query": "H100 pricing",
+          "sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": null,
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "tokio runtime",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "scripts.html",
+          "query": "H100 pricing",
+          "sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": null,
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "tokio runtime",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "table-repair.html",
+          "query": "H100 pricing",
+          "sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": null,
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "tokio runtime",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "t\u00e0i \u5185\u5bb9",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        },
+        {
+          "fixture": "unicode.html",
+          "query": "H100 pricing",
+          "sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e"
+        }
+      ]
+    }
+  },
+  "coverage": {}
+}

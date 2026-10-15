@@ -1,0 +1,2319 @@
+[2026-10-15T19:27:59.354927+00:00] CMD ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"] cwd=None
+[2026-10-15T19:28:00.737637+00:00] RESULT {"argv": ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"], "cwd": "None", "exit_code": 0, "wall_ns": 1379904500, "stdout_sha256": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:28:00.737762+00:00] #!/bin/sh
+# shellcheck shell=dash
+# shellcheck disable=SC2039  # local is non-POSIX
+
+# This is just a little script that can be downloaded from the internet to
+# install rustup. It just does platform detection, downloads the installer
+# and runs it.
+
+# It runs on Unix shells like {a,ba,da,k,z}sh. It uses the common `local`
+# extension. Note: Most shells limit `local` to 1 var per line, contra bash.
+
+# Some versions of ksh have no `local` keyword. Alias it to `typeset`, but
+# beware this makes variables global with f()-style function syntax in ksh93.
+# mksh has this alias by default.
+has_local() {
+    # shellcheck disable=SC2034  # deliberately unused
+    local _has_local
+}
+
+has_local 2>/dev/null || alias local=typeset
+
+is_zsh() {
+    [ -n "${ZSH_VERSION-}" ]
+}
+
+set -u
+
+# If RUSTUP_UPDATE_ROOT is unset or empty, default it.
+RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://static.rust-lang.org/rustup}"
+# Set quiet as a global for ease of use
+RUSTUP_QUIET=no
+
+# NOTICE: If you change anything here, please make the same changes in setup_mode.rs
+usage() {
+    cat <<EOF
+rustup-init 1.29.1 (3f5811cec 2026-08-12)
+
+The installer for rustup
+
+Usage: rustup-init[EXE] [OPTIONS]
+
+Options:
+  -v, --verbose
+          Set log level to 'DEBUG' if 'RUSTUP_LOG' is unset
+  -q, --quiet
+          Disable progress output, set log level to 'WARN' if 'RUSTUP_LOG' is unset
+  -y, --yes
+          Disable confirmation prompt
+      --default-host <DEFAULT_HOST>
+          Choose a default host tuple
+      --default-toolchain <DEFAULT_TOOLCHAIN>
+          Choose a default toolchain to install. Use 'none' to not install any toolchains at all
+      --profile <PROFILE>
+          [default: default] [possible values: minimal, default, complete]
+  -c, --component <COMPONENT>
+          Comma-separated list of component names to also install
+  -t, --target <TARGET>
+          Comma-separated list of target names to also install
+      --no-update-default-toolchain
+          Don't update any existing default toolchain after install
+      --no-modify-path
+          Don't configure the PATH environment variable
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+EOF
+}
+
+main() {
+    downloader --check
+    need_cmd uname
+    need_cmd mktemp
+    need_cmd chmod
+    need_cmd mkdir
+    need_cmd rm
+    need_cmd rmdir
+
+    get_architecture || return 1
+    local _arch="$RETVAL"
+    assert_nz "$_arch" "arch"
+
+    local _default_host_override=""
+    case "$_arch" in
+        *windows*)
+            _default_host_override="--default-host=$_arch"
+            ;;
+    esac
+
+    local _ext=""
+    case "$_arch" in
+        *windows*)
+            _ext=".exe"
+            ;;
+    esac
+
+    local _url
+    if [ "${RUSTUP_VERSION+set}" = 'set' ]; then
+        say "\`RUSTUP_VERSION\` has been set to \`${RUSTUP_VERSION}\`"
+        _url="${RUSTUP_UPDATE_ROOT}/archive/${RUSTUP_VERSION}"
+    else
+        _url="${RUSTUP_UPDATE_ROOT}/dist"
+    fi
+    _url="${_url}/${_arch}/rustup-init${_ext}"
+
+
+    local _dir
+    if ! _dir="$(ensure mktemp -d)"; then
+        # Because the previous command ran in a subshell, we must manually
+        # propagate exit status.
+        exit 1
+    fi
+    local _file="${_dir}/rustup-init${_ext}"
+
+    local _ansi_escapes_are_valid=false
+    if [ -t 2 ]; then
+        if [ "${TERM+set}" = 'set' ]; then
+            case "$TERM" in
+                xterm*|rxvt*|urxvt*|linux*|vt*)
+                    _ansi_escapes_are_valid=true
+                ;;
+            esac
+        fi
+    fi
+
+    # check if we have to use /dev/tty to prompt the user
+    local need_tty=yes
+    for arg in "$@"; do
+        case "$arg" in
+            --help)
+                usage
+                exit 0
+                ;;
+            --quiet)
+                RUSTUP_QUIET=yes
+                ;;
+            --yes)
+                # user wants to skip the prompt --
+                # we don't need /dev/tty
+                need_tty=no
+                ;;
+            *)
+                OPTIND=1
+                if [ "${arg%%--*}" = "" ]; then
+                    # Long option (other than --help);
+                    # don't attempt to interpret it.
+                    continue
+                fi
+                while getopts :hqy sub_arg "$arg"; do
+                    case "$sub_arg" in
+                        h)
+                            usage
+                            exit 0
+                            ;;
+                        q)
+                            RUSTUP_QUIET=yes
+                            ;;
+                        y)
+                            # user wants to skip the prompt --
+                            # we don't need /dev/tty
+                            need_tty=no
+                            ;;
+                        *)
+                            ;;
+                        esac
+                done
+                ;;
+        esac
+    done
+
+    say 'downloading installer'
+
+    ensure mkdir -p "$_dir"
+    ensure downloader "$_url" "$_file" "$_arch"
+    ensure chmod u+x "$_file"
+    if [ ! -x "$_file" ]; then
+        err "Cannot execute $_file (likely because of mounting /tmp as noexec)."
+        err "Please copy the file to a location where you can execute binaries and run ./rustup-init${_ext}."
+        exit 1
+    fi
+
+    # If a default host has been specified on the command line, we should
+    # revert our own override before calling the installer.
+    for arg in "$@"; do
+        case "$arg" in
+            --default-host|--default-host=*)
+                _default_host_override=
+                break
+                ;;
+        esac
+    done
+
+    if [ "$need_tty" = "yes" ] && [ ! -t 0 ]; then
+        # The installer is going to want to ask for confirmation by
+        # reading stdin.  This script was piped into `sh` though and
+        # doesn't have stdin to pass to its children. Instead we're going
+        # to explicitly connect /dev/tty to the installer's stdin.
+        if [ ! -t 1 ]; then
+            err "Unable to run interactively. Run with -y to accept defaults, --help for additional options"
+            exit 1;
+        fi
+
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@" < /dev/tty
+    else
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@"
+    fi
+
+    local _retval=$?
+
+    ignore rm "$_file"
+    ignore rmdir "$_dir"
+
+    return "$_retval"
+}
+
+get_current_exe() {
+    # Returns the executable used for system architecture detection
+    # This is only run on Linux
+    local _current_exe
+    if test -L /proc/self/exe ; then
+        _current_exe=/proc/self/exe
+    else
+        warn "Unable to find /proc/self/exe. System architecture detection might be inaccurate."
+        if test -n "$SHELL" ; then
+            _current_exe=$SHELL
+        else
+            need_cmd /bin/sh
+            _current_exe=/bin/sh
+        fi
+        warn "Falling back to $_current_exe."
+    fi
+    echo "$_current_exe"
+}
+
+get_bitness() {
+    need_cmd head
+    # Architecture detection without dependencies beyond coreutils.
+    # ELF files start out "\x7fELF", and the following byte is
+    #   0x01 for 32-bit and
+    #   0x02 for 64-bit.
+    # The printf builtin on some shells like dash only supports octal
+    # escape sequences, so we use those.
+    local _current_exe=$1
+    local _current_exe_head
+    _current_exe_head=$(head -c 5 "$_current_exe")
+    if [ "$_current_exe_head" = "$(printf '\177ELF\001')" ]; then
+        echo 32
+    elif [ "$_current_exe_head" = "$(printf '\177ELF\002')" ]; then
+        echo 64
+    else
+        err "unknown platform bitness"
+        exit 1;
+    fi
+}
+
+is_host_amd64_elf() {
+    local _current_exe=$1
+
+    need_cmd head
+    need_cmd tail
+    # ELF e_machine detection without dependencies beyond coreutils.
+    # Two-byte field at offset 0x12 indicates the CPU,
+    # but we're interested in it being 0x3E to indicate amd64, or not that.
+    local _current_exe_machine
+    _current_exe_machine=$(head -c 19 "$_current_exe" | tail -c 1)
+    [ "$_current_exe_machine" = "$(printf '\076')" ]
+}
+
+get_endianness() {
+    local _current_exe=$1
+    local cputype=$2
+    local suffix_eb=$3
+    local suffix_el=$4
+
+    # detect endianness without od/hexdump, like get_bitness() does.
+    need_cmd head
+    need_cmd tail
+
+    local _current_exe_endianness
+    _current_exe_endianness="$(head -c 6 "$_current_exe" | tail -c 1)"
+    if [ "$_current_exe_endianness" = "$(printf '\001')" ]; then
+        echo "${cputype}${suffix_el}"
+    elif [ "$_current_exe_endianness" = "$(printf '\002')" ]; then
+        echo "${cputype}${suffix_eb}"
+    else
+        err "unknown platform endianness"
+        exit 1
+    fi
+}
+
+# Detect the Linux/LoongArch UAPI flavor, with all errors being non-fatal.
+# Returns 0 or 234 in case of successful detection, 1 otherwise (/tmp being
+# noexec, or other causes).
+check_loongarch_uapi() {
+    need_cmd base64
+
+    local _tmp
+    if ! _tmp="$(ensure mktemp)"; then
+        return 1
+    fi
+
+    # Minimal Linux/LoongArch UAPI detection, exiting with 0 in case of
+    # upstream ("new world") UAPI, and 234 (-EINVAL truncated) in case of
+    # old-world (as deployed on several early commercial Linux distributions
+    # for LoongArch).
+    #
+    # See https://gist.github.com/xen0n/5ee04aaa6cecc5c7794b9a0c3b65fc7f for
+    # source to this helper binary.
+    ignore base64 -d > "$_tmp" <<EOF
+f0VMRgIBAQAAAAAAAAAAAAIAAgEBAAAAeAAgAAAAAABAAAAAAAAAAAAAAAAAAAAAQQAAAEAAOAAB
+AAAAAAAAAAEAAAAFAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAJAAAAAAAAAAkAAAAAAAAAAAA
+AQAAAAAABCiAAwUAFQAGABUAByCAAwsYggMAACsAC3iBAwAAKwAxen0n
+EOF
+
+    ignore chmod u+x "$_tmp"
+    if [ ! -x "$_tmp" ]; then
+        ignore rm "$_tmp"
+        return 1
+    fi
+
+    "$_tmp"
+    local _retval=$?
+
+    ignore rm "$_tmp"
+    return "$_retval"
+}
+
+ensure_loongarch_uapi() {
+    check_loongarch_uapi
+    case $? in
+        0)
+            return 0
+            ;;
+        234)
+            err 'Your Linux kernel does not provide the ABI required by this Rust distribution.'
+            err 'Please check with your OS provider for how to obtain a compatible Rust package for your system.'
+            exit 1
+            ;;
+        *)
+            warn "Cannot determine current system's ABI flavor, continuing anyway."
+            warn 'Note that the official Rust distribution only works with the upstream kernel ABI.'
+            warn 'Installation will fail if your running kernel happens to be incompatible.'
+            ;;
+    esac
+}
+
+get_architecture() {
+    local _ostype _cputype _bitness _arch _clibtype
+    _ostype="$(uname -s)"
+    _cputype="$(uname -m)"
+    _clibtype="gnu"
+
+    if [ "$_ostype" = Linux ]; then
+        if [ "$(uname -o)" = Android ]; then
+            _ostype=Android
+        fi
+        if ldd --version 2>&1 | grep -q 'musl'; then
+            _clibtype="musl"
+        fi
+    fi
+
+    if [ "$_ostype" = Darwin ]; then
+        # Darwin `uname -m` can lie due to Rosetta shenanigans. If you manage to
+        # invoke a native shell binary and then a native uname binary, you can
+        # get the real answer, but that's hard to ensure, so instead we use
+        # `sysctl` (which doesn't lie) to check for the actual architecture.
+        if [ "$_cputype" = i386 ]; then
+            # Handling i386 compatibility mode in older macOS versions (<10.15)
+            # running on x86_64-based Macs.
+            # Starting from 10.15, macOS explicitly bans all i386 binaries from running.
+            # See: <https://support.apple.com/en-us/HT208436>
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.x86_64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=x86_64
+            fi
+        elif [ "$_cputype" = x86_64 ]; then
+            # Handling x86-64 compatibility mode (a.k.a. Rosetta 2)
+            # in newer macOS versions (>=11) running on arm64-based Macs.
+            # Rosetta 2 is built exclusively for x86-64 and cannot run i386 binaries.
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.arm64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=arm64
+            fi
+        fi
+    fi
+
+    if [ "$_ostype" = SunOS ]; then
+        # Both Solaris and illumos presently announce as "SunOS" in "uname -s"
+        # so use "uname -o" to disambiguate.  We use the full path to the
+        # system uname in case the user has coreutils uname first in PATH,
+        # which has historically sometimes printed the wrong value here.
+        if [ "$(/usr/bin/uname -o)" = illumos ]; then
+            _ostype=illumos
+        fi
+
+        # illumos systems have multi-arch userlands, and "uname -m" reports the
+        # machine hardware name; e.g., "i86pc" on both 32- and 64-bit x86
+        # systems.  Check for the native (widest) instruction set on the
+        # running kernel:
+        if [ "$_cputype" = i86pc ]; then
+            _cputype="$(isainfo -n)"
+        fi
+    fi
+
+    local _current_exe
+    case "$_ostype" in
+
+        Android)
+            _ostype=linux-android
+            ;;
+
+        Linux)
+            _current_exe=$(get_current_exe)
+            _ostype=unknown-linux-$_clibtype
+            _bitness=$(get_bitness "$_current_exe")
+            ;;
+
+        FreeBSD)
+            _ostype=unknown-freebsd
+            ;;
+
+        NetBSD)
+            _ostype=unknown-netbsd
+            ;;
+
+        DragonFly)
+            _ostype=unknown-dragonfly
+            ;;
+
+        Darwin)
+            _ostype=apple-darwin
+            ;;
+
+        illumos)
+            _ostype=unknown-illumos
+            ;;
+
+        SunOS)
+            if [ "$_cputype" = sun4v ]; then
+               _ostype=sun-solaris
+            else
+               _ostype=pc-solaris
+            fi
+            ;;
+
+        MINGW* | MSYS* | CYGWIN* | Windows_NT)
+            _ostype=pc-windows-gnu
+            ;;
+
+        *)
+            err "unrecognized OS type: $_ostype"
+            exit 1
+            ;;
+
+    esac
+
+    case "$_cputype" in
+
+        i386 | i486 | i686 | i786 | x86)
+            _cputype=i686
+            ;;
+
+        xscale | arm)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            fi
+            ;;
+
+        armv6l)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        armv7l | armv8l)
+            _cputype=armv7
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        aarch64 | arm64)
+            _cputype=aarch64
+            # Windows aarch64 uses gnullvm instead of gnu
+            if [ "$_ostype" = "pc-windows-gnu" ]; then
+                _ostype=pc-windows-gnullvm
+            fi
+            ;;
+
+        x86_64 | x86-64 | x64 | amd64)
+            _cputype=x86_64
+            ;;
+
+        mips)
+            _cputype=$(get_endianness "$_current_exe" mips '' el)
+            ;;
+
+        mips64)
+            if [ "$_bitness" -eq 64 ]; then
+                # only n64 ABI is supported for now
+                _ostype="${_ostype}abi64"
+                _cputype=$(get_endianness "$_current_exe" mips64 '' el)
+            fi
+            ;;
+
+        ppc)
+            _cputype=powerpc
+            ;;
+
+        ppc64)
+            _cputype=powerpc64
+            ;;
+
+        ppc64le)
+            _cputype=powerpc64le
+            ;;
+
+        s390x)
+            _cputype=s390x
+            ;;
+        sun4v)
+            _cputype=sparcv9
+            ;;
+        riscv64)
+            _cputype=riscv64gc
+            ;;
+        loongarch64)
+            _cputype=loongarch64
+            ensure_loongarch_uapi
+            ;;
+        *)
+            err "unknown CPU type: $_cputype"
+            exit 1
+
+    esac
+
+    # Detect 64-bit linux with 32-bit userland
+    if [ "${_ostype}" = unknown-linux-gnu ] && [ "${_bitness}" -eq 32 ]; then
+        case $_cputype in
+            x86_64)
+                if [ -n "${RUSTUP_CPUTYPE:-}" ]; then
+                    _cputype="$RUSTUP_CPUTYPE"
+                else {
+                    # 32-bit executable for amd64 = x32
+                    if is_host_amd64_elf "$_current_exe"; then {
+                        err "This host is running an x32 userland, for which no native toolchain is provided."
+                        err "You will have to install multiarch compatibility with i686 or amd64."
+                        err "To do so, set the RUSTUP_CPUTYPE environment variable set to i686 or amd64 and re-run this script."
+                        err "You will be able to add an x32 target after installation by running \`rustup target add x86_64-unknown-linux-gnux32\`."
+                         exit 1
+                    }; else
+                        _cputype=i686
+                    fi
+                }; fi
+                ;;
+            mips64)
+                _cputype=$(get_endianness "$_current_exe" mips '' el)
+                ;;
+            powerpc64)
+                _cputype=powerpc
+                ;;
+            aarch64)
+                _cputype=armv7
+                if [ "$_ostype" = "linux-android" ]; then
+                    _ostype=linux-androideabi
+                else
+                    _ostype="${_ostype}eabihf"
+                fi
+                ;;
+            riscv64gc)
+                err "riscv64 with 32-bit userland unsupported"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Detect armv7 but without the CPU features Rust needs in that build,
+    # and fall back to arm.
+    # See https://github.com/rust-lang/rustup.rs/issues/587.
+    if [ "$_ostype" = "unknown-linux-gnueabihf" ] && [ "$_cputype" = armv7 ]; then
+        if ! (ensure grep '^Features' /proc/cpuinfo | grep -E -q 'neon|simd') ; then
+            # Either `/proc/cpuinfo` is malformed or unavailable, or
+            # at least one processor does not have NEON (which is asimd on armv8+).
+            _cputype=arm
+        fi
+    fi
+
+    _arch="${_cputype}-${_ostype}"
+
+    RETVAL="$_arch"
+}
+
+__print() {
+    if $_ansi_escapes_are_valid; then
+        printf '\33[1m%s:\33[0m %s\n' "$1" "$2" >&2
+    else
+        printf '%s: %s\n' "$1" "$2" >&2
+    fi
+}
+
+warn() {
+    __print 'warn' "$1" >&2
+}
+
+say() {
+    if [ "$RUSTUP_QUIET" = "no" ]; then
+        __print 'info' "$1" >&2
+    fi
+}
+
+# NOTE: you are required to exit yourself
+# we don't do it here because of multiline errors
+err() {
+    __print 'error' "$1" >&2
+}
+
+need_cmd() {
+    if ! check_cmd "$1"; then
+        err "need '$1' (command not found)"
+        exit 1
+    fi
+}
+
+check_cmd() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+assert_nz() {
+    if [ -z "$1" ]; then
+        err "assert_nz $2"
+        exit 1
+    fi
+}
+
+# Run a command that should never fail. If the command fails execution
+# will immediately terminate with an error showing the failing
+# command.
+ensure() {
+    if ! "$@"; then
+        err "command failed: $*"
+        exit 1
+    fi
+}
+
+# This is just for indicating that commands' results are being
+# intentionally ignored. Usually, because it's being executed
+# as part of error handling.
+ignore() {
+    "$@"
+}
+
+# This wraps curl or wget. Try curl first, if not installed,
+# use wget instead.
+downloader() {
+    # zsh does not split words by default, Required for curl retry arguments below.
+    is_zsh && setopt local_options shwordsplit
+
+    local _dld
+    local _ciphersuites
+    local _err
+    local _status
+    local _retry
+    if check_cmd curl; then
+        # Check if we have a broken snap curl
+        # https://github.com/boukendesho/curl-snap/issues/1
+        _curl_path=$(command -v curl)
+        if echo "$_curl_path" | grep "/snap/" > /dev/null 2>&1; then
+            if check_cmd wget; then
+                _dld=wget
+            else
+                err "curl installed with snap cannot be used to install Rust"
+                err "due to missing permissions. Please uninstall it and"
+                err "reinstall curl with a different package manager (e.g., apt)."
+                err "See https://github.com/boukendesho/curl-snap/issues/1"
+                exit 1
+            fi
+        else
+            _dld=curl
+        fi
+    elif check_cmd wget; then
+        _dld=wget
+    else
+        _dld='curl or wget' # to be used in error message of need_cmd
+    fi
+
+    if [ "$1" = --check ]; then
+        need_cmd "$_dld"
+    elif [ "$_dld" = curl ]; then
+        check_curl_for_retry_support
+        _retry="$RETVAL"
+        get_ciphersuites_for_curl
+        _ciphersuites="$RETVAL"
+        if [ -n "$_ciphersuites" ]; then
+            # shellcheck disable=SC2086
+            _err=$(curl $_retry --proto '=https' --tlsv1.2 --ciphers "$_ciphersuites" --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+            _status=$?
+        else
+            warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+            if ! check_help_for "$3" curl --proto --tlsv1.2; then
+                warn "Not enforcing TLS v1.2, this is potentially less secure"
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            else
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --proto '=https' --tlsv1.2 --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q 404$; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    elif [ "$_dld" = wget ]; then
+        if [ "$(wget -V 2>&1|head -2|tail -1|cut -f1 -d" ")" = "BusyBox" ]; then
+            warn "using the BusyBox version of wget.  Not enforcing strong cipher suites for TLS or TLS v1.2, this is potentially less secure"
+            _err=$(wget "$1" -O "$2" 2>&1)
+            _status=$?
+        else
+            get_ciphersuites_for_wget
+            _ciphersuites="$RETVAL"
+            if [ -n "$_ciphersuites" ]; then
+                _err=$(wget --https-only --secure-protocol=TLSv1_2 --ciphers "$_ciphersuites" "$1" -O "$2" 2>&1)
+                _status=$?
+            else
+                warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+                if ! check_help_for "$3" wget --https-only --secure-protocol; then
+                    warn "Not enforcing TLS v1.2, this is potentially less secure"
+                    _err=$(wget "$1" -O "$2" 2>&1)
+                    _status=$?
+                else
+                    _err=$(wget --https-only --secure-protocol=TLSv1_2 "$1" -O "$2" 2>&1)
+                    _status=$?
+                fi
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q ' 404 Not Found$'; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    else
+        err "Unknown downloader"   # should not reach here
+        exit 1
+    fi
+}
+
+check_help_for() {
+    local _arch
+    local _cmd
+    local _arg
+    _arch="$1"
+    shift
+    _cmd="$1"
+    shift
+
+    local _category
+    if "$_cmd" --help | grep -q '"--help all"'; then
+      _category="all"
+    else
+      _category=""
+    fi
+
+    case "$_arch" in
+
+        *darwin*)
+        if check_cmd sw_vers; then
+            local _os_version
+            local _os_major
+            _os_version=$(sw_vers -productVersion)
+            _os_major=$(echo "$_os_version" | cut -d. -f1)
+            case $_os_major in
+                10)
+                    # If we're running on macOS, older than 10.13, then we always
+                    # fail to find these options to force fallback
+                    if [ "$(echo "$_os_version" | cut -d. -f2)" -lt 13 ]; then
+                        # Older than 10.13
+                        warn "Detected macOS platform older than 10.13"
+                        return 1
+                    fi
+                    ;;
+                *)
+                    if ! { [ "$_os_major" -eq "$_os_major" ] 2>/dev/null && [ "$_os_major" -ge 11 ]; }; then
+                        # Unknown product version, warn and continue
+                        warn "Detected unknown macOS major version: $_os_version"
+                        warn "TLS capabilities detection may fail"
+                    fi
+                    ;; # We assume that macOS v11+ will always be okay.
+            esac
+        fi
+        ;;
+
+    esac
+
+    for _arg in "$@"; do
+        if ! "$_cmd" --help "$_category" | grep -q -- "$_arg"; then
+            return 1
+        fi
+    done
+
+    true # not strictly needed
+}
+
+# Check if curl supports the --retry flag, then pass it to the curl invocation.
+check_curl_for_retry_support() {
+    local _retry_supported=""
+    # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+    if check_help_for "notspecified" "curl" "--retry"; then
+        _retry_supported="--retry 3"
+        if check_help_for "notspecified" "curl" "--continue-at"; then
+            # "-C -" tells curl to automatically find where to resume the download when retrying.
+            _retry_supported="--retry 3 -C -"
+        fi
+    fi
+
+    RETVAL="$_retry_supported"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these curl backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_curl() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _openssl_syntax="no"
+    local _gnutls_syntax="no"
+    local _backend_supported="yes"
+    if curl -V | grep -q ' OpenSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' LibreSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' BoringSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' GnuTLS/'; then
+        _gnutls_syntax="yes"
+    else
+        _backend_supported="no"
+    fi
+
+    local _args_supported="no"
+    if [ "$_backend_supported" = "yes" ]; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "curl" "--tlsv1.2" "--ciphers" "--proto"; then
+            _args_supported="yes"
+        fi
+    fi
+
+    local _cs=""
+    if [ "$_args_supported" = "yes" ]; then
+        if [ "$_openssl_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        elif [ "$_gnutls_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these wget backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_wget() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _cs=""
+    if wget -V | grep -q '\-DHAVE_LIBSSL'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        fi
+    elif wget -V | grep -q '\-DHAVE_LIBGNUTLS'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return strong TLS 1.2-1.3 cipher suites in OpenSSL or GnuTLS syntax. TLS 1.2
+# excludes non-ECDHE and non-AEAD cipher suites. DHE is excluded due to bad
+# DH params often found on servers (see RFC 7919). Sequence matches or is
+# similar to Firefox 68 ESR with weak cipher suites disabled via about:config.
+# $1 must be openssl or gnutls.
+get_strong_ciphersuites_for() {
+    if [ "$1" = "openssl" ]; then
+        # OpenSSL is forgiving of unknown values, no problems with TLS 1.3 values on versions that don't support it yet.
+        echo "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+    elif [ "$1" = "gnutls" ]; then
+        # GnuTLS isn't forgiving of unknown values, so this may require a GnuTLS version that supports TLS 1.3 even if wget doesn't.
+        # Begin with SECURE128 (and higher) then remove/add to build cipher suites. Produces same 9 cipher suites as OpenSSL but in slightly different order.
+        echo "SECURE128:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-DTLS-ALL:-CIPHER-ALL:-MAC-ALL:-KX-ALL:+AEAD:+ECDHE-ECDSA:+ECDHE-RSA:+AES-128-GCM:+CHACHA20-POLY1305:+AES-256-GCM"
+    fi
+}
+
+set +u
+case "$RUSTUP_INIT_SH_PRINT" in
+    arch | architecture)
+        get_architecture || exit 1
+        echo "$RETVAL"
+        ;;
+    *)
+        main "$@" || exit 1
+        ;;
+esac
+
+[2026-10-15T19:28:00.738148+00:00] CMD ["sh", "/kaggle/working/athena-v21-c3/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"] cwd=None
+[2026-10-15T19:28:01.478184+00:00] RESULT {"argv": ["sh", "/kaggle/working/athena-v21-c3/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"], "cwd": "None", "exit_code": 0, "wall_ns": 739798652, "stdout_sha256": "27341d26076a7995760787cd0d0fa04d7d3be8951ba8b1be93628676a5d96e3b", "stderr_sha256": "6da111bef98220f47225bfcb5493c8d9ec53b1d0cdec62829adc725b07d71d94"}
+[2026-10-15T19:28:01.478288+00:00] 
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source the
+corresponding env file under $HOME/.cargo.
+
+Consider running the right command for your shell (note the leading DOT):
+. "$HOME/.cargo/env" # For sh/ash/dash/pdksh/bash
+cargo:rerun-if-env-changed=CC_x86_64-unknown-linux-gnu
+CC_x86_64-unknown-linux-gnu = None
+cargo:rerun-if-env-changed=CC_x86_64_unknown_linux_gnu
+CC_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_unknown_linux_gnu
+CFLAGS_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-unknown-linux-gnu
+CFLAGS_x86_64-unknown-linux-gnu = None
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is x86_64-unknown-linux-gnu
+info: skipping toolchain installation
+
+[2026-10-15T19:28:01.478370+00:00] CMD ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"] cwd=None
+[2026-10-15T19:28:12.859977+00:00] RESULT {"argv": ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"], "cwd": "None", "exit_code": 0, "wall_ns": 11381412708, "stdout_sha256": "a162658ac6a697e415ded8bbad66b1cdabb9f58a0d240a248fc27fbf3844a9e3", "stderr_sha256": "710c895bb69f5ca89c9eb2c09a437c9e826a9647741b5be5aaa16ac3be6ab9fc"}
+[2026-10-15T19:28:12.860121+00:00] 
+  1.99.0-x86_64-unknown-linux-gnu installed - rustc 1.99.0 (b940084d7 2026-09-28)
+
+info: syncing channel updates for 1.99.0-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-01 for version 1.99.0 (b940084d7 2026-09-28)
+info: downloading 5 components
+info: default toolchain set to 1.99.0-x86_64-unknown-linux-gnu
+info: checking for self-update (current version: 1.29.1)
+
+[2026-10-15T19:28:12.860178+00:00] CMD ["rustc", "-Vv"] cwd=None
+[2026-10-15T19:28:12.880772+00:00] RESULT {"argv": ["rustc", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 20384929, "stdout_sha256": "b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:28:12.880935+00:00] rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+[2026-10-15T19:28:12.881023+00:00] CMD ["cargo", "-Vv"] cwd=None
+[2026-10-15T19:28:12.954241+00:00] RESULT {"argv": ["cargo", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 72985615, "stdout_sha256": "2106ad2f6d2494210f01796652ddf5c620d7955ad5e1a4ef2b55500aee9ceab0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:28:12.954334+00:00] cargo 1.99.0 (5f94df478 2026-08-27)
+release: 1.99.0
+commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e
+commit-date: 2026-08-27
+host: x86_64-unknown-linux-gnu
+libgit2: 1.9.6 (sys:0.21.0 vendored)
+libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)
+ssl: OpenSSL 3.6.3 9 Jun 2026
+os: Ubuntu 24.4.0 (noble) [64-bit]
+
+[2026-10-15T19:28:12.977267+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target"] cwd=/tmp/athena-v2-noq0n1zk/candidate
+[2026-10-15T19:29:52.151803+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target"], "cwd": "/tmp/athena-v2-noq0n1zk/candidate", "exit_code": 0, "wall_ns": 99174308399, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "1261350964abd52dae5f970998246f000c412ae1e9e3c5ea2eadb1bd1ac0c5d0"}
+[2026-10-15T19:29:52.151981+00:00]     Updating crates.io index
+ Downloading crates ...
+  Downloaded atomic-waker v1.1.2
+  Downloaded autocfg v1.5.1
+  Downloaded arrayvec v0.7.8
+  Downloaded scopeguard v1.2.0
+  Downloaded dunce v1.0.5
+  Downloaded cpufeatures v0.3.1
+  Downloaded displaydoc v0.2.7
+  Downloaded fastrand v2.5.0
+  Downloaded getopts v0.2.24
+  Downloaded aws-lc-rs v1.18.2
+  Downloaded bitflags v2.13.2
+  Downloaded derive_more-impl v2.1.1
+  Downloaded dtoa-short v0.3.5
+  Downloaded futures-io v0.3.34
+  Downloaded futures-sink v0.3.34
+  Downloaded cfg-if v1.0.5
+  Downloaded openssl-probe v0.2.1
+  Downloaded potential_utf v0.1.6
+  Downloaded precomputed-hash v0.1.1
+  Downloaded futures-core v0.3.34
+  Downloaded http-body v1.1.0
+  Downloaded itoa v1.0.18
+  Downloaded rustls-platform-verifier v0.7.1
+  Downloaded siphasher v1.0.4
+  Downloaded cfg_aliases v0.2.2
+  Downloaded fnv v1.0.7
+  Downloaded new_debug_unreachable v1.0.6
+  Downloaded phf_codegen v0.13.1
+  Downloaded cssparser-macros v0.7.1
+  Downloaded equivalent v1.0.3
+  Downloaded idna_adapter v1.2.2
+  Downloaded lru-slab v0.1.3
+  Downloaded percent-encoding v2.3.2
+  Downloaded rustc-hash v2.1.3
+  Downloaded find-msvc-tools v0.1.14
+  Downloaded form_urlencoded v1.2.2
+  Downloaded hyper-rustls v0.27.10
+  Downloaded ipnet v2.12.2
+  Downloaded phf v0.13.1
+  Downloaded phf_generator v0.13.1
+  Downloaded phf_shared v0.13.1
+  Downloaded quote v1.0.47
+  Downloaded rand_core v0.9.5
+  Downloaded rand_pcg v0.10.2
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded rustls-webpki v0.103.15
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded subtle v2.6.1
+  Downloaded cc v1.8.0
+  Downloaded cmake v0.1.58
+  Downloaded constant_time_eq v0.4.2
+  Downloaded dtoa v1.0.11
+  Downloaded ego-tree v0.11.0
+  Downloaded fs_extra v1.3.0
+  Downloaded futures-task v0.3.34
+  Downloaded jobserver v0.1.35
+  Downloaded lock_api v0.4.14
+  Downloaded markup5ever v0.39.0
+  Downloaded parking_lot v0.12.5
+  Downloaded phf_macros v0.13.1
+  Downloaded pkg-config v0.3.34
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_core v0.10.1
+  Downloaded sync_wrapper v1.0.2
+  Downloaded chacha20 v0.10.2
+  Downloaded getrandom v0.2.17
+  Downloaded http-body-util v0.1.5
+  Downloaded litemap v0.8.3
+  Downloaded once_cell v1.21.4
+  Downloaded parking_lot_core v0.9.12
+  Downloaded pin-project-lite v0.2.17
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded quinn-udp v0.5.16
+  Downloaded tokio-macros v2.7.2
+  Downloaded tokio-rustls v0.26.6
+  Downloaded yoke-derive v0.8.4
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded cssparser v0.37.0
+  Downloaded futures-channel v0.3.34
+  Downloaded futures-macro v0.3.34
+  Downloaded getrandom v0.3.4
+  Downloaded getrandom v0.4.3
+  Downloaded httparse v1.10.1
+  Downloaded icu_provider v2.3.1
+  Downloaded log v0.4.34
+  Downloaded num-traits v0.2.19
+  Downloaded proc-macro2 v1.0.107
+  Downloaded rand_distr v0.5.1
+  Downloaded slab v0.4.12
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded synstructure v0.14.0
+  Downloaded thiserror v2.0.21
+  Downloaded thiserror-impl v2.0.21
+  Downloaded tinystr v0.8.4
+  Downloaded utf8_iter v1.0.4
+  Downloaded icu_locale_core v2.3.0
+  Downloaded icu_normalizer_data v2.3.0
+  Downloaded scraper v0.27.0
+  Downloaded base64 v0.23.1
+  Downloaded derive_more v2.1.1
+  Downloaded html5ever v0.39.0
+  Downloaded icu_collections v2.3.0
+  Downloaded icu_properties v2.3.0
+  Downloaded memchr v2.8.3
+  Downloaded quinn v0.11.12
+  Downloaded rand v0.9.5
+  Downloaded rand v0.10.3
+  Downloaded shlex v2.0.1
+  Downloaded string_cache v0.9.0
+  Downloaded tower-layer v0.3.3
+  Downloaded tower-service v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded untrusted v0.9.0
+  Downloaded want v0.3.2
+  Downloaded zerofrom v0.1.8
+  Downloaded zerovec-derive v0.11.6
+  Downloaded bytes v1.12.1
+  Downloaded indexmap v2.14.2
+  Downloaded mio v1.2.4
+  Downloaded rustc_version v0.4.1
+  Downloaded socket2 v0.6.5
+  Downloaded tendril v0.5.1
+  Downloaded tinyvec v1.13.3
+  Downloaded web_atoms v0.2.6
+  Downloaded writeable v0.6.4
+  Downloaded yoke v0.8.3
+  Downloaded zeroize v1.9.1
+  Downloaded zmij v1.0.23
+  Downloaded http v1.5.0
+  Downloaded rustls-native-certs v0.8.5
+  Downloaded servo_arc v0.4.3
+  Downloaded smallvec v1.16.3
+  Downloaded hashbrown v0.17.1
+  Downloaded hyper-util v0.1.21
+  Downloaded idna v1.1.0
+  Downloaded h2 v0.4.20
+  Downloaded hyper v1.12.0
+  Downloaded libm v0.2.16
+  Downloaded futures-util v0.3.34
+  Downloaded icu_properties_data v2.3.0
+  Downloaded semver v1.0.28
+  Downloaded tracing-core v0.1.36
+  Downloaded blake3 v1.8.7
+  Downloaded serde_core v1.0.229
+  Downloaded serde_derive v1.0.229
+  Downloaded unicode-ident v1.0.27
+  Downloaded selectors v0.38.0
+  Downloaded url v2.5.8
+  Downloaded zerotrie v0.2.5
+  Downloaded quinn-proto v0.11.19
+  Downloaded serde v1.0.229
+  Downloaded tower-http v0.6.11
+  Downloaded zerovec v0.11.8
+  Downloaded tokio-util v0.7.20
+  Downloaded tower v0.5.3
+  Downloaded reqwest v0.13.5
+  Downloaded serde_json v1.0.154
+  Downloaded icu_normalizer v2.3.0
+  Downloaded unicode-width v0.2.2
+  Downloaded syn v3.0.9
+  Downloaded syn v2.0.119
+  Downloaded zerocopy v0.8.63
+  Downloaded rustls v0.23.46
+  Downloaded tracing v0.1.44
+  Downloaded libc v0.2.190
+  Downloaded tokio v1.53.3
+  Downloaded ring v0.17.14
+  Downloaded aws-lc-sys v0.46.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling phf_generator v0.13.1
+   Compiling syn v3.0.9
+   Compiling itoa v1.0.18
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling pin-project-lite v0.2.17
+   Compiling cfg-if v1.0.5
+   Compiling dunce v1.0.5
+   Compiling futures-core v0.3.34
+   Compiling cc v1.8.0
+   Compiling fs_extra v1.3.0
+   Compiling pkg-config v0.3.34
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling cmake v0.1.58
+   Compiling phf_codegen v0.13.1
+   Compiling zeroize v1.9.1
+   Compiling writeable v0.6.4
+   Compiling aws-lc-sys v0.46.0
+   Compiling aws-lc-rs v1.18.2
+   Compiling litemap v0.8.3
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling slab v0.4.12
+   Compiling parking_lot_core v0.9.12
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.53.3
+   Compiling zerovec v0.11.8
+   Compiling icu_properties_data v2.3.0
+   Compiling phf_macros v0.13.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling icu_provider v2.3.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling futures-sink v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling rustls v0.23.46
+   Compiling zerocopy v0.8.63
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling indexmap v2.14.2
+   Compiling web_atoms v0.2.6
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.20
+   Compiling tracing v0.1.44
+   Compiling icu_properties v2.3.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling want v0.3.2
+   Compiling h2 v0.4.20
+   Compiling string_cache v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling futures-channel v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling dtoa v1.0.11
+   Compiling bitflags v2.13.2
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling dtoa-short v0.3.5
+   Compiling rand_core v0.9.5
+   Compiling idna v1.1.0
+   Compiling hyper v1.12.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling ipnet v2.12.2
+   Compiling zmij v1.0.23
+   Compiling base64 v0.23.1
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling rustls-native-certs v0.8.5
+   Compiling derive_more v2.1.1
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling rand_chacha v0.9.0
+   Compiling url v2.5.8
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling rustc-hash v2.1.3
+   Compiling getopts v0.2.24
+   Compiling tower-http v0.6.11
+   Compiling rand v0.9.5
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling memchr v2.8.3
+   Compiling ego-tree v0.11.0
+   Compiling cpufeatures v0.3.1
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/candidate)
+    Finished `release` profile [optimized] target(s) in 1m 39s
+
+[2026-10-15T19:29:52.152154+00:00] CMD ["cargo", "fmt", "--all", "--", "--check"] cwd=/tmp/athena-v2-noq0n1zk/candidate
+[2026-10-15T19:29:52.252681+00:00] RESULT {"argv": ["cargo", "fmt", "--all", "--", "--check"], "cwd": "/tmp/athena-v2-noq0n1zk/candidate", "exit_code": 0, "wall_ns": 100323136, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:29:52.252797+00:00] 
+[2026-10-15T19:29:52.252869+00:00] CMD ["cargo", "test", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target"] cwd=/tmp/athena-v2-noq0n1zk/candidate
+[2026-10-15T19:30:54.388647+00:00] RESULT {"argv": ["cargo", "test", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target"], "cwd": "/tmp/athena-v2-noq0n1zk/candidate", "exit_code": 0, "wall_ns": 62135543102, "stdout_sha256": "94e8215da2d56d84ce6be2825387f27a2ce74adce267143b389673a472bd830b", "stderr_sha256": "c0b496cde47d851453ab6b9187f1ddfffad86366f2b405f6f5837d7dc8157b43"}
+[2026-10-15T19:30:54.388774+00:00] 
+running 41 tests
+test arena::tests::bounds_and_utf8_are_checked ... ok
+test aae::tests::content_cannot_forge_control_frame ... ok
+test arena::tests::resets_every_root_field_and_buffer ... ok
+test arena::tests::size_layout_and_siblings ... ok
+test bandit::tests::half_life_reduces_excess_evidence_by_half ... ok
+test ip_policy::tests::non_public_ipv6_special_purpose_prefixes_are_denied ... ok
+test bandit::tests::unavailable_tier_cannot_win ... ok
+test ip_policy::tests::test_ipv4_exclusions ... ok
+test ip_policy::tests::test_ipv6_exclusions ... ok
+test network::tests::invalid_validator_is_rejected_before_dns ... ok
+test network::tests::ipv6_literals_are_denied_even_if_listed_as_hosts ... ok
+test network::tests::whitelist_and_scheme ... ok
+test network::tests::cancelled_dns_worker_retains_origin_admission_until_exit ... ok
+test orchestrator::tests::admitted_cpu_job_waits_for_worker_capacity ... ok
+test orchestrator::tests::cancelled_blocking_job_keeps_cpu_admission_until_exit ... ok
+test orchestrator::tests::pending_query_fanout_is_bounded_before_shared_source_wait ... ok
+test orchestrator::tests::same_policy_label_cannot_hide_different_effective_limits ... ok
+test projection::tests::decoded_text_bytes_have_an_independent_budget ... ok
+test projection::tests::entities_and_link_allowlist ... ok
+test projection::tests::explicit_byte_budgets_accept_the_boundary_and_reject_expansion ... ok
+test aae::tests::output_cap_counts_escaped_bytes_and_end_frame ... ok
+test projection::tests::link_order_and_deduplication_survive_nested_block_ownership ... ok
+test projection::tests::preformatted_text_preserves_lines_and_indentation ... ok
+test aae::tests::incremental_content_hash_preserves_joined_text_contract ... ok
+test projection::tests::total_node_budget_includes_arena_root ... ok
+test projection::tests::whitespace_between_inline_nodes_is_preserved ... ok
+test rank::tests::bm25_matches_hand_calculated_term_statistics ... ok
+test rank::tests::empty_query_and_ties_follow_document_order ... ok
+test rank::tests::relevant_text_ranks_first ... ok
+test rank::tests::unicode_case_mapping_and_length_normalization_are_preserved ... ok
+test singleflight::tests::a_completed_flight_does_not_cache_a_future_request ... ok
+test singleflight::tests::concurrent_joiners_share_one_fetch ... ok
+test singleflight::tests::leader_cancellation_clears_entry ... ok
+test table::tests::allocation_growth_respects_column_budget ... ok
+test table::tests::overlaps_are_errors_and_group_order_is_validated ... ok
+test table::tests::row_and_col_spans ... ok
+test table::tests::sparse_grid_does_not_reserve_maximum_columns_per_row ... ok
+test table::tests::zero_rowspan_stops_at_group_end ... ok
+test orchestrator::tests::caller_deadline_covers_waiting_for_a_shared_source ... ok
+test projection::tests::many_unique_links_remain_ordered_and_repeated_ids_are_removed ... ok
+test projection::tests::resolved_link_amplification_is_rejected ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test span_grid_has_bounded_memory ... ok
+test html5_repairs_entities_and_escaped_aae ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling siphasher v1.0.4
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling phf_generator v0.13.1
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.1
+   Compiling cfg-if v1.0.5
+   Compiling syn v3.0.9
+   Compiling fs_extra v1.3.0
+   Compiling pkg-config v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling dunce v1.0.5
+   Compiling jobserver v0.1.35
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling cc v1.8.0
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+   Compiling aws-lc-rs v1.18.2
+   Compiling zeroize v1.9.1
+   Compiling writeable v0.6.4
+   Compiling litemap v0.8.3
+   Compiling http v1.5.0
+   Compiling cmake v0.1.58
+   Compiling parking_lot_core v0.9.12
+   Compiling aws-lc-sys v0.46.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling slab v0.4.12
+   Compiling icu_properties_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling rustls-pki-types v1.15.1
+   Compiling synstructure v0.14.0
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling displaydoc v0.2.7
+   Compiling yoke v0.8.3
+   Compiling tokio-macros v2.7.2
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling phf_macros v0.13.1
+   Compiling tokio v1.53.3
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling icu_provider v2.3.1
+   Compiling string_cache_codegen v0.6.1
+   Compiling zerocopy v0.8.63
+   Compiling rustls v0.23.46
+   Compiling futures-sink v0.3.34
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling log v0.4.34
+   Compiling futures-task v0.3.34
+   Compiling httparse v1.10.1
+   Compiling getrandom v0.3.4
+   Compiling precomputed-hash v0.1.1
+   Compiling untrusted v0.9.0
+   Compiling percent-encoding v2.3.2
+   Compiling indexmap v2.14.2
+   Compiling futures-util v0.3.34
+   Compiling web_atoms v0.2.6
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling tokio-util v0.7.20
+   Compiling tracing v0.1.44
+   Compiling parking_lot v0.12.5
+   Compiling tower-service v0.3.3
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling subtle v2.6.1
+   Compiling fnv v1.0.7
+   Compiling h2 v0.4.20
+   Compiling want v0.3.2
+   Compiling string_cache v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling futures-channel v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling bitflags v2.13.2
+   Compiling dtoa v1.0.11
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling dtoa-short v0.3.5
+   Compiling rand_core v0.9.5
+   Compiling hyper v1.12.0
+   Compiling idna v1.1.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling form_urlencoded v1.2.2
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling tendril v0.5.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling base64 v0.23.1
+   Compiling zmij v1.0.23
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling ipnet v2.12.2
+   Compiling derive_more v2.1.1
+   Compiling rustls-native-certs v0.8.5
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling markup5ever v0.39.0
+   Compiling cssparser v0.37.0
+   Compiling rand_chacha v0.9.0
+   Compiling url v2.5.8
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling getopts v0.2.24
+   Compiling tower-http v0.6.11
+   Compiling rand v0.9.5
+   Compiling html5ever v0.39.0
+   Compiling serde_derive v1.0.229
+   Compiling http-body-util v0.1.5
+   Compiling memchr v2.8.3
+   Compiling constant_time_eq v0.4.2
+   Compiling ego-tree v0.11.0
+   Compiling arrayvec v0.7.8
+   Compiling cpufeatures v0.3.1
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/candidate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+     Running unittests src/lib.rs (target/debug/deps/athena_core_v2-272f9240a49c180c)
+     Running unittests src/main.rs (target/debug/deps/athena_core_v2-8097811e179ce888)
+     Running unittests src/bin/bench_core.rs (target/debug/deps/bench_core-2d64c0b259a5b173)
+     Running unittests src/bin/bench_html.rs (target/debug/deps/bench_html-c2df30e24ec73c5d)
+     Running unittests src/bin/research_probe.rs (target/debug/deps/research_probe-3a84850a567bdb48)
+     Running tests/integration.rs (target/debug/deps/integration-3dea1efb75bb2b1f)
+
+[2026-10-15T19:30:54.388897+00:00] CMD ["cargo", "clippy", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target", "--", "-D", "warnings"] cwd=/tmp/athena-v2-noq0n1zk/candidate
+[2026-10-15T19:31:34.390229+00:00] RESULT {"argv": ["cargo", "clippy", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/candidate/target", "--", "-D", "warnings"], "cwd": "/tmp/athena-v2-noq0n1zk/candidate", "exit_code": 0, "wall_ns": 40001091894, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "821dca8be9c03bd15311912e03cb769ff1d12e25050d277d2196e5dd1cbcdc85"}
+[2026-10-15T19:31:34.390349+00:00]     Checking stable_deref_trait v1.2.1
+    Checking smallvec v1.16.3
+    Checking libc v0.2.190
+   Compiling siphasher v1.0.4
+    Checking zerofrom v0.1.8
+   Compiling phf_shared v0.13.1
+    Checking yoke v0.8.3
+    Checking pin-project-lite v0.2.17
+    Checking bytes v1.12.1
+   Compiling phf_generator v0.13.1
+    Checking itoa v1.0.18
+    Checking cfg-if v1.0.5
+    Checking zerovec v0.11.8
+    Checking futures-core v0.3.34
+    Checking once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+    Checking litemap v0.8.3
+    Checking socket2 v0.6.5
+    Checking mio v1.2.4
+    Checking tinystr v0.8.4
+   Compiling jobserver v0.1.35
+    Checking zeroize v1.9.1
+    Checking writeable v0.6.4
+    Checking tokio v1.53.3
+   Compiling cc v1.8.0
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.6
+    Checking zerotrie v0.2.5
+    Checking http v1.5.0
+    Checking slab v0.4.12
+    Checking utf8_iter v1.0.4
+    Checking icu_collections v2.3.0
+    Checking icu_provider v2.3.1
+    Checking rustls-pki-types v1.15.1
+   Compiling cmake v0.1.58
+   Compiling phf_macros v0.13.1
+    Checking scopeguard v1.2.0
+    Checking new_debug_unreachable v1.0.6
+    Checking lock_api v0.4.14
+    Checking icu_normalizer_data v2.3.0
+    Checking http-body v1.1.0
+    Checking parking_lot_core v0.9.12
+    Checking phf v0.13.1
+    Checking icu_properties_data v2.3.0
+    Checking tracing-core v0.1.36
+   Compiling aws-lc-sys v0.46.0
+   Compiling string_cache_codegen v0.6.1
+    Checking hashbrown v0.17.1
+    Checking equivalent v1.0.3
+    Checking precomputed-hash v0.1.1
+    Checking futures-task v0.3.34
+    Checking log v0.4.34
+    Checking untrusted v0.9.0
+    Checking futures-sink v0.3.34
+    Checking percent-encoding v2.3.2
+    Checking indexmap v2.14.2
+    Checking futures-util v0.3.34
+   Compiling web_atoms v0.2.6
+    Checking tokio-util v0.7.20
+    Checking tracing v0.1.44
+    Checking icu_properties v2.3.0
+    Checking parking_lot v0.12.5
+    Checking icu_normalizer v2.3.0
+    Checking try-lock v0.2.5
+    Checking tower-service v0.3.3
+    Checking subtle v2.6.1
+    Checking fnv v1.0.7
+    Checking atomic-waker v1.1.2
+    Checking want v0.3.2
+    Checking h2 v0.4.20
+    Checking string_cache v0.9.0
+    Checking idna_adapter v1.2.2
+    Checking zerocopy v0.8.63
+    Checking httparse v1.10.1
+    Checking getrandom v0.3.4
+    Checking futures-channel v0.3.34
+    Checking bitflags v2.13.2
+    Checking dtoa v1.0.11
+    Checking dtoa-short v0.3.5
+    Checking rand_core v0.9.5
+    Checking idna v1.1.0
+    Checking form_urlencoded v1.2.2
+    Checking tendril v0.5.1
+   Compiling selectors v0.38.0
+    Checking sync_wrapper v1.0.2
+    Checking tower-layer v0.3.3
+    Checking hyper v1.12.0
+    Checking openssl-probe v0.2.1
+    Checking ipnet v2.12.2
+    Checking base64 v0.23.1
+    Checking rustls-native-certs v0.8.5
+    Checking tower v0.5.3
+    Checking hyper-util v0.1.21
+    Checking cssparser v0.37.0
+    Checking derive_more v2.1.1
+    Checking markup5ever v0.39.0
+    Checking url v2.5.8
+    Checking ppv-lite86 v0.2.21
+    Checking rand_chacha v0.9.0
+    Checking libm v0.2.16
+    Checking serde_core v1.0.229
+   Compiling blake3 v1.8.7
+    Checking servo_arc v0.4.3
+    Checking rustc-hash v2.1.3
+    Checking unicode-width v0.2.2
+    Checking getopts v0.2.24
+    Checking num-traits v0.2.19
+    Checking rand v0.9.5
+    Checking tower-http v0.6.11
+    Checking html5ever v0.39.0
+    Checking zmij v1.0.23
+    Checking http-body-util v0.1.5
+    Checking arrayvec v0.7.8
+    Checking cpufeatures v0.3.1
+    Checking memchr v2.8.3
+    Checking ego-tree v0.11.0
+    Checking constant_time_eq v0.4.2
+    Checking scraper v0.27.0
+    Checking serde_json v1.0.154
+    Checking serde v1.0.229
+    Checking rand_distr v0.5.1
+   Compiling aws-lc-rs v1.18.2
+   Compiling rustls v0.23.46
+    Checking rustls-webpki v0.103.15
+    Checking tokio-rustls v0.26.6
+    Checking rustls-platform-verifier v0.7.1
+    Checking hyper-rustls v0.27.10
+    Checking reqwest v0.13.5
+    Checking athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/candidate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 39.93s
+
+[2026-10-15T19:31:34.390506+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-noq0n1zk/candidate
+[2026-10-15T19:31:35.451198+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-noq0n1zk/candidate", "exit_code": 0, "wall_ns": 1059758719, "stdout_sha256": "28e0711f79763f63afcf1d7f1fda80183d96f4a94d291e342a4fa05458feb910", "stderr_sha256": "12c1dd8869a6523a5681b7994708adae9e09b6d374e550ecd1c5e0723e4c35c2"}
+[2026-10-15T19:31:35.484264+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:31:35.488193+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 3645072, "stdout_sha256": "82223d8db4a405ff3489398572e99894e781e270bcd367880d6fc3c9af67d817", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.488550+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:31:35.491897+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 3222062, "stdout_sha256": "11b9b99d8b4d0fcb9d76f7768963464d0400638f1c24abc0d38dfa1ae3e8e499", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.492200+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:31:35.495157+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2790662, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.495343+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:31:35.497852+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2420281, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.498011+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:31:35.500923+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2679612, "stdout_sha256": "94ee082b3a33b9ec1f25b35b9468097b2ec891828e31c668c967602ffe6fe0e8", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.501270+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:31:35.504813+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 3382702, "stdout_sha256": "1e43016e56707e760cd07ba4205e58aad0486ca42cd6807afa2a57032132f2ab", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.505019+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:31:35.508693+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 3435352, "stdout_sha256": "ac8e2f3b3e3f3dc5475657a507c5768cd00c65241a76dc9c6a16b83bf89d0d5c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.509147+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:31:35.512859+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 3444832, "stdout_sha256": "d505e30033287489bea69cd2315e49d9a0ac1c312d0697c26e4dc1da58d2949c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.516223+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "singleflight"] cwd=None
+[2026-10-15T19:31:35.519287+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "singleflight"], "cwd": "None", "exit_code": 0, "wall_ns": 2877352, "stdout_sha256": "560ff785ed7a84db160f92dd4c12818f2e0f7a6ad3f761ce6bf7e3a22e4644e2", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.522417+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "ip"] cwd=None
+[2026-10-15T19:31:35.525928+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "ip"], "cwd": "None", "exit_code": 0, "wall_ns": 3285672, "stdout_sha256": "f8128a374aaea0d0acbc6b933fa9421b7ac31aa80fba29867bc581809c7ef96c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:31:35.537400+00:00] CMD ["cargo", "check", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:32:20.860404+00:00] RESULT {"argv": ["cargo", "check", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 45322779997, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "b684e6341377b0a4c923e7dc4a7adb9a2eb2134746b29242e72a05e258c200f1"}
+[2026-10-15T19:32:20.860533+00:00]     Updating crates.io index
+     Locking 1 package to highest Rust 1.99 compatible version
+    Updating rand_distr v0.5.1 -> v0.6.0
+ Downloading crates ...
+  Downloaded rand_distr v0.6.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.27
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+    Checking smallvec v1.16.3
+    Checking stable_deref_trait v1.2.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+    Checking itoa v1.0.18
+    Checking pin-project-lite v0.2.17
+    Checking bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling fs_extra v1.3.0
+   Compiling cc v1.8.0
+    Checking futures-core v0.3.34
+   Compiling pkg-config v0.3.34
+    Checking cfg-if v1.0.5
+   Compiling dunce v1.0.5
+    Checking socket2 v0.6.5
+    Checking mio v1.2.4
+   Compiling syn v2.0.119
+    Checking once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+   Compiling aws-lc-rs v1.18.2
+    Checking writeable v0.6.4
+   Compiling cmake v0.1.58
+    Checking zeroize v1.9.1
+    Checking litemap v0.8.3
+    Checking http v1.5.0
+   Compiling aws-lc-sys v0.46.0
+    Checking utf8_iter v1.0.4
+   Compiling parking_lot_core v0.9.12
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+    Checking slab v0.4.12
+   Compiling synstructure v0.14.0
+    Checking rustls-pki-types v1.15.1
+    Checking scopeguard v1.2.0
+    Checking new_debug_unreachable v1.0.6
+    Checking lock_api v0.4.14
+    Checking http-body v1.1.0
+    Checking tracing-core v0.1.36
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+    Checking zerofrom v0.1.8
+   Compiling displaydoc v0.2.7
+    Checking yoke v0.8.3
+   Compiling tokio-macros v2.7.2
+    Checking zerotrie v0.2.5
+    Checking zerovec v0.11.8
+    Checking tokio v1.53.3
+   Compiling phf_macros v0.13.1
+    Checking tinystr v0.8.4
+    Checking icu_locale_core v2.3.0
+    Checking potential_utf v0.1.6
+    Checking icu_collections v2.3.0
+    Checking phf v0.13.1
+   Compiling futures-macro v0.3.34
+    Checking icu_provider v2.3.1
+   Compiling string_cache_codegen v0.6.1
+    Checking equivalent v1.0.3
+    Checking percent-encoding v2.3.2
+   Compiling rustls v0.23.46
+    Checking log v0.4.34
+    Checking futures-task v0.3.34
+    Checking untrusted v0.9.0
+   Compiling httparse v1.10.1
+    Checking precomputed-hash v0.1.1
+    Checking futures-sink v0.3.34
+    Checking hashbrown v0.17.1
+    Checking futures-util v0.3.34
+    Checking indexmap v2.14.2
+   Compiling web_atoms v0.2.6
+    Checking icu_normalizer v2.3.0
+    Checking tokio-util v0.7.20
+    Checking icu_properties v2.3.0
+    Checking tracing v0.1.44
+    Checking parking_lot v0.12.5
+    Checking tower-service v0.3.3
+    Checking subtle v2.6.1
+    Checking try-lock v0.2.5
+    Checking fnv v1.0.7
+    Checking atomic-waker v1.1.2
+    Checking want v0.3.2
+    Checking h2 v0.4.20
+    Checking string_cache v0.9.0
+    Checking idna_adapter v1.2.2
+    Checking futures-channel v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling autocfg v1.5.1
+    Checking dtoa v1.0.11
+   Compiling libm v0.2.16
+    Checking cpufeatures v0.3.1
+   Compiling getrandom v0.4.3
+    Checking bitflags v2.13.2
+    Checking rand_core v0.10.1
+   Compiling num-traits v0.2.19
+    Checking dtoa-short v0.3.5
+    Checking idna v1.1.0
+    Checking form_urlencoded v1.2.2
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+    Checking tendril v0.5.1
+   Compiling selectors v0.38.0
+    Checking sync_wrapper v1.0.2
+   Compiling zmij v1.0.23
+    Checking openssl-probe v0.2.1
+    Checking hyper v1.12.0
+    Checking ipnet v2.12.2
+    Checking base64 v0.23.1
+    Checking tower-layer v0.3.3
+    Checking tower v0.5.3
+    Checking rustls-native-certs v0.8.5
+    Checking markup5ever v0.39.0
+    Checking derive_more v2.1.1
+    Checking cssparser v0.37.0
+    Checking url v2.5.8
+    Checking hyper-util v0.1.21
+    Checking chacha20 v0.10.2
+   Compiling blake3 v1.8.7
+    Checking servo_arc v0.4.3
+    Checking rustc-hash v2.1.3
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+    Checking unicode-width v0.2.2
+    Checking getopts v0.2.24
+    Checking rand v0.10.3
+    Checking tower-http v0.6.11
+    Checking html5ever v0.39.0
+   Compiling serde_derive v1.0.229
+    Checking http-body-util v0.1.5
+    Checking constant_time_eq v0.4.2
+    Checking memchr v2.8.3
+    Checking arrayvec v0.7.8
+    Checking ego-tree v0.11.0
+    Checking scraper v0.27.0
+    Checking rand_distr v0.6.0
+    Checking rustls-webpki v0.103.15
+    Checking tokio-rustls v0.26.6
+    Checking rustls-platform-verifier v0.7.1
+    Checking hyper-rustls v0.27.10
+    Checking reqwest v0.13.5
+    Checking athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/rng-upgrade)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 45.24s
+
+[2026-10-15T19:32:20.864518+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:32:21.022938+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 157593159, "stdout_sha256": "245b5607aab3713d1b8d238706480cdb00e211f68f623547e07ea1bb42b0b190", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:32:21.054530+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:33:52.736404+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 91681618971, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "ca77813bc3b901258243c05e5b23914a75124c4a0e87ae803f58cad9c6af14f6"}
+[2026-10-15T19:33:52.736534+00:00]    Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+   Compiling itoa v1.0.18
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling pin-project-lite v0.2.17
+   Compiling fs_extra v1.3.0
+   Compiling cc v1.8.0
+   Compiling cfg-if v1.0.5
+   Compiling futures-core v0.3.34
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling cmake v0.1.58
+   Compiling phf_codegen v0.13.1
+   Compiling writeable v0.6.4
+   Compiling aws-lc-rs v1.18.2
+   Compiling zeroize v1.9.1
+   Compiling aws-lc-sys v0.46.0
+   Compiling litemap v0.8.3
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling slab v0.4.12
+   Compiling parking_lot_core v0.9.12
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling tokio v1.53.3
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling phf_macros v0.13.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling scopeguard v1.2.0
+   Compiling icu_provider v2.3.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling precomputed-hash v0.1.1
+   Compiling percent-encoding v2.3.2
+   Compiling rustls v0.23.46
+   Compiling futures-sink v0.3.34
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling log v0.4.34
+   Compiling futures-task v0.3.34
+   Compiling httparse v1.10.1
+   Compiling untrusted v0.9.0
+   Compiling futures-util v0.3.34
+   Compiling indexmap v2.14.2
+   Compiling tokio-util v0.7.20
+   Compiling web_atoms v0.2.6
+   Compiling tracing v0.1.44
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling want v0.3.2
+   Compiling h2 v0.4.20
+   Compiling string_cache v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling futures-channel v0.3.34
+   Compiling bitflags v2.13.2
+   Compiling cpufeatures v0.3.1
+   Compiling getrandom v0.4.3
+   Compiling serde_core v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling rand_core v0.10.1
+   Compiling dtoa v1.0.11
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling dtoa-short v0.3.5
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling base64 v0.23.1
+   Compiling tower-layer v0.3.3
+   Compiling hyper v1.12.0
+   Compiling openssl-probe v0.2.1
+   Compiling zmij v1.0.23
+   Compiling ipnet v2.12.2
+   Compiling rustls-native-certs v0.8.5
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling derive_more v2.1.1
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling url v2.5.8
+   Compiling chacha20 v0.10.2
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling unicode-width v0.2.2
+   Compiling serde v1.0.229
+   Compiling rustc-hash v2.1.3
+   Compiling serde_json v1.0.154
+   Compiling getopts v0.2.24
+   Compiling rand v0.10.3
+   Compiling tower-http v0.6.11
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling memchr v2.8.3
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling ego-tree v0.11.0
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.6.0
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/rng-upgrade)
+    Finished `release` profile [optimized] target(s) in 1m 31s
+
+[2026-10-15T19:33:52.736673+00:00] CMD ["cargo", "fmt", "--all", "--", "--check"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:33:52.844929+00:00] RESULT {"argv": ["cargo", "fmt", "--all", "--", "--check"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 108042269, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:33:52.845133+00:00] 
+[2026-10-15T19:33:52.845263+00:00] CMD ["cargo", "test", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:34:46.862587+00:00] RESULT {"argv": ["cargo", "test", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 54015693141, "stdout_sha256": "9cea69be0d2bbbd3f5fa53c6f4e837aa41d3666c78d151e783921a2d048781c8", "stderr_sha256": "b111347ddc1f22252ee9e758f8055c8742b57596b5e1bf3b49a410c9326aebc2"}
+[2026-10-15T19:34:46.863197+00:00] 
+running 41 tests
+test aae::tests::content_cannot_forge_control_frame ... ok
+test arena::tests::bounds_and_utf8_are_checked ... ok
+test arena::tests::resets_every_root_field_and_buffer ... ok
+test arena::tests::size_layout_and_siblings ... ok
+test bandit::tests::half_life_reduces_excess_evidence_by_half ... ok
+test ip_policy::tests::non_public_ipv6_special_purpose_prefixes_are_denied ... ok
+test bandit::tests::unavailable_tier_cannot_win ... ok
+test ip_policy::tests::test_ipv4_exclusions ... ok
+test ip_policy::tests::test_ipv6_exclusions ... ok
+test network::tests::invalid_validator_is_rejected_before_dns ... ok
+test network::tests::ipv6_literals_are_denied_even_if_listed_as_hosts ... ok
+test network::tests::cancelled_dns_worker_retains_origin_admission_until_exit ... ok
+test network::tests::whitelist_and_scheme ... ok
+test orchestrator::tests::admitted_cpu_job_waits_for_worker_capacity ... ok
+test orchestrator::tests::cancelled_blocking_job_keeps_cpu_admission_until_exit ... ok
+test orchestrator::tests::pending_query_fanout_is_bounded_before_shared_source_wait ... ok
+test orchestrator::tests::same_policy_label_cannot_hide_different_effective_limits ... ok
+test projection::tests::decoded_text_bytes_have_an_independent_budget ... ok
+test aae::tests::output_cap_counts_escaped_bytes_and_end_frame ... ok
+test aae::tests::incremental_content_hash_preserves_joined_text_contract ... ok
+test projection::tests::entities_and_link_allowlist ... ok
+test projection::tests::link_order_and_deduplication_survive_nested_block_ownership ... ok
+test projection::tests::explicit_byte_budgets_accept_the_boundary_and_reject_expansion ... ok
+test projection::tests::preformatted_text_preserves_lines_and_indentation ... ok
+test projection::tests::total_node_budget_includes_arena_root ... ok
+test projection::tests::whitespace_between_inline_nodes_is_preserved ... ok
+test rank::tests::bm25_matches_hand_calculated_term_statistics ... ok
+test rank::tests::empty_query_and_ties_follow_document_order ... ok
+test rank::tests::relevant_text_ranks_first ... ok
+test rank::tests::unicode_case_mapping_and_length_normalization_are_preserved ... ok
+test singleflight::tests::a_completed_flight_does_not_cache_a_future_request ... ok
+test singleflight::tests::concurrent_joiners_share_one_fetch ... ok
+test singleflight::tests::leader_cancellation_clears_entry ... ok
+test orchestrator::tests::caller_deadline_covers_waiting_for_a_shared_source ... ok
+test table::tests::allocation_growth_respects_column_budget ... ok
+test table::tests::overlaps_are_errors_and_group_order_is_validated ... ok
+test table::tests::row_and_col_spans ... ok
+test table::tests::zero_rowspan_stops_at_group_end ... ok
+test table::tests::sparse_grid_does_not_reserve_maximum_columns_per_row ... ok
+test projection::tests::many_unique_links_remain_ordered_and_repeated_ids_are_removed ... ok
+test projection::tests::resolved_link_amplification_is_rejected ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 2 tests
+test span_grid_has_bounded_memory ... ok
+test html5_repairs_entities_and_escaped_aae ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling smallvec v1.16.3
+   Compiling stable_deref_trait v1.2.1
+   Compiling libc v0.2.190
+   Compiling siphasher v1.0.4
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling phf_shared v0.13.1
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.1
+   Compiling itoa v1.0.18
+   Compiling phf_generator v0.13.1
+   Compiling zerovec v0.11.8
+   Compiling cfg-if v1.0.5
+   Compiling futures-core v0.3.34
+   Compiling once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+   Compiling zeroize v1.9.1
+   Compiling litemap v0.8.3
+   Compiling writeable v0.6.4
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_locale_core v2.3.0
+   Compiling http v1.5.0
+   Compiling zerotrie v0.2.5
+   Compiling jobserver v0.1.35
+   Compiling mio v1.2.4
+   Compiling cc v1.8.0
+   Compiling socket2 v0.6.5
+   Compiling tokio v1.53.3
+   Compiling utf8_iter v1.0.4
+   Compiling slab v0.4.12
+   Compiling icu_collections v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling cmake v0.1.58
+   Compiling rustls-pki-types v1.15.1
+   Compiling phf_macros v0.13.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling aws-lc-sys v0.46.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling phf v0.13.1
+   Compiling parking_lot_core v0.9.12
+   Compiling icu_properties_data v2.3.0
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling log v0.4.34
+   Compiling untrusted v0.9.0
+   Compiling futures-sink v0.3.34
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling percent-encoding v2.3.2
+   Compiling futures-task v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling indexmap v2.14.2
+   Compiling web_atoms v0.2.6
+   Compiling tracing v0.1.44
+   Compiling icu_properties v2.3.0
+   Compiling tokio-util v0.7.20
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling atomic-waker v1.1.2
+   Compiling tower-service v0.3.3
+   Compiling fnv v1.0.7
+   Compiling try-lock v0.2.5
+   Compiling subtle v2.6.1
+   Compiling want v0.3.2
+   Compiling idna_adapter v1.2.2
+   Compiling h2 v0.4.20
+   Compiling string_cache v0.9.0
+   Compiling httparse v1.10.1
+   Compiling futures-channel v0.3.34
+   Compiling dtoa v1.0.11
+   Compiling cpufeatures v0.3.1
+   Compiling bitflags v2.13.2
+   Compiling rand_core v0.10.1
+   Compiling dtoa-short v0.3.5
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling openssl-probe v0.2.1
+   Compiling base64 v0.23.1
+   Compiling ipnet v2.12.2
+   Compiling tower-layer v0.3.3
+   Compiling tower v0.5.3
+   Compiling rustls-native-certs v0.8.5
+   Compiling hyper v1.12.0
+   Compiling cssparser v0.37.0
+   Compiling derive_more v2.1.1
+   Compiling markup5ever v0.39.0
+   Compiling hyper-util v0.1.21
+   Compiling url v2.5.8
+   Compiling getrandom v0.4.3
+   Compiling libm v0.2.16
+   Compiling serde_core v1.0.229
+   Compiling chacha20 v0.10.2
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling unicode-width v0.2.2
+   Compiling rustc-hash v2.1.3
+   Compiling getopts v0.2.24
+   Compiling rand v0.10.3
+   Compiling num-traits v0.2.19
+   Compiling tower-http v0.6.11
+   Compiling html5ever v0.39.0
+   Compiling zmij v1.0.23
+   Compiling http-body-util v0.1.5
+   Compiling memchr v2.8.3
+   Compiling ego-tree v0.11.0
+   Compiling arrayvec v0.7.8
+   Compiling constant_time_eq v0.4.2
+   Compiling scraper v0.27.0
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling rand_distr v0.6.0
+   Compiling aws-lc-rs v1.18.2
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/rng-upgrade)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.70s
+     Running unittests src/lib.rs (target/debug/deps/athena_core_v2-62eda2caa2061017)
+     Running unittests src/main.rs (target/debug/deps/athena_core_v2-c535b2da658d726d)
+     Running unittests src/bin/bench_core.rs (target/debug/deps/bench_core-703c1a42ecb7f48f)
+     Running unittests src/bin/bench_html.rs (target/debug/deps/bench_html-91953a7257ecc428)
+     Running unittests src/bin/research_probe.rs (target/debug/deps/research_probe-956a54ea38ed50f2)
+     Running tests/integration.rs (target/debug/deps/integration-285e1736d2990eca)
+
+[2026-10-15T19:34:46.863884+00:00] CMD ["cargo", "clippy", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target", "--", "-D", "warnings"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:34:48.594519+00:00] RESULT {"argv": ["cargo", "clippy", "--locked", "--all-targets", "--target-dir", "/tmp/athena-v2-noq0n1zk/rng-upgrade/target", "--", "-D", "warnings"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 1730271843, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "62e47441fcb3b862f63156eef58b2e2340914d47d488efb9d8ad52c8baa49dd1"}
+[2026-10-15T19:34:48.594677+00:00]     Checking athena-core-v2 v0.1.0 (/tmp/athena-v2-noq0n1zk/rng-upgrade)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.61s
+
+[2026-10-15T19:34:48.595018+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-noq0n1zk/rng-upgrade
+[2026-10-15T19:34:48.840403+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-noq0n1zk/rng-upgrade", "exit_code": 0, "wall_ns": 244417945, "stdout_sha256": "245b5607aab3713d1b8d238706480cdb00e211f68f623547e07ea1bb42b0b190", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.896742+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "1", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.901200+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "1", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 4103721, "stdout_sha256": "0b4a77015b2ae0f14254d8e1b6c64c3bbe132fb6cbcdfeed00cb3247bef61301", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.902494+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "1", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.906604+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "1", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3930561, "stdout_sha256": "f388e7fdceab29412758d980092d8d5d2fca459542b224ee355161d271b09516", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.906994+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "1", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.910086+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "1", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 2965981, "stdout_sha256": "0c06b7bb001dfe63abd8faaedf7891dc8b7ac0fa74d046cce1e6378e772aea98", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.910432+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "1", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.913135+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "1", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 2613461, "stdout_sha256": "62d685ece6451828cf1f5cb6e7142168a85c30765a993cfb01c8b60cdff027fd", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.913447+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "2", "5", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.917150+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "2", "5", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3421421, "stdout_sha256": "212e6e201097a3a5914fdac9e033cf5c06a7e6d88e0754cb2921fd814a090bf8", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.917662+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "2", "5", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.922617+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "2", "5", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 4834641, "stdout_sha256": "666846549074aefa9348bac20a423fcdd26825b2767e1b76eab328d1e47f5eb1", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.922932+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "2", "5", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.925811+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "2", "5", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 2790021, "stdout_sha256": "e5c3ce9ed5866f2d75d1ce379113db42829194c792b00930f9af78cba40d98cd", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.926193+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "2", "5", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.929652+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "2", "5", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3176031, "stdout_sha256": "b44c9d4ee8a16fd7335bf2f8c29ffa31e4078a822eae1f527b72cbe68919a0ae", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.930258+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "5", "2", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.934425+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "5", "2", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3892791, "stdout_sha256": "12d70dae105f313e4876e4d45744afdff8ef90b13ff65373b8821765a34a61b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.934989+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "5", "2", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.939102+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "5", "2", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3715361, "stdout_sha256": "14d5e363af7280e076002d7d8c5fe02207b3746d31fc837af5791b31b42604bb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.939668+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "5", "2", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.942747+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "5", "2", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 2860220, "stdout_sha256": "165c3fdc473adff56d420d97f02b2cad7b735c23a87796ce8c72ddefd7aabe0e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.943295+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "5", "2", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.948137+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "5", "2", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 4559661, "stdout_sha256": "a452b200fbdf1ee3661ad389468d4724fa932355b504338d2da23b795ad16931", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.948817+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.953493+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 4450221, "stdout_sha256": "00868f6fa21c412d7db49d580b5a1529b5799686e288f0278d0a8fd51ff72472", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.954183+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.957812+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3346691, "stdout_sha256": "6f88379cc086a9118aba27296b7cc7473a39b49489ed4bf0bf894a4c029a2ee0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.958404+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.962447+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3855961, "stdout_sha256": "27ee64a97c18b59ccf22acfef300de9a47cad971909112601aea6cfe90b27260", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.962876+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.966687+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "0.5", "0.5", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3670791, "stdout_sha256": "40a83ec241e06122f22b10f7c50148710b87bb4c9ef4907d070fb84b43b6c2f5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.967016+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000", "1000", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.970154+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000", "1000", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 2842021, "stdout_sha256": "93a3439e1f3dc5084af853a2e07f46858e3be4e1a9bc83fb1dfb77a7e660c87d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.970709+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000", "1000", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.974344+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000", "1000", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3504101, "stdout_sha256": "02294ab398fb85b7caecffa71e9666465323680198b60d207bc3bb5762bc968b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.974711+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000", "1000", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.978021+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000", "1000", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3048911, "stdout_sha256": "1396d10d6a99f261df3b7e883d92e470dfd38e265c9d7b82dded8e45da5ad55c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.978693+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000", "1000", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.983446+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000", "1000", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 4536001, "stdout_sha256": "7e6a94df0819f5556e5e6ab42a55cdc0f212d2265aa8f9e4f3983b093102766c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.983928+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "100", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.987697+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "100", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3601480, "stdout_sha256": "9c060c7d33b4ebe6520f0b723f4192246034e2b466235492b84d9d54845273e6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.988146+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "100", "1000", "1009"] cwd=None
+[2026-10-15T19:34:48.991869+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "100", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3449941, "stdout_sha256": "43bd59f6f40e8fada9fef490589ed1750052c372cd764118f5b8081b7be61080", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.992495+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "100", "1000", "1010"] cwd=None
+[2026-10-15T19:34:48.995986+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1", "100", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3297961, "stdout_sha256": "ddc9bcab58242ed82f401d4828ced3d25a76121e4f688391cf650fbdbf69a65a", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:48.996491+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "100", "1000", "1010"] cwd=None
+[2026-10-15T19:34:49.000601+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1", "100", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3848701, "stdout_sha256": "84b23ca3e0e80f456ff44797cec333c14c096a6055a774d3c8df32fcc771cf2b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.001244+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "100", "1", "1000", "1009"] cwd=None
+[2026-10-15T19:34:49.005658+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "100", "1", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 4177341, "stdout_sha256": "e59aeced9f325b223dcca9745c75f211dc0a53d3e653de5f5d13f206e1ad0b9d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.006216+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "100", "1", "1000", "1009"] cwd=None
+[2026-10-15T19:34:49.010323+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "100", "1", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3854591, "stdout_sha256": "0921b5c215ec86a2b4e2705a68bb850c9bb5e5139cbce7b00e4a5b7c69b6da8b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.010886+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "100", "1", "1000", "1010"] cwd=None
+[2026-10-15T19:34:49.014748+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "100", "1", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3708271, "stdout_sha256": "8d8ec243ffcdadc0ad1802b5953e94936bd8aa113f0a217b29fd69f374eb0016", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.015180+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "100", "1", "1000", "1010"] cwd=None
+[2026-10-15T19:34:49.018523+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "100", "1", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3124721, "stdout_sha256": "1fefde7b3404a2e241d90b68aa863b09fbe16fb7678133451d41d845b66aff83", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.018959+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1009"] cwd=None
+[2026-10-15T19:34:49.027696+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 8450442, "stdout_sha256": "503f9b0ed79edafea5c2f37aab48edd956c0b45f7eca9a976f366149f30faf1a", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.028663+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1009"] cwd=None
+[2026-10-15T19:34:49.031970+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1009"], "cwd": "None", "exit_code": 0, "wall_ns": 3129150, "stdout_sha256": "f57e022ffe76487fc292daa0b53baa8b4f5d2ea9166245c50bf951ba338d9925", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.032386+00:00] CMD ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1010"] cwd=None
+[2026-10-15T19:34:49.035471+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/rng-upgrade/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 2931460, "stdout_sha256": "fbd796243db2b485506cbe691d2bb74c271dcc04ccd6e48ec7b2b5d4528f339f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:34:49.035886+00:00] CMD ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1010"] cwd=None
+[2026-10-15T19:34:49.039278+00:00] RESULT {"argv": ["/tmp/athena-v2-noq0n1zk/candidate/target/release/research_probe", "rng", "1000000", "1000000", "1000", "1010"], "cwd": "None", "exit_code": 0, "wall_ns": 3258130, "stdout_sha256": "3834cbd143f77930f0b3a826a346214e601d57e188198f3f4416c9319d59dc08", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}

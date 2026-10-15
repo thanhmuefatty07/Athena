@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from kaggle_experiments.protocol import (
-    PROTOCOL_VERSION, analyze_measurements, is_digest, load_measurements, quantile, sha256_file,
+    PROTOCOL_VERSION, LEGACY_ANALYSIS_POLICY, analyze_measurements, declared_analysis_policy,
+    is_digest, load_measurements, quantile, sha256_file,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -16,7 +17,8 @@ def combine_reports(paths):
             or any(report.get("protocol") != PROTOCOL_VERSION or report.get("legacy_input")
                    or not is_digest(report.get("bundle_id")) or not report.get("cases")
                    for report in reports)
-            or len({report.get("bundle_id") for report in reports}) != 1):
+            or len({report.get("bundle_id") for report in reports}) != 1
+            or len({report.get("analysis_policy", LEGACY_ANALYSIS_POLICY) for report in reports}) != 1):
         raise ValueError("Combine requires c1/c2/c3 v2 reports from one exact bundle")
     for report in reports:
         inputs = report.get("inputs", {})
@@ -29,6 +31,7 @@ def combine_reports(paths):
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         cases = load_measurements(samples_path, manifest)
         if (manifest["bundle_id"] != report["bundle_id"] or manifest["cluster"] != report["cluster"]
+                or declared_analysis_policy(manifest["spec"]) != report.get("analysis_policy", LEGACY_ANALYSIS_POLICY)
                 or manifest["spec"]["run_kind"] != "confirm"
                 or report.get("family_size") != manifest["spec"]["simultaneous_family_size"]
                 or set(cases) != set(report["cases"])):
@@ -61,6 +64,7 @@ def combine_reports(paths):
         "neural_rerank": {"decision": "NOT_RUN", "next": "Labelled corpus and explicit model required"},
     }
     return {"protocol": "athena-research/2", "bundle_id": reports[0]["bundle_id"],
+            "analysis_policy": reports[0].get("analysis_policy", LEGACY_ANALYSIS_POLICY),
             "decision_matrix": matrix, "overall_decision": "HOLD",
             "meaning": "Readiness for a bounded core implementation review; never automatic deployment or global-optimum approval",
             "inputs": {str(path): sha256_file(path) for path in paths}}

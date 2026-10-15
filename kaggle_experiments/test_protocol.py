@@ -1,5 +1,6 @@
 """Regression checks for research evidence, without running a benchmark or Kaggle."""
 import contextlib
+import copy
 import io
 import json
 from pathlib import Path
@@ -43,7 +44,187 @@ def v2_fixture(directory):
     return path, manifest, records
 
 
+def dependency_fixture(root):
+    packages = {
+        root: {"name": "athena-core-v2", "version": "0.1.0", "source": None},
+        "rng": {"name": "rand", "version": "0.9.4", "source": "registry+official"},
+        "distr": {"name": "rand_distr", "version": "0.5.1", "source": "registry+official"},
+        "leaf": {"name": "rng_leaf", "version": "1.0.0", "source": "registry+official"},
+        "parser": {"name": "parser", "version": "1.0.0", "source": "registry+official"},
+    }
+    edges = {root: ["rng", "distr", "parser"], "rng": ["leaf"], "distr": ["rng"],
+             "leaf": [], "parser": []}
+    return {"root": root, "packages": packages,
+            "direct": {packages[key]["name"]: {**packages[key], "id": key}
+                       for key in edges[root]},
+            "nodes": [{"id": key, "features": [], "deps": [
+                {"name": packages[dep]["name"], "pkg": dep,
+                 "dep_kinds": [{"kind": None, "target": None}]} for dep in deps]}
+                      for key, deps in edges.items()]}
+
+
 class StatisticalRegressions(unittest.TestCase):
+    def test_relocated_root_does_not_look_like_an_unrelated_dependency_change(self):
+        before, after = dependency_fixture("old-root"), dependency_fixture("new-root")
+        self.assertEqual(runner.verify_rng_dependency_changes(before, after), {"removed": [], "added": []})
+        after["packages"]["rng"]["version"] = "0.10.3"
+        self.assertTrue(runner.verify_rng_dependency_changes(before, after)["added"])
+
+    def test_rng_guard_still_rejects_unrelated_resolution_changes(self):
+        before = dependency_fixture("old-root")
+        for field, value in (("version", "2.0.0"), ("source", "registry+other")):
+            after = dependency_fixture("old-root")
+            after["packages"]["parser"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                runner.verify_rng_dependency_changes(before, after)
+        for mutation in ("features", "edges", "root"):
+            after = dependency_fixture("old-root")
+            if mutation == "features":
+                after["nodes"][-1]["features"] = ["unexpected"]
+            elif mutation == "edges":
+                after["nodes"][-1]["deps"] = copy.deepcopy(after["nodes"][1]["deps"])
+            else:
+                after["packages"][after["root"]]["version"] = "0.2.0"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                runner.verify_rng_dependency_changes(before, after)
+
+    def test_rng_guard_ignores_metadata_order_but_not_a_missing_rng_root(self):
+        before, after = dependency_fixture("old-root"), dependency_fixture("new-root")
+        after["nodes"].reverse()
+        after["nodes"][-1]["deps"].reverse()
+        self.assertEqual(runner.verify_rng_dependency_changes(before, after), {"removed": [], "added": []})
+        del after["direct"]["rand"]
+        with self.assertRaises(ValueError):
+            runner.verify_rng_dependency_changes(before, after)
+
+    def test_rng_guard_normalizes_only_the_root_path(self):
+        before, after = dependency_fixture("old-root"), dependency_fixture("new-root")
+        for graph in (before, after):
+            graph["packages"]["parser"]["source"] = None
+        after["packages"]["relocated-parser"] = after["packages"].pop("parser")
+        for node in after["nodes"]:
+            if node["id"] == "parser":
+                node["id"] = "relocated-parser"
+            for dep in node["deps"]:
+                if dep["pkg"] == "parser":
+                    dep["pkg"] = "relocated-parser"
+        with self.assertRaises(ValueError):
+            runner.verify_rng_dependency_changes(before, after)
+
+    def test_missing_gnu_time_is_prepared_before_the_rss_self_check(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            binary, calls = Path(directory) / "time", []
+            def execute(argv, **kwargs):
+                calls.append([str(value) for value in argv])
+                if argv[:2] == ["apt-get", "install"]:
+                    binary.write_bytes(b"test tool identity")
+                if "--version" in argv:
+                    return b"time (GNU Time) 1.9\n"
+                if "-o" in argv:
+                    Path(argv[argv.index("-o") + 1]).write_text("1024\n", encoding="ascii")
+                return b""
+            run = SimpleNamespace(run=execute, directory=Path(directory))
+            with patch.object(runner.platform, "system", return_value="Linux"), \
+                    patch.object(runner.os, "geteuid", return_value=0, create=True), \
+                    patch.object(runner.shutil, "which", return_value="apt-get"):
+                receipt = runner.prepare_rss_tool(run, binary)
+                self.assertEqual(receipt["self_check_peak_rss_kib"], 1024)
+                self.assertEqual(calls[:2], [["apt-get", "update"],
+                                 ["apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "time"]])
+                calls.clear()
+                (Path(directory) / "rss-tool-self-check.txt").unlink()
+                runner.prepare_rss_tool(run, binary)
+                self.assertFalse(any("apt-get" in call for call in calls))
+
+    def test_missing_or_non_gnu_rss_tool_fails_without_fake_measurements(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "time"
+            run = SimpleNamespace(run=lambda *args, **kwargs: b"BSD time", directory=Path(directory))
+            with patch.object(runner.os, "geteuid", return_value=1000, create=True):
+                with self.assertRaises(RuntimeError):
+                    runner.prepare_rss_tool(run, binary)
+            binary.write_bytes(b"not GNU")
+            with self.assertRaises(RuntimeError):
+                runner.prepare_rss_tool(run, binary)
+            self.assertFalse((Path(directory) / "rss-tool-self-check.txt").exists())
+
+    def test_rss_setup_failure_stops_before_version_check_or_measurement(self):
+        from types import SimpleNamespace
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            binary, calls = Path(directory) / "time", []
+            def execute(argv, **kwargs):
+                calls.append(argv)
+                raise subprocess.CalledProcessError(7, argv)
+            run = SimpleNamespace(run=execute, directory=Path(directory))
+            with patch.object(runner.platform, "system", return_value="Linux"), \
+                    patch.object(runner.os, "geteuid", return_value=0, create=True), \
+                    patch.object(runner.shutil, "which", return_value="apt-get"):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    runner.prepare_rss_tool(run, binary)
+            self.assertEqual(calls, [["apt-get", "update"]])
+            self.assertFalse((Path(directory) / "rss-tool-self-check.txt").exists())
+
+    def test_v21_resamples_within_block_dependence_but_still_holds_between_round_drift(self):
+        rounds = [{"baseline": [10.0 + i / 100 for i in range(100)],
+                   "candidate": [5.0 + i / 200 for i in range(100)]} for _ in range(20)]
+        case = {"rounds": rounds, "spec": {"unit": "ms"}, "quantiles": (0.5,), "family_size": 57,
+                "analysis_policy": "paired-rounds/2.1"}
+        old = protocol.analyze_measurements({"export_no_query": {**case, "analysis_policy": "paired-rounds/2.0"}})
+        new = protocol.analyze_measurements({"export_no_query": case})
+        self.assertEqual(old["cases"]["export_no_query"]["decision"], "HOLD")
+        self.assertEqual(new["cases"]["export_no_query"]["decision"], "PASS_PERFORMANCE")
+        self.assertTrue(new["cases"]["export_no_query"]["diagnostics"])
+        drift = [{arm: [value + round_id for value in block[arm]] for arm in block}
+                 for round_id, block in enumerate(rounds)]
+        held = protocol.analyze_measurements({"export_no_query": {**case, "rounds": drift}})
+        self.assertEqual(held["cases"]["export_no_query"]["decision"], "HOLD")
+        slower = [{"baseline": block["baseline"], "candidate": [value + 10 for value in block["candidate"]]}
+                  for block in rounds]
+        rejected = protocol.analyze_measurements({"export_no_query": {**case, "rounds": slower}})
+        self.assertEqual(rejected["cases"]["export_no_query"]["decision"], "REJECT")
+
+    def test_v21_cannot_relabel_the_old_six_stage_experiment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, manifest, _ = v2_fixture(directory)
+            manifest["spec"].update(study_revision="2.1", analysis_policy="paired-rounds/2.1",
+                                    simultaneous_family_size=57)
+            with self.assertRaises(ValueError):
+                protocol.load_measurements(path, manifest)
+
+    def test_v21_complete_manifest_selects_only_its_declared_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path, manifest, templates = v2_fixture(directory)
+            manifest["spec"] = generate_clusters.specifications(screen=True)["c1"]
+            rows = [{**template, "case_id": case["id"], "stage": case["stage"], "size": case["size"],
+                     "iteration": i} for case in manifest["spec"]["cases"]
+                    for template in templates for i in range(case["iterations"])]
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            manifest["artifacts"][path.name] = protocol.sha256_file(path)
+            cases = protocol.load_measurements(path, manifest)
+            self.assertEqual(set(cases), set(protocol.C1_STAGES))
+            self.assertTrue(all(case["analysis_policy"] == protocol.ANALYSIS_POLICY for case in cases.values()))
+            manifest["spec"]["analysis_policy"] = "paired-rounds/unknown"
+            with self.assertRaises(ValueError):
+                protocol.load_measurements(path, manifest)
+
+    def test_v21_requires_the_new_environment_and_dependency_gates(self):
+        for cluster, gate in (("c2", "rss_tool"), ("c3", "rng_dependencies")):
+            with self.subTest(cluster=cluster), tempfile.TemporaryDirectory() as directory:
+                path, manifest, _ = v2_fixture(directory)
+                manifest["cluster"] = cluster
+                manifest["checks"] = {name: {"status": "PASS"} for name in protocol.REQUIRED_CHECKS[cluster]}
+                manifest["spec"].update(study_revision="2.1", analysis_policy="paired-rounds/2.1",
+                                        simultaneous_family_size=57)
+                if cluster == "c3":
+                    manifest["snapshots"]["rng-upgrade"] = manifest["snapshots"].pop("baseline")
+                with self.assertRaises(ValueError):
+                    protocol.load_measurements(path, manifest)
+                manifest["checks"][gate] = {"status": "PASS"}
+                self.assertTrue(protocol.load_measurements(path, manifest))
+
     def test_analysis_and_combine_keep_raw_identity_and_scoped_hold(self):
         with tempfile.TemporaryDirectory() as directory:
             outputs = []
@@ -64,6 +245,13 @@ class StatisticalRegressions(unittest.TestCase):
             combined = verify_statistics.combine_reports(outputs)
             self.assertEqual(combined["overall_decision"], "HOLD")
             self.assertEqual(combined["decision_matrix"]["cpu_core"]["decision"], "HOLD")
+            saved = outputs[1].read_bytes()
+            mismatched = json.loads(saved)
+            mismatched["analysis_policy"] = "paired-rounds/2.1"
+            outputs[1].write_text(json.dumps(mismatched), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                verify_statistics.combine_reports(outputs)
+            outputs[1].write_bytes(saved)
             first_raw, first_manifest = Path(directory) / "c1/samples.jsonl", Path(directory) / "c1/manifest.json"
             rows = [json.loads(line) for line in first_raw.read_text(encoding="utf-8").splitlines()]
             for row in rows:
@@ -106,9 +294,12 @@ class StatisticalRegressions(unittest.TestCase):
     def test_bundle_wide_family_covers_all_three_clusters(self):
         specs = generate_clusters.specifications()
         family = sum(len(case["quantiles"]) for spec in specs.values() for case in spec["cases"])
-        self.assertEqual(family, 54)
+        self.assertEqual(family, 57)
+        self.assertEqual([case["stage"] for case in specs["c1"]["cases"]].count("export_no_query"), 1)
         for spec in specs.values():
             self.assertEqual(spec.get("simultaneous_family_size"), family)
+            self.assertEqual(spec.get("study_revision"), "2.1")
+            self.assertEqual(spec.get("analysis_policy"), "paired-rounds/2.1")
 
     def test_manifest_family_cannot_be_reduced_to_reported_subset(self):
         with tempfile.TemporaryDirectory() as directory:

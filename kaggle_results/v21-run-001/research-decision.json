@@ -1,0 +1,42 @@
+{
+  "protocol": "athena-research/2",
+  "bundle_id": "968c02f335cacfb997ed4866d78de84e2e92e221bf96c30ba84167ed2675fe45",
+  "analysis_policy": "paired-rounds/2.1",
+  "decision_matrix": {
+    "cpu_core": {
+      "decision": "REJECT",
+      "scope": "rank/table/projection/AAE source changes on measured cohorts only"
+    },
+    "rng_upgrade": {
+      "decision": "HOLD",
+      "scope": "exact RNG tuple and Bandit consumer; fresh dependency advisory review still required"
+    },
+    "resource_controls": {
+      "decision": "UNIT_SUPPORTED_INTEGRATION_HOLD",
+      "scope": "SingleFlight and Engine unit regressions; no live DNS/TLS/egress proof"
+    },
+    "alternative_parser": {
+      "decision": "NOT_RUN",
+      "next": "Implement a bounded scratch comparator before choosing TreeSink/lol_html"
+    },
+    "transport_reuse": {
+      "decision": "NOT_RUN",
+      "next": "Supply a DNS/policy-aware pooling candidate and actual socket experiment"
+    },
+    "table_html_integration": {
+      "decision": "NOT_RUN",
+      "next": "Grid oracles do not validate headers/extraction integration"
+    },
+    "neural_rerank": {
+      "decision": "NOT_RUN",
+      "next": "Labelled corpus and explicit model required"
+    }
+  },
+  "overall_decision": "HOLD",
+  "meaning": "Readiness for a bounded core implementation review; never automatic deployment or global-optimum approval",
+  "inputs": {
+    "kaggle_results\\v21-run-001\\c1-analysis.json": "fb29e6aeb5c540bd9d85a5d7854df4bc9a176c9b49f4e5b3d8edc54654466fd9",
+    "kaggle_results\\v21-run-001\\c2-analysis.json": "a3f12e20cf3dfecbdd3d67aa6be0444c185e2dbd1d69a99a0db3556f0d1203c0",
+    "kaggle_results\\v21-run-001\\c3-analysis.json": "0d8647606c8d0b669921f807d81faeb0627828e75ac471bcc3237fefae56dfcc"
+  }
+}

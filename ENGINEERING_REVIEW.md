@@ -135,4 +135,21 @@ Bằng chứng local Windows Rust 1.99.0 trong lần sửa harness:
 
 **NOT VERIFIED:** chưa chạy hoặc upload Kaggle protocol v2, chưa đo tốc độ/RSS bằng bộ mới, chưa kiểm tuple RNG 0.10.3/0.6.0 trong Linux, chưa audit advisory mới cho tuple đó; parser/network/rerank alternatives chưa có comparator. Không suy các test local thành kết luận nâng thư viện/core. Người dùng tự chạy ba cụm và cung cấp artifacts trước quyết định triển khai.
 
+## Sửa harness cho lượt nghiên cứu 2.1 — 16/10/2026
+
+Đã đối chiếu lượt người dùng chạy trong `kaggle_results/v2-run-001`: c1 hoàn chỉnh theo policy 2.0; c2 thất bại vì thiếu `/usr/bin/time`; c3 đã qua `cargo check` tuple mới nhưng guard so sánh opaque package IDs coi đường dẫn root scratch khác là thay đổi dependency ngoài RNG. Hai lỗi sau thuộc harness, không chứng minh candidate core hoặc RNG thất bại. Dữ liệu và phán quyết cũ giữ nguyên.
+
+Study 2.1 sửa chuẩn bị GNU time, thêm self-check RSS dương và provenance executable; lỗi cài/version/measurement vẫn dừng. Guard RNG chỉ chuẩn hóa root đã kiểm identity, giữ source/version và feature/edge ngoài RNG closure; graph mới được lưu trước guard. Counterexample root relocation trên graph **216 packages** lưu từ Kaggle cho kết quả không có dependency thay đổi; các ca sửa package/source/feature/edge ngoài phạm vi bị từ chối trong regression.
+
+Thêm `export_no_query`, parse sẵn ngoài timer, để so sánh với pipeline không query. `export` có query vẫn bao gồm ranking/highlight, không là benchmark riêng của serializer. Confirmation c1 tăng từ 60.000 lên **70.000 dòng**; family toàn bộ ba cụm từ 54 lên **57 intervals**. Policy mới `paired-rounds/2.1` chỉ áp dụng prospective: dependence trong block là diagnostic vì resample nguyên block; lag giữa median round mỗi nhánh hoặc delta quantile từng cặp ≥0,5 theo trị tuyệt đối vẫn HOLD. REJECT, p99, raw integrity, đủ mẫu, screening và RSS maximum gates giữ nguyên. Manifest cũ dùng policy 2.0; không trộn policy/bundle hoặc gắn nhãn mới cho sáu stage cũ.
+
+Bằng chứng local trong lần sửa này:
+
+- Regression trước sửa: **33 tests, 3 failures + 4 errors**, gồm root relocation, thiếu công cụ RSS, thiếu stage/family và policy chưa tách. Sau sửa: **37 Python tests passed** trong cùng `kaggle_experiments/test_protocol.py`; không tạo file test rời cho từng benchmark.
+- `cargo test --locked --all-targets`: **41 unit + 2 integration passed**. Format check, Clippy `-D warnings` và build các binary hiện tại đều exit 0. Không sửa source core, Cargo.toml/Cargo.lock hoặc toolchain.
+- Bảy stage của binary hiện tại chạy `--verify-only`: không có warmup/timer/raw samples; fingerprint và output size của export có/không query khớp pipeline tương ứng, hai chế độ query tạo fingerprint khác nhau; flag không hợp lệ bị từ chối.
+- Ba script sinh ra khớp helper/source/spec/bundle, import không khởi chạy cluster. Screen và confirm có identity khác nhau; đóng gói/sinh lại xác định cùng bytes và đã trả artifact về confirmation. C1 cũ vẫn đọc được theo policy 2.0: **6 cases, 60.000 rows**.
+
+**NOT VERIFIED:** build baseline trong target riêng trên Windows dừng với exit 101, `os error 112` (ổ C hết dung lượng), trước khi hoàn tất; không báo PASS. Log giữ tại `C:\Users\ADMIN\AppData\Local\Temp\athena-v21-functional-kcfhwtw4\build.log`. Automatic approval review từ chối xóa target tạm với lý do `blocked by policy`; target vẫn còn. Chưa upload/khởi chạy Kaggle 2.1, chưa xác nhận bootstrap GNU time trên image Kaggle hoặc release/tests/throughput của tuple RNG mới bằng lượt này. Người dùng chạy screening rồi confirmation theo [runbook 2.1](kaggle_experiments/README.md); chưa đủ để chốt nâng core/dependency.
+
 

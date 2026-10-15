@@ -1,0 +1,710 @@
+{
+  "protocol": "athena-research/2",
+  "analysis_policy": "paired-rounds/2.1",
+  "family_size": 57,
+  "reported_intervals": 28,
+  "family_alpha": 0.05,
+  "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
+  "quantile_method": "nearest, Python round ties to even",
+  "bootstrap_draws": 30000,
+  "seed": 42,
+  "legacy_input": false,
+  "cases": {
+    "links-100": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 0.2896773774,
+        "maximum_observed": 2.506073,
+        "quantiles": {
+          "0.5": 0.271866,
+          "0.95": 0.395884,
+          "0.99": 0.595207
+        },
+        "round_median_lag1": -0.4608738103227337,
+        "within_block_lag1_median": 0.1454278435363275
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 0.2538376818,
+        "maximum_observed": 1.17356,
+        "quantiles": {
+          "0.5": 0.231967,
+          "0.95": 0.353131,
+          "0.99": 0.541728
+        },
+        "round_median_lag1": 0.20488709800970734,
+        "within_block_lag1_median": 0.12234073669999734
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.05618899999999999,
+          -0.01812199999999997
+        ],
+        "0.95": [
+          -0.124328,
+          0.024538000000000004
+        ],
+        "0.99": [
+          -0.184278,
+          0.08221200000000006
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.38895659383367975,
+        "0.95": -0.07858746575892728,
+        "0.99": -0.008994586993547556
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-1000": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 2.8594899738,
+        "maximum_observed": 7.332998,
+        "quantiles": {
+          "0.5": 2.722087,
+          "0.95": 3.660499,
+          "0.99": 4.341888
+        },
+        "round_median_lag1": 0.3417479046992072,
+        "within_block_lag1_median": 0.4726902691916448
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 2.4898139514,
+        "maximum_observed": 6.181347,
+        "quantiles": {
+          "0.5": 2.380268,
+          "0.95": 3.204693,
+          "0.99": 4.035435
+        },
+        "round_median_lag1": 0.12319039960915679,
+        "within_block_lag1_median": 0.42753894951252847
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.4261339999999998,
+          -0.2679339999999999
+        ],
+        "0.95": [
+          -0.7614740000000002,
+          0.021677999999999642
+        ],
+        "0.99": [
+          -0.9695019999999999,
+          0.3125989999999996
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.07195092924460221,
+        "0.95": 0.23380815960571597,
+        "0.99": 0.22573799960401197
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-10000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 40.413493935,
+        "maximum_observed": 66.648519,
+        "quantiles": {
+          "0.5": 39.320476,
+          "0.95": 49.277939,
+          "0.99": 55.559113
+        },
+        "round_median_lag1": 0.41706553947482583,
+        "within_block_lag1_median": 0.5299390599786343
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 27.830877305,
+        "maximum_observed": 54.537888,
+        "quantiles": {
+          "0.5": 27.204638,
+          "0.95": 33.236386,
+          "0.99": 38.194237
+        },
+        "round_median_lag1": 0.3601019036488604,
+        "within_block_lag1_median": 0.5677209881473948
+      },
+      "delta_intervals": {
+        "0.5": [
+          -13.694560000000003,
+          -11.310440000000003
+        ],
+        "0.95": [
+          -17.619237999999996,
+          -12.892105
+        ],
+        "0.99": [
+          -20.408566,
+          -13.761381999999998
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling",
+        "candidate: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": 0.3301522333502343,
+        "0.95": 0.158220698402564,
+        "0.99": 0.23487867327249554
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-20000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 92.4806580474,
+        "maximum_observed": 140.74054,
+        "quantiles": {
+          "0.5": 91.330622,
+          "0.95": 104.068866,
+          "0.99": 114.833848
+        },
+        "round_median_lag1": 0.23288353707249895,
+        "within_block_lag1_median": 0.42083454416598126
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 54.31743215739999,
+        "maximum_observed": 88.432347,
+        "quantiles": {
+          "0.5": 53.770913,
+          "0.95": 60.32996,
+          "0.99": 68.052693
+        },
+        "round_median_lag1": 0.4958374926210855,
+        "within_block_lag1_median": 0.4938057323690669
+      },
+      "delta_intervals": {
+        "0.5": [
+          -39.495394000000005,
+          -36.13535400000001
+        ],
+        "0.95": [
+          -48.65666100000001,
+          -39.957146
+        ],
+        "0.99": [
+          -53.538823,
+          -38.538641999999996
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.06918658164845262,
+        "0.95": 0.20737595386714133,
+        "0.99": -0.045861960835830065
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-2500": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 8.6009479648,
+        "maximum_observed": 17.437187,
+        "quantiles": {
+          "0.5": 8.295576,
+          "0.95": 11.560852,
+          "0.99": 13.394158
+        },
+        "round_median_lag1": -0.15286127112128003,
+        "within_block_lag1_median": 0.4975464173472927
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 8.7376515606,
+        "maximum_observed": 19.322949,
+        "quantiles": {
+          "0.5": 8.463814,
+          "0.95": 11.192965,
+          "0.99": 13.050854
+        },
+        "round_median_lag1": 0.5893707373687684,
+        "within_block_lag1_median": 0.4363399014726441
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.517180999999999,
+          0.7466429999999997
+        ],
+        "0.95": [
+          -1.3339940000000006,
+          1.3395909999999986
+        ],
+        "0.99": [
+          -1.9796600000000009,
+          2.862685000000001
+        ]
+      },
+      "warnings": [
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.3196588765253047,
+        "0.95": -0.4236380670824003,
+        "0.99": -0.11864746971475447
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-500": {
+      "decision": "HOLD",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 1.3762174324,
+        "maximum_observed": 3.822808,
+        "quantiles": {
+          "0.5": 1.317767,
+          "0.95": 1.761764,
+          "0.99": 2.351376
+        },
+        "round_median_lag1": -0.11588034694617196,
+        "within_block_lag1_median": 0.4264473646254162
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 1.2398836904,
+        "maximum_observed": 4.073087,
+        "quantiles": {
+          "0.5": 1.177066,
+          "0.95": 1.645006,
+          "0.99": 2.117104
+        },
+        "round_median_lag1": -0.12030848274070495,
+        "within_block_lag1_median": 0.4435687329654095
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.16805599999999998,
+          -0.10982399999999992
+        ],
+        "0.95": [
+          -0.4343570000000001,
+          0.05871000000000004
+        ],
+        "0.99": [
+          -0.8928180000000001,
+          0.30175600000000014
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.03240297570919062,
+        "0.95": 0.21439753676039155,
+        "0.99": -0.15586164200400257
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "links-5000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "ms",
+      "baseline": {
+        "samples": 5000,
+        "mean": 19.167684013,
+        "maximum_observed": 43.204517,
+        "quantiles": {
+          "0.5": 19.086596,
+          "0.95": 23.474479,
+          "0.99": 26.529152
+        },
+        "round_median_lag1": 0.2395580478283348,
+        "within_block_lag1_median": 0.5943328339243802
+      },
+      "candidate": {
+        "samples": 5000,
+        "mean": 13.180299923399998,
+        "maximum_observed": 31.133536,
+        "quantiles": {
+          "0.5": 12.891569,
+          "0.95": 15.400678,
+          "0.99": 17.527105
+        },
+        "round_median_lag1": 0.06848151536632886,
+        "within_block_lag1_median": 0.5961500356265124
+      },
+      "delta_intervals": {
+        "0.5": [
+          -7.408958,
+          -4.390347000000002
+        ],
+        "0.95": [
+          -9.534494999999998,
+          -6.509517999999998
+        ],
+        "0.99": [
+          -11.301794999999998,
+          -6.4870090000000005
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [
+        "baseline: within-block dependence retained by whole paired-block resampling",
+        "candidate: within-block dependence retained by whole paired-block resampling"
+      ],
+      "paired_round_delta_lag1": {
+        "0.5": 0.11515262032076663,
+        "0.95": 0.15848604499402824,
+        "0.99": 0.2696701572295815
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-100": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 3780.8,
+        "maximum_observed": 3932,
+        "quantiles": {
+          "0.5": 3796
+        },
+        "round_median_lag1": -0.2762592296477449,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 3645.8,
+        "maximum_observed": 3720,
+        "quantiles": {
+          "0.5": 3660
+        },
+        "round_median_lag1": -0.006937106020115305,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -224,
+          -48
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.2415297961991573
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-1000": {
+      "decision": "HOLD",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 4376.6,
+        "maximum_observed": 4456,
+        "quantiles": {
+          "0.5": 4396
+        },
+        "round_median_lag1": -0.29312721942095976,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 4308.2,
+        "maximum_observed": 4440,
+        "quantiles": {
+          "0.5": 4300
+        },
+        "round_median_lag1": -0.25842023819758125,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -160,
+          40
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.4265579840334953
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-10000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 13295.8,
+        "maximum_observed": 13424,
+        "quantiles": {
+          "0.5": 13292
+        },
+        "round_median_lag1": -0.021831812192846255,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 11811.8,
+        "maximum_observed": 11976,
+        "quantiles": {
+          "0.5": 11836
+        },
+        "round_median_lag1": -0.423877624444272,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -1572,
+          -1396
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.208322289954943
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-20000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 22388.6,
+        "maximum_observed": 22500,
+        "quantiles": {
+          "0.5": 22392
+        },
+        "round_median_lag1": -0.007124955006601416,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 20171.4,
+        "maximum_observed": 20324,
+        "quantiles": {
+          "0.5": 20164
+        },
+        "round_median_lag1": 0.10570982413382138,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -2308,
+          -2108
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.09089475331679957
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-2500": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 5901.8,
+        "maximum_observed": 5972,
+        "quantiles": {
+          "0.5": 5920
+        },
+        "round_median_lag1": 0.2703198759952088,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 5494.6,
+        "maximum_observed": 5628,
+        "quantiles": {
+          "0.5": 5524
+        },
+        "round_median_lag1": 0.1889480543772743,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -496,
+          -308
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.11625106355127952
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-500": {
+      "decision": "HOLD",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 3984.0,
+        "maximum_observed": 4116,
+        "quantiles": {
+          "0.5": 4004
+        },
+        "round_median_lag1": -0.023125996810207338,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 4030.4,
+        "maximum_observed": 4152,
+        "quantiles": {
+          "0.5": 4032
+        },
+        "round_median_lag1": -0.20580087188862317,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -44,
+          140
+        ]
+      },
+      "warnings": [
+        "Candidate maximum observed process peak RSS exceeds baseline"
+      ],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.26651687572740207
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rss-5000": {
+      "decision": "PASS_PERFORMANCE",
+      "unit": "KiB",
+      "baseline": {
+        "samples": 20,
+        "mean": 8266.6,
+        "maximum_observed": 8360,
+        "quantiles": {
+          "0.5": 8284
+        },
+        "round_median_lag1": 0.3438904794970089,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 7546.8,
+        "maximum_observed": 7676,
+        "quantiles": {
+          "0.5": 7548
+        },
+        "round_median_lag1": -0.13905623964255026,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -808,
+          -588
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.12510726285060134
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    }
+  },
+  "overall_decision": "HOLD",
+  "scope": "Performance evidence; not core/library deployment approval",
+  "source_samples": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c2\\athena-v21-c2\\samples.jsonl",
+  "inputs": {
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c2\\athena-v21-c2\\samples.jsonl": "2a9da648ab654b0e2d7d71c90ffa0d5b908b80f18ff6e3b65115413f39c81aa5",
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c2\\athena-v21-c2\\manifest.json": "bbe27d406ab9c8e9ce8433041d95a25f8a8cc505c5ced5afcfb605b6678e9020"
+  },
+  "source_manifest": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c2\\athena-v21-c2\\manifest.json",
+  "bundle_id": "968c02f335cacfb997ed4866d78de84e2e92e221bf96c30ba84167ed2675fe45",
+  "cluster": "c2",
+  "checks": {
+    "environment": {
+      "status": "PASS",
+      "evidence": {
+        "rust_version": "1.99.0",
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "source_integrity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "f95f12a48ff7c187c00daf3067f00e89c60d12ec1cacd85e6fd70ce8cbdd7f62",
+        "candidate": "de7d10111cf1f41d8376cc55445758c58dd3216fa1343f3bd2609f48c1fdd284"
+      }
+    },
+    "rss_tool": {
+      "status": "PASS",
+      "evidence": {
+        "path": "/usr/bin/time",
+        "version": "time (GNU Time) UNKNOWN\nCopyright (C) 2018 Free Software Foundation, Inc.\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.\n\nWritten by David Keppel, David MacKenzie, and Assaf Gordon.\n",
+        "sha256": "3b11dec50514a8473e9f6efa7a34d584d0657538c09988f61b72d38ad4991a10",
+        "setup": "apt-installed",
+        "self_check_peak_rss_kib": 15032
+      }
+    },
+    "build_baseline": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "a3c01b9bb9be2b8e26da8a0d0346290b86dc64281c7dd59593dc9a8cac9cd2f7",
+        "bench_core": "a6134822d5646ecac634ee1bc58cba9a5a31fa0c08e15b08eae796a754d6f4c9",
+        "research_probe": "b11b429141bb2c3fd2411ad55637d4ebb3647811156fd2a88a1f51447ac127e6"
+      }
+    },
+    "build_candidate": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "6c1cc6bbd8bbca5100408983324169adcc50a0813fc4671b239119d51617c137",
+        "bench_core": "14e86a75ed769dcfb7884117940c873a281ed77353355ff7d27906ec907beae8",
+        "research_probe": "aa8d825e07b81b5179162d65e6c6cf88cbffbacfe98dc36805faf249bc18a96f"
+      }
+    },
+    "candidate_content": {
+      "status": "PASS",
+      "evidence": {
+        "entities": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609",
+        "unicode": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e",
+        "scripts": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c",
+        "implicit-p": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5",
+        "inline-repair": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9",
+        "table-repair": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e",
+        "links": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959",
+        "framing": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e",
+        "preformatted": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "variant_identity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "4d36f48ef8e73f323a85180506944f1f3e64eb28e2c95871d7229682f96d2b8c",
+        "candidate": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804"
+      }
+    },
+    "deep_dom": {
+      "status": "PASS",
+      "evidence": {
+        "50": "5b2e2cae0065d8192b3c731093008407ea4806e4c922d763af758ac67951483d",
+        "100": "4f53ffe7e12e7a391d5d7e30b92f4e2015483c3f882d3c17626643fc5bee11e4",
+        "200": "00883a1ae35b2d4b94fc76894cf75ac5f82a73a6fcd9efc006a3ac6128b3a0e5",
+        "400": "ec1475b5aaf98f3eaf4d7d591c4e7bd5b8fdbd64a2c7886a09f5b849186c829e",
+        "500": "8507c970082f3ada84121db0fd17a6e163d620fcba5937ca89fb2bb3660d0725"
+      }
+    }
+  },
+  "coverage": {}
+}

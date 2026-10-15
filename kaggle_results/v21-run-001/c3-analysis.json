@@ -1,0 +1,533 @@
+{
+  "protocol": "athena-research/2",
+  "analysis_policy": "paired-rounds/2.1",
+  "family_size": 57,
+  "reported_intervals": 8,
+  "family_alpha": 0.05,
+  "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
+  "quantile_method": "nearest, Python round ties to even",
+  "bootstrap_draws": 30000,
+  "seed": 42,
+  "legacy_input": false,
+  "cases": {
+    "rng-0.5-0.5": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 111.650476,
+        "maximum_observed": 125.84723,
+        "quantiles": {
+          "0.5": 110.91672
+        },
+        "round_median_lag1": 0.3024286412282637,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 110.68346899999999,
+        "maximum_observed": 118.46422,
+        "quantiles": {
+          "0.5": 109.39962
+        },
+        "round_median_lag1": -0.04467217661182982,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -3.894300000000001,
+          4.224900000000005
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": 0.06120575670578693
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-1-1": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 82.712665,
+        "maximum_observed": 85.89981,
+        "quantiles": {
+          "0.5": 82.61502
+        },
+        "round_median_lag1": 0.10006701764649985,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 83.82674899999999,
+        "maximum_observed": 87.78501,
+        "quantiles": {
+          "0.5": 83.40671
+        },
+        "round_median_lag1": -0.15586314824692624,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -0.5468999999999937,
+          2.83211
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.2850678484416699
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-1-100": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 119.78334050000001,
+        "maximum_observed": 132.64182,
+        "quantiles": {
+          "0.5": 119.37542
+        },
+        "round_median_lag1": -0.3038298913752475,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 120.10534299999999,
+        "maximum_observed": 138.18033,
+        "quantiles": {
+          "0.5": 118.07692
+        },
+        "round_median_lag1": -0.08348387303511795,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -3.8566900000000004,
+          1.9423100000000062
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.025565019227492485
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-100-1": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 118.71460549999999,
+        "maximum_observed": 122.32762,
+        "quantiles": {
+          "0.5": 118.73532
+        },
+        "round_median_lag1": 0.11558639709540645,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 120.5357465,
+        "maximum_observed": 132.47662,
+        "quantiles": {
+          "0.5": 119.00342
+        },
+        "round_median_lag1": -0.10359281911719342,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -3.123900000000006,
+          6.855099999999993
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.15081157589830438
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-1000-1000": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 95.673853,
+        "maximum_observed": 100.70932,
+        "quantiles": {
+          "0.5": 95.37202
+        },
+        "round_median_lag1": -0.12374554318223428,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 95.769323,
+        "maximum_observed": 99.04322,
+        "quantiles": {
+          "0.5": 95.42011
+        },
+        "round_median_lag1": -0.021332428952840325,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -2.6063100000000077,
+          1.6015100000000047
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.19725620637805064
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-1000000-1000000": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 96.812407,
+        "maximum_observed": 101.95311,
+        "quantiles": {
+          "0.5": 96.39971
+        },
+        "round_median_lag1": -0.2202532959385896,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 96.69187050000001,
+        "maximum_observed": 102.26761,
+        "quantiles": {
+          "0.5": 95.71692
+        },
+        "round_median_lag1": -0.011137690468679306,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -4.343800000000002,
+          3.417190000000005
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.16877808331633176
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-2-5": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 102.114475,
+        "maximum_observed": 106.72973,
+        "quantiles": {
+          "0.5": 101.85772
+        },
+        "round_median_lag1": 0.2733160340299041,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 102.25759000000001,
+        "maximum_observed": 108.46711,
+        "quantiles": {
+          "0.5": 101.39132
+        },
+        "round_median_lag1": 0.07603903570605935,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -1.9731100000000055,
+          2.7275999999999954
+        ]
+      },
+      "warnings": [],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.32254327560192714
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    },
+    "rng-5-2": {
+      "decision": "HOLD",
+      "unit": "ns/draw",
+      "baseline": {
+        "samples": 20,
+        "mean": 104.541969,
+        "maximum_observed": 122.81222,
+        "quantiles": {
+          "0.5": 101.44282
+        },
+        "round_median_lag1": 0.6140119003490108,
+        "within_block_lag1_median": null
+      },
+      "candidate": {
+        "samples": 20,
+        "mean": 104.64656849999999,
+        "maximum_observed": 121.69493,
+        "quantiles": {
+          "0.5": 101.99122
+        },
+        "round_median_lag1": 0.6809527210585353,
+        "within_block_lag1_median": null
+      },
+      "delta_intervals": {
+        "0.5": [
+          -4.4047999999999945,
+          3.0512999999999977
+        ]
+      },
+      "warnings": [
+        "baseline: dependence/drift screening threshold exceeded",
+        "candidate: dependence/drift screening threshold exceeded"
+      ],
+      "diagnostics": [],
+      "paired_round_delta_lag1": {
+        "0.5": -0.2207509105242721
+      },
+      "bootstrap_backend": "numpy-weighted-paired-blocks/1.26.4"
+    }
+  },
+  "overall_decision": "HOLD",
+  "scope": "Performance evidence; not core/library deployment approval",
+  "source_samples": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c3\\athena-v21-c3\\samples.jsonl",
+  "inputs": {
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c3\\athena-v21-c3\\samples.jsonl": "b983ea6883f1522a6702b36a8d0a17221e6fab5b36d941bb2fdcae2421dd65e6",
+    "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c3\\athena-v21-c3\\manifest.json": "b46a4153e6557605662a43a37aaa7ab2384cd826eb71bcc914cfc10187222781"
+  },
+  "source_manifest": "C:\\Users\\ADMIN\\Athena\\kaggle_results\\v21-run-001\\c3\\athena-v21-c3\\manifest.json",
+  "bundle_id": "968c02f335cacfb997ed4866d78de84e2e92e221bf96c30ba84167ed2675fe45",
+  "cluster": "c3",
+  "checks": {
+    "environment": {
+      "status": "PASS",
+      "evidence": {
+        "rust_version": "1.99.0",
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "source_integrity": {
+      "status": "PASS",
+      "evidence": {
+        "baseline": "f95f12a48ff7c187c00daf3067f00e89c60d12ec1cacd85e6fd70ce8cbdd7f62",
+        "candidate": "de7d10111cf1f41d8376cc55445758c58dd3216fa1343f3bd2609f48c1fdd284"
+      }
+    },
+    "build_candidate": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "6c1cc6bbd8bbca5100408983324169adcc50a0813fc4671b239119d51617c137",
+        "bench_core": "14e86a75ed769dcfb7884117940c873a281ed77353355ff7d27906ec907beae8",
+        "research_probe": "aa8d825e07b81b5179162d65e6c6cf88cbffbacfe98dc36805faf249bc18a96f"
+      }
+    },
+    "core_oracles": {
+      "status": "PASS",
+      "evidence": {
+        "bm25_queries": 4,
+        "table_oracles": 4
+      }
+    },
+    "singleflight": {
+      "status": "PASS",
+      "evidence": {
+        "after_sequential_call": 51,
+        "keys": 50,
+        "leader_cancellation": true,
+        "leader_executions": 50,
+        "registered_calls": 500,
+        "scope": "deterministic SingleFlight state test; no origin HTTP requests"
+      }
+    },
+    "ip_classifier": {
+      "status": "PASS",
+      "evidence": {
+        "details": [
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "127.0.0.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "10.0.0.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "172.16.0.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "172.31.255.255"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "192.168.1.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "169.254.169.254"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "0.0.0.0"
+          },
+          {
+            "actual": true,
+            "expected": true,
+            "ip": "8.8.8.8"
+          },
+          {
+            "actual": true,
+            "expected": true,
+            "ip": "1.1.1.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "::1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "fe80::1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "fc00::1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "2001:db8::1"
+          },
+          {
+            "actual": true,
+            "expected": true,
+            "ip": "2606:4700:4700::1111"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "::ffff:127.0.0.1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "2001:2::1"
+          },
+          {
+            "actual": false,
+            "expected": false,
+            "ip": "3fff::1"
+          }
+        ],
+        "scope": "address-classifier points, not DNS/TLS/SSRF integration"
+      }
+    },
+    "engine_resource_regressions": {
+      "status": "PASS",
+      "tests": [
+        "cancelled_dns_worker_retains_origin_admission_until_exit",
+        "cancelled_blocking_job_keeps_cpu_admission_until_exit",
+        "pending_query_fanout_is_bounded_before_shared_source_wait",
+        "caller_deadline_covers_waiting_for_a_shared_source"
+      ]
+    },
+    "rng_dependencies": {
+      "status": "PASS",
+      "evidence": {
+        "removed": [
+          "[\"getrandom\",\"0.3.4\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"ppv-lite86\",\"0.2.21\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"r-efi\",\"5.3.0\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"rand\",\"0.9.5\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"rand_chacha\",\"0.9.0\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"rand_core\",\"0.9.5\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"rand_distr\",\"0.5.1\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"wasip2\",\"1.0.4+wasi-0.2.12\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"wit-bindgen\",\"0.57.1\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"zerocopy\",\"0.8.63\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]",
+          "[\"zerocopy-derive\",\"0.8.63\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]"
+        ],
+        "added": [
+          "[\"rand_distr\",\"0.6.0\",\"registry+https://github.com/rust-lang/crates.io-index\",\"\"]"
+        ]
+      }
+    },
+    "build_rng-upgrade": {
+      "status": "PASS",
+      "binaries": {
+        "athena-core-v2": "75d4fde44e19dffc647672070ff6900f9a563e3abc5a7c1d40a1706931e23284",
+        "bench_core": "2b7c469293a5f0af400e758cf94c186553447ee2e39048ff8a72370a0ed41df6",
+        "research_probe": "831a1b0783341f84d7b36d1183507e0178bc6e1c0e7563da2cf409ef7f7acf6b"
+      }
+    },
+    "rng_distribution": {
+      "status": "PASS",
+      "family_checks": 2240
+    }
+  },
+  "coverage": {
+    "R1": {
+      "status": "MEASURED",
+      "scope": "exact RNG tuple, real Bandit consumer, core tests, 8 Beta shapes, paired throughput"
+    },
+    "R2": {
+      "status": "NOT_RUN",
+      "reason": "No alternative TreeSink/lol_html candidate supplied"
+    },
+    "R3": {
+      "status": "CLASSIFIER_ONLY",
+      "reason": "No live DNS/TLS/connection-reuse experiment"
+    },
+    "R4": {
+      "status": "ORACLE_AND_C1",
+      "reason": "No reused-index/top-K candidate supplied"
+    },
+    "R5": {
+      "status": "SEE_C2"
+    },
+    "R6": {
+      "status": "GRID_ORACLES_ONLY",
+      "reason": "HTML table header integration not implemented"
+    },
+    "R7": {
+      "status": "SEE_C1",
+      "reason": "No socket streaming candidate supplied"
+    },
+    "R8": {
+      "status": "STATE_TESTED",
+      "scope": "SingleFlight and existing Engine blocking-lifetime/admission regressions; not production load"
+    },
+    "R9": {
+      "status": "NOT_RUN",
+      "reason": "No labelled corpus/model candidate"
+    },
+    "dependency_advisories": {
+      "status": "NOT_RUN",
+      "reason": "Audit the preserved exact lockfiles separately before a library adoption"
+    }
+  }
+}

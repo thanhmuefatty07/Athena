@@ -11,6 +11,8 @@ use url::Url;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
+    assert!(args.len() <= 5 && args.get(4).is_none_or(|value| value == "--verify-only"));
+    let verify_only = args.get(4).is_some();
     let stage = args.get(1).cloned().unwrap_or_else(|| "rank".to_owned());
     let iterations: usize = args
         .get(3)
@@ -28,7 +30,14 @@ fn main() {
     assert!(external || (1..=20_000).contains(&size));
     assert!(matches!(
         stage.as_str(),
-        "rank" | "table" | "parse" | "export" | "pipeline" | "pipeline_no_query" | "fixture"
+        "rank"
+            | "table"
+            | "parse"
+            | "export"
+            | "export_no_query"
+            | "pipeline"
+            | "pipeline_no_query"
+            | "fixture"
     ));
     let base = Url::parse("https://example.org/").unwrap();
     let chunks: Vec<_> = (0..size)
@@ -56,7 +65,8 @@ fn main() {
             .map(|(i, c)| format!("<p>{}<a href='/source/{i}'>source</a></p>", c.text))
             .collect::<String>()
     };
-    let page = (stage == "export").then(|| parse_html(&html, &base, 250_000, 1200).unwrap());
+    let page = matches!(stage.as_str(), "export" | "export_no_query")
+        .then(|| parse_html(&html, &base, 250_000, 1200).unwrap());
     let rows: Vec<_> = (0..size)
         .map(|i| Row {
             group: 0,
@@ -68,7 +78,10 @@ fn main() {
             }],
         })
         .collect();
-    let query = if matches!(stage.as_str(), "pipeline_no_query" | "fixture") {
+    let query = if matches!(
+        stage.as_str(),
+        "export_no_query" | "pipeline_no_query" | "fixture"
+    ) {
         None
     } else {
         Some("tokio runtime")
@@ -81,7 +94,7 @@ fn main() {
         "parse" => black_box(parse_html(black_box(&html), &base, 250_000, 1200).unwrap())
             .chunks
             .len(),
-        "export" => {
+        "export" | "export_no_query" => {
             black_box(export_jsonl(black_box(page.as_ref().unwrap()), &base, 0, query, 5).unwrap())
                 .len()
         }
@@ -113,6 +126,14 @@ fn main() {
         }
     };
     let fingerprint = blake3::hash(&oracle_payload).to_hex().to_string();
+    if verify_only {
+        println!(
+            "{}",
+            json!({"protocol": "athena-research/2", "mode": "oracle-only", "stage": stage,
+                "size": size, "output_size": run(), "fingerprint": fingerprint})
+        );
+        return;
+    }
     for _ in 0..10 {
         black_box(run());
     }

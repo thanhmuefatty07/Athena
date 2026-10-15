@@ -1,0 +1,1736 @@
+[2026-10-15T19:24:02.499161+00:00] CMD ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"] cwd=None
+[2026-10-15T19:24:02.711513+00:00] RESULT {"argv": ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"], "cwd": "None", "exit_code": 0, "wall_ns": 210713276, "stdout_sha256": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:02.711859+00:00] #!/bin/sh
+# shellcheck shell=dash
+# shellcheck disable=SC2039  # local is non-POSIX
+
+# This is just a little script that can be downloaded from the internet to
+# install rustup. It just does platform detection, downloads the installer
+# and runs it.
+
+# It runs on Unix shells like {a,ba,da,k,z}sh. It uses the common `local`
+# extension. Note: Most shells limit `local` to 1 var per line, contra bash.
+
+# Some versions of ksh have no `local` keyword. Alias it to `typeset`, but
+# beware this makes variables global with f()-style function syntax in ksh93.
+# mksh has this alias by default.
+has_local() {
+    # shellcheck disable=SC2034  # deliberately unused
+    local _has_local
+}
+
+has_local 2>/dev/null || alias local=typeset
+
+is_zsh() {
+    [ -n "${ZSH_VERSION-}" ]
+}
+
+set -u
+
+# If RUSTUP_UPDATE_ROOT is unset or empty, default it.
+RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://static.rust-lang.org/rustup}"
+# Set quiet as a global for ease of use
+RUSTUP_QUIET=no
+
+# NOTICE: If you change anything here, please make the same changes in setup_mode.rs
+usage() {
+    cat <<EOF
+rustup-init 1.29.1 (3f5811cec 2026-08-12)
+
+The installer for rustup
+
+Usage: rustup-init[EXE] [OPTIONS]
+
+Options:
+  -v, --verbose
+          Set log level to 'DEBUG' if 'RUSTUP_LOG' is unset
+  -q, --quiet
+          Disable progress output, set log level to 'WARN' if 'RUSTUP_LOG' is unset
+  -y, --yes
+          Disable confirmation prompt
+      --default-host <DEFAULT_HOST>
+          Choose a default host tuple
+      --default-toolchain <DEFAULT_TOOLCHAIN>
+          Choose a default toolchain to install. Use 'none' to not install any toolchains at all
+      --profile <PROFILE>
+          [default: default] [possible values: minimal, default, complete]
+  -c, --component <COMPONENT>
+          Comma-separated list of component names to also install
+  -t, --target <TARGET>
+          Comma-separated list of target names to also install
+      --no-update-default-toolchain
+          Don't update any existing default toolchain after install
+      --no-modify-path
+          Don't configure the PATH environment variable
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+EOF
+}
+
+main() {
+    downloader --check
+    need_cmd uname
+    need_cmd mktemp
+    need_cmd chmod
+    need_cmd mkdir
+    need_cmd rm
+    need_cmd rmdir
+
+    get_architecture || return 1
+    local _arch="$RETVAL"
+    assert_nz "$_arch" "arch"
+
+    local _default_host_override=""
+    case "$_arch" in
+        *windows*)
+            _default_host_override="--default-host=$_arch"
+            ;;
+    esac
+
+    local _ext=""
+    case "$_arch" in
+        *windows*)
+            _ext=".exe"
+            ;;
+    esac
+
+    local _url
+    if [ "${RUSTUP_VERSION+set}" = 'set' ]; then
+        say "\`RUSTUP_VERSION\` has been set to \`${RUSTUP_VERSION}\`"
+        _url="${RUSTUP_UPDATE_ROOT}/archive/${RUSTUP_VERSION}"
+    else
+        _url="${RUSTUP_UPDATE_ROOT}/dist"
+    fi
+    _url="${_url}/${_arch}/rustup-init${_ext}"
+
+
+    local _dir
+    if ! _dir="$(ensure mktemp -d)"; then
+        # Because the previous command ran in a subshell, we must manually
+        # propagate exit status.
+        exit 1
+    fi
+    local _file="${_dir}/rustup-init${_ext}"
+
+    local _ansi_escapes_are_valid=false
+    if [ -t 2 ]; then
+        if [ "${TERM+set}" = 'set' ]; then
+            case "$TERM" in
+                xterm*|rxvt*|urxvt*|linux*|vt*)
+                    _ansi_escapes_are_valid=true
+                ;;
+            esac
+        fi
+    fi
+
+    # check if we have to use /dev/tty to prompt the user
+    local need_tty=yes
+    for arg in "$@"; do
+        case "$arg" in
+            --help)
+                usage
+                exit 0
+                ;;
+            --quiet)
+                RUSTUP_QUIET=yes
+                ;;
+            --yes)
+                # user wants to skip the prompt --
+                # we don't need /dev/tty
+                need_tty=no
+                ;;
+            *)
+                OPTIND=1
+                if [ "${arg%%--*}" = "" ]; then
+                    # Long option (other than --help);
+                    # don't attempt to interpret it.
+                    continue
+                fi
+                while getopts :hqy sub_arg "$arg"; do
+                    case "$sub_arg" in
+                        h)
+                            usage
+                            exit 0
+                            ;;
+                        q)
+                            RUSTUP_QUIET=yes
+                            ;;
+                        y)
+                            # user wants to skip the prompt --
+                            # we don't need /dev/tty
+                            need_tty=no
+                            ;;
+                        *)
+                            ;;
+                        esac
+                done
+                ;;
+        esac
+    done
+
+    say 'downloading installer'
+
+    ensure mkdir -p "$_dir"
+    ensure downloader "$_url" "$_file" "$_arch"
+    ensure chmod u+x "$_file"
+    if [ ! -x "$_file" ]; then
+        err "Cannot execute $_file (likely because of mounting /tmp as noexec)."
+        err "Please copy the file to a location where you can execute binaries and run ./rustup-init${_ext}."
+        exit 1
+    fi
+
+    # If a default host has been specified on the command line, we should
+    # revert our own override before calling the installer.
+    for arg in "$@"; do
+        case "$arg" in
+            --default-host|--default-host=*)
+                _default_host_override=
+                break
+                ;;
+        esac
+    done
+
+    if [ "$need_tty" = "yes" ] && [ ! -t 0 ]; then
+        # The installer is going to want to ask for confirmation by
+        # reading stdin.  This script was piped into `sh` though and
+        # doesn't have stdin to pass to its children. Instead we're going
+        # to explicitly connect /dev/tty to the installer's stdin.
+        if [ ! -t 1 ]; then
+            err "Unable to run interactively. Run with -y to accept defaults, --help for additional options"
+            exit 1;
+        fi
+
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@" < /dev/tty
+    else
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@"
+    fi
+
+    local _retval=$?
+
+    ignore rm "$_file"
+    ignore rmdir "$_dir"
+
+    return "$_retval"
+}
+
+get_current_exe() {
+    # Returns the executable used for system architecture detection
+    # This is only run on Linux
+    local _current_exe
+    if test -L /proc/self/exe ; then
+        _current_exe=/proc/self/exe
+    else
+        warn "Unable to find /proc/self/exe. System architecture detection might be inaccurate."
+        if test -n "$SHELL" ; then
+            _current_exe=$SHELL
+        else
+            need_cmd /bin/sh
+            _current_exe=/bin/sh
+        fi
+        warn "Falling back to $_current_exe."
+    fi
+    echo "$_current_exe"
+}
+
+get_bitness() {
+    need_cmd head
+    # Architecture detection without dependencies beyond coreutils.
+    # ELF files start out "\x7fELF", and the following byte is
+    #   0x01 for 32-bit and
+    #   0x02 for 64-bit.
+    # The printf builtin on some shells like dash only supports octal
+    # escape sequences, so we use those.
+    local _current_exe=$1
+    local _current_exe_head
+    _current_exe_head=$(head -c 5 "$_current_exe")
+    if [ "$_current_exe_head" = "$(printf '\177ELF\001')" ]; then
+        echo 32
+    elif [ "$_current_exe_head" = "$(printf '\177ELF\002')" ]; then
+        echo 64
+    else
+        err "unknown platform bitness"
+        exit 1;
+    fi
+}
+
+is_host_amd64_elf() {
+    local _current_exe=$1
+
+    need_cmd head
+    need_cmd tail
+    # ELF e_machine detection without dependencies beyond coreutils.
+    # Two-byte field at offset 0x12 indicates the CPU,
+    # but we're interested in it being 0x3E to indicate amd64, or not that.
+    local _current_exe_machine
+    _current_exe_machine=$(head -c 19 "$_current_exe" | tail -c 1)
+    [ "$_current_exe_machine" = "$(printf '\076')" ]
+}
+
+get_endianness() {
+    local _current_exe=$1
+    local cputype=$2
+    local suffix_eb=$3
+    local suffix_el=$4
+
+    # detect endianness without od/hexdump, like get_bitness() does.
+    need_cmd head
+    need_cmd tail
+
+    local _current_exe_endianness
+    _current_exe_endianness="$(head -c 6 "$_current_exe" | tail -c 1)"
+    if [ "$_current_exe_endianness" = "$(printf '\001')" ]; then
+        echo "${cputype}${suffix_el}"
+    elif [ "$_current_exe_endianness" = "$(printf '\002')" ]; then
+        echo "${cputype}${suffix_eb}"
+    else
+        err "unknown platform endianness"
+        exit 1
+    fi
+}
+
+# Detect the Linux/LoongArch UAPI flavor, with all errors being non-fatal.
+# Returns 0 or 234 in case of successful detection, 1 otherwise (/tmp being
+# noexec, or other causes).
+check_loongarch_uapi() {
+    need_cmd base64
+
+    local _tmp
+    if ! _tmp="$(ensure mktemp)"; then
+        return 1
+    fi
+
+    # Minimal Linux/LoongArch UAPI detection, exiting with 0 in case of
+    # upstream ("new world") UAPI, and 234 (-EINVAL truncated) in case of
+    # old-world (as deployed on several early commercial Linux distributions
+    # for LoongArch).
+    #
+    # See https://gist.github.com/xen0n/5ee04aaa6cecc5c7794b9a0c3b65fc7f for
+    # source to this helper binary.
+    ignore base64 -d > "$_tmp" <<EOF
+f0VMRgIBAQAAAAAAAAAAAAIAAgEBAAAAeAAgAAAAAABAAAAAAAAAAAAAAAAAAAAAQQAAAEAAOAAB
+AAAAAAAAAAEAAAAFAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAJAAAAAAAAAAkAAAAAAAAAAAA
+AQAAAAAABCiAAwUAFQAGABUAByCAAwsYggMAACsAC3iBAwAAKwAxen0n
+EOF
+
+    ignore chmod u+x "$_tmp"
+    if [ ! -x "$_tmp" ]; then
+        ignore rm "$_tmp"
+        return 1
+    fi
+
+    "$_tmp"
+    local _retval=$?
+
+    ignore rm "$_tmp"
+    return "$_retval"
+}
+
+ensure_loongarch_uapi() {
+    check_loongarch_uapi
+    case $? in
+        0)
+            return 0
+            ;;
+        234)
+            err 'Your Linux kernel does not provide the ABI required by this Rust distribution.'
+            err 'Please check with your OS provider for how to obtain a compatible Rust package for your system.'
+            exit 1
+            ;;
+        *)
+            warn "Cannot determine current system's ABI flavor, continuing anyway."
+            warn 'Note that the official Rust distribution only works with the upstream kernel ABI.'
+            warn 'Installation will fail if your running kernel happens to be incompatible.'
+            ;;
+    esac
+}
+
+get_architecture() {
+    local _ostype _cputype _bitness _arch _clibtype
+    _ostype="$(uname -s)"
+    _cputype="$(uname -m)"
+    _clibtype="gnu"
+
+    if [ "$_ostype" = Linux ]; then
+        if [ "$(uname -o)" = Android ]; then
+            _ostype=Android
+        fi
+        if ldd --version 2>&1 | grep -q 'musl'; then
+            _clibtype="musl"
+        fi
+    fi
+
+    if [ "$_ostype" = Darwin ]; then
+        # Darwin `uname -m` can lie due to Rosetta shenanigans. If you manage to
+        # invoke a native shell binary and then a native uname binary, you can
+        # get the real answer, but that's hard to ensure, so instead we use
+        # `sysctl` (which doesn't lie) to check for the actual architecture.
+        if [ "$_cputype" = i386 ]; then
+            # Handling i386 compatibility mode in older macOS versions (<10.15)
+            # running on x86_64-based Macs.
+            # Starting from 10.15, macOS explicitly bans all i386 binaries from running.
+            # See: <https://support.apple.com/en-us/HT208436>
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.x86_64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=x86_64
+            fi
+        elif [ "$_cputype" = x86_64 ]; then
+            # Handling x86-64 compatibility mode (a.k.a. Rosetta 2)
+            # in newer macOS versions (>=11) running on arm64-based Macs.
+            # Rosetta 2 is built exclusively for x86-64 and cannot run i386 binaries.
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.arm64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=arm64
+            fi
+        fi
+    fi
+
+    if [ "$_ostype" = SunOS ]; then
+        # Both Solaris and illumos presently announce as "SunOS" in "uname -s"
+        # so use "uname -o" to disambiguate.  We use the full path to the
+        # system uname in case the user has coreutils uname first in PATH,
+        # which has historically sometimes printed the wrong value here.
+        if [ "$(/usr/bin/uname -o)" = illumos ]; then
+            _ostype=illumos
+        fi
+
+        # illumos systems have multi-arch userlands, and "uname -m" reports the
+        # machine hardware name; e.g., "i86pc" on both 32- and 64-bit x86
+        # systems.  Check for the native (widest) instruction set on the
+        # running kernel:
+        if [ "$_cputype" = i86pc ]; then
+            _cputype="$(isainfo -n)"
+        fi
+    fi
+
+    local _current_exe
+    case "$_ostype" in
+
+        Android)
+            _ostype=linux-android
+            ;;
+
+        Linux)
+            _current_exe=$(get_current_exe)
+            _ostype=unknown-linux-$_clibtype
+            _bitness=$(get_bitness "$_current_exe")
+            ;;
+
+        FreeBSD)
+            _ostype=unknown-freebsd
+            ;;
+
+        NetBSD)
+            _ostype=unknown-netbsd
+            ;;
+
+        DragonFly)
+            _ostype=unknown-dragonfly
+            ;;
+
+        Darwin)
+            _ostype=apple-darwin
+            ;;
+
+        illumos)
+            _ostype=unknown-illumos
+            ;;
+
+        SunOS)
+            if [ "$_cputype" = sun4v ]; then
+               _ostype=sun-solaris
+            else
+               _ostype=pc-solaris
+            fi
+            ;;
+
+        MINGW* | MSYS* | CYGWIN* | Windows_NT)
+            _ostype=pc-windows-gnu
+            ;;
+
+        *)
+            err "unrecognized OS type: $_ostype"
+            exit 1
+            ;;
+
+    esac
+
+    case "$_cputype" in
+
+        i386 | i486 | i686 | i786 | x86)
+            _cputype=i686
+            ;;
+
+        xscale | arm)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            fi
+            ;;
+
+        armv6l)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        armv7l | armv8l)
+            _cputype=armv7
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        aarch64 | arm64)
+            _cputype=aarch64
+            # Windows aarch64 uses gnullvm instead of gnu
+            if [ "$_ostype" = "pc-windows-gnu" ]; then
+                _ostype=pc-windows-gnullvm
+            fi
+            ;;
+
+        x86_64 | x86-64 | x64 | amd64)
+            _cputype=x86_64
+            ;;
+
+        mips)
+            _cputype=$(get_endianness "$_current_exe" mips '' el)
+            ;;
+
+        mips64)
+            if [ "$_bitness" -eq 64 ]; then
+                # only n64 ABI is supported for now
+                _ostype="${_ostype}abi64"
+                _cputype=$(get_endianness "$_current_exe" mips64 '' el)
+            fi
+            ;;
+
+        ppc)
+            _cputype=powerpc
+            ;;
+
+        ppc64)
+            _cputype=powerpc64
+            ;;
+
+        ppc64le)
+            _cputype=powerpc64le
+            ;;
+
+        s390x)
+            _cputype=s390x
+            ;;
+        sun4v)
+            _cputype=sparcv9
+            ;;
+        riscv64)
+            _cputype=riscv64gc
+            ;;
+        loongarch64)
+            _cputype=loongarch64
+            ensure_loongarch_uapi
+            ;;
+        *)
+            err "unknown CPU type: $_cputype"
+            exit 1
+
+    esac
+
+    # Detect 64-bit linux with 32-bit userland
+    if [ "${_ostype}" = unknown-linux-gnu ] && [ "${_bitness}" -eq 32 ]; then
+        case $_cputype in
+            x86_64)
+                if [ -n "${RUSTUP_CPUTYPE:-}" ]; then
+                    _cputype="$RUSTUP_CPUTYPE"
+                else {
+                    # 32-bit executable for amd64 = x32
+                    if is_host_amd64_elf "$_current_exe"; then {
+                        err "This host is running an x32 userland, for which no native toolchain is provided."
+                        err "You will have to install multiarch compatibility with i686 or amd64."
+                        err "To do so, set the RUSTUP_CPUTYPE environment variable set to i686 or amd64 and re-run this script."
+                        err "You will be able to add an x32 target after installation by running \`rustup target add x86_64-unknown-linux-gnux32\`."
+                         exit 1
+                    }; else
+                        _cputype=i686
+                    fi
+                }; fi
+                ;;
+            mips64)
+                _cputype=$(get_endianness "$_current_exe" mips '' el)
+                ;;
+            powerpc64)
+                _cputype=powerpc
+                ;;
+            aarch64)
+                _cputype=armv7
+                if [ "$_ostype" = "linux-android" ]; then
+                    _ostype=linux-androideabi
+                else
+                    _ostype="${_ostype}eabihf"
+                fi
+                ;;
+            riscv64gc)
+                err "riscv64 with 32-bit userland unsupported"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Detect armv7 but without the CPU features Rust needs in that build,
+    # and fall back to arm.
+    # See https://github.com/rust-lang/rustup.rs/issues/587.
+    if [ "$_ostype" = "unknown-linux-gnueabihf" ] && [ "$_cputype" = armv7 ]; then
+        if ! (ensure grep '^Features' /proc/cpuinfo | grep -E -q 'neon|simd') ; then
+            # Either `/proc/cpuinfo` is malformed or unavailable, or
+            # at least one processor does not have NEON (which is asimd on armv8+).
+            _cputype=arm
+        fi
+    fi
+
+    _arch="${_cputype}-${_ostype}"
+
+    RETVAL="$_arch"
+}
+
+__print() {
+    if $_ansi_escapes_are_valid; then
+        printf '\33[1m%s:\33[0m %s\n' "$1" "$2" >&2
+    else
+        printf '%s: %s\n' "$1" "$2" >&2
+    fi
+}
+
+warn() {
+    __print 'warn' "$1" >&2
+}
+
+say() {
+    if [ "$RUSTUP_QUIET" = "no" ]; then
+        __print 'info' "$1" >&2
+    fi
+}
+
+# NOTE: you are required to exit yourself
+# we don't do it here because of multiline errors
+err() {
+    __print 'error' "$1" >&2
+}
+
+need_cmd() {
+    if ! check_cmd "$1"; then
+        err "need '$1' (command not found)"
+        exit 1
+    fi
+}
+
+check_cmd() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+assert_nz() {
+    if [ -z "$1" ]; then
+        err "assert_nz $2"
+        exit 1
+    fi
+}
+
+# Run a command that should never fail. If the command fails execution
+# will immediately terminate with an error showing the failing
+# command.
+ensure() {
+    if ! "$@"; then
+        err "command failed: $*"
+        exit 1
+    fi
+}
+
+# This is just for indicating that commands' results are being
+# intentionally ignored. Usually, because it's being executed
+# as part of error handling.
+ignore() {
+    "$@"
+}
+
+# This wraps curl or wget. Try curl first, if not installed,
+# use wget instead.
+downloader() {
+    # zsh does not split words by default, Required for curl retry arguments below.
+    is_zsh && setopt local_options shwordsplit
+
+    local _dld
+    local _ciphersuites
+    local _err
+    local _status
+    local _retry
+    if check_cmd curl; then
+        # Check if we have a broken snap curl
+        # https://github.com/boukendesho/curl-snap/issues/1
+        _curl_path=$(command -v curl)
+        if echo "$_curl_path" | grep "/snap/" > /dev/null 2>&1; then
+            if check_cmd wget; then
+                _dld=wget
+            else
+                err "curl installed with snap cannot be used to install Rust"
+                err "due to missing permissions. Please uninstall it and"
+                err "reinstall curl with a different package manager (e.g., apt)."
+                err "See https://github.com/boukendesho/curl-snap/issues/1"
+                exit 1
+            fi
+        else
+            _dld=curl
+        fi
+    elif check_cmd wget; then
+        _dld=wget
+    else
+        _dld='curl or wget' # to be used in error message of need_cmd
+    fi
+
+    if [ "$1" = --check ]; then
+        need_cmd "$_dld"
+    elif [ "$_dld" = curl ]; then
+        check_curl_for_retry_support
+        _retry="$RETVAL"
+        get_ciphersuites_for_curl
+        _ciphersuites="$RETVAL"
+        if [ -n "$_ciphersuites" ]; then
+            # shellcheck disable=SC2086
+            _err=$(curl $_retry --proto '=https' --tlsv1.2 --ciphers "$_ciphersuites" --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+            _status=$?
+        else
+            warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+            if ! check_help_for "$3" curl --proto --tlsv1.2; then
+                warn "Not enforcing TLS v1.2, this is potentially less secure"
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            else
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --proto '=https' --tlsv1.2 --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q 404$; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    elif [ "$_dld" = wget ]; then
+        if [ "$(wget -V 2>&1|head -2|tail -1|cut -f1 -d" ")" = "BusyBox" ]; then
+            warn "using the BusyBox version of wget.  Not enforcing strong cipher suites for TLS or TLS v1.2, this is potentially less secure"
+            _err=$(wget "$1" -O "$2" 2>&1)
+            _status=$?
+        else
+            get_ciphersuites_for_wget
+            _ciphersuites="$RETVAL"
+            if [ -n "$_ciphersuites" ]; then
+                _err=$(wget --https-only --secure-protocol=TLSv1_2 --ciphers "$_ciphersuites" "$1" -O "$2" 2>&1)
+                _status=$?
+            else
+                warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+                if ! check_help_for "$3" wget --https-only --secure-protocol; then
+                    warn "Not enforcing TLS v1.2, this is potentially less secure"
+                    _err=$(wget "$1" -O "$2" 2>&1)
+                    _status=$?
+                else
+                    _err=$(wget --https-only --secure-protocol=TLSv1_2 "$1" -O "$2" 2>&1)
+                    _status=$?
+                fi
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q ' 404 Not Found$'; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    else
+        err "Unknown downloader"   # should not reach here
+        exit 1
+    fi
+}
+
+check_help_for() {
+    local _arch
+    local _cmd
+    local _arg
+    _arch="$1"
+    shift
+    _cmd="$1"
+    shift
+
+    local _category
+    if "$_cmd" --help | grep -q '"--help all"'; then
+      _category="all"
+    else
+      _category=""
+    fi
+
+    case "$_arch" in
+
+        *darwin*)
+        if check_cmd sw_vers; then
+            local _os_version
+            local _os_major
+            _os_version=$(sw_vers -productVersion)
+            _os_major=$(echo "$_os_version" | cut -d. -f1)
+            case $_os_major in
+                10)
+                    # If we're running on macOS, older than 10.13, then we always
+                    # fail to find these options to force fallback
+                    if [ "$(echo "$_os_version" | cut -d. -f2)" -lt 13 ]; then
+                        # Older than 10.13
+                        warn "Detected macOS platform older than 10.13"
+                        return 1
+                    fi
+                    ;;
+                *)
+                    if ! { [ "$_os_major" -eq "$_os_major" ] 2>/dev/null && [ "$_os_major" -ge 11 ]; }; then
+                        # Unknown product version, warn and continue
+                        warn "Detected unknown macOS major version: $_os_version"
+                        warn "TLS capabilities detection may fail"
+                    fi
+                    ;; # We assume that macOS v11+ will always be okay.
+            esac
+        fi
+        ;;
+
+    esac
+
+    for _arg in "$@"; do
+        if ! "$_cmd" --help "$_category" | grep -q -- "$_arg"; then
+            return 1
+        fi
+    done
+
+    true # not strictly needed
+}
+
+# Check if curl supports the --retry flag, then pass it to the curl invocation.
+check_curl_for_retry_support() {
+    local _retry_supported=""
+    # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+    if check_help_for "notspecified" "curl" "--retry"; then
+        _retry_supported="--retry 3"
+        if check_help_for "notspecified" "curl" "--continue-at"; then
+            # "-C -" tells curl to automatically find where to resume the download when retrying.
+            _retry_supported="--retry 3 -C -"
+        fi
+    fi
+
+    RETVAL="$_retry_supported"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these curl backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_curl() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _openssl_syntax="no"
+    local _gnutls_syntax="no"
+    local _backend_supported="yes"
+    if curl -V | grep -q ' OpenSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' LibreSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' BoringSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' GnuTLS/'; then
+        _gnutls_syntax="yes"
+    else
+        _backend_supported="no"
+    fi
+
+    local _args_supported="no"
+    if [ "$_backend_supported" = "yes" ]; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "curl" "--tlsv1.2" "--ciphers" "--proto"; then
+            _args_supported="yes"
+        fi
+    fi
+
+    local _cs=""
+    if [ "$_args_supported" = "yes" ]; then
+        if [ "$_openssl_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        elif [ "$_gnutls_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these wget backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_wget() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _cs=""
+    if wget -V | grep -q '\-DHAVE_LIBSSL'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        fi
+    elif wget -V | grep -q '\-DHAVE_LIBGNUTLS'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return strong TLS 1.2-1.3 cipher suites in OpenSSL or GnuTLS syntax. TLS 1.2
+# excludes non-ECDHE and non-AEAD cipher suites. DHE is excluded due to bad
+# DH params often found on servers (see RFC 7919). Sequence matches or is
+# similar to Firefox 68 ESR with weak cipher suites disabled via about:config.
+# $1 must be openssl or gnutls.
+get_strong_ciphersuites_for() {
+    if [ "$1" = "openssl" ]; then
+        # OpenSSL is forgiving of unknown values, no problems with TLS 1.3 values on versions that don't support it yet.
+        echo "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+    elif [ "$1" = "gnutls" ]; then
+        # GnuTLS isn't forgiving of unknown values, so this may require a GnuTLS version that supports TLS 1.3 even if wget doesn't.
+        # Begin with SECURE128 (and higher) then remove/add to build cipher suites. Produces same 9 cipher suites as OpenSSL but in slightly different order.
+        echo "SECURE128:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-DTLS-ALL:-CIPHER-ALL:-MAC-ALL:-KX-ALL:+AEAD:+ECDHE-ECDSA:+ECDHE-RSA:+AES-128-GCM:+CHACHA20-POLY1305:+AES-256-GCM"
+    fi
+}
+
+set +u
+case "$RUSTUP_INIT_SH_PRINT" in
+    arch | architecture)
+        get_architecture || exit 1
+        echo "$RETVAL"
+        ;;
+    *)
+        main "$@" || exit 1
+        ;;
+esac
+
+[2026-10-15T19:24:02.712215+00:00] CMD ["sh", "/kaggle/working/athena-v21-c2/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"] cwd=None
+[2026-10-15T19:24:03.183751+00:00] RESULT {"argv": ["sh", "/kaggle/working/athena-v21-c2/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"], "cwd": "None", "exit_code": 0, "wall_ns": 471407802, "stdout_sha256": "27341d26076a7995760787cd0d0fa04d7d3be8951ba8b1be93628676a5d96e3b", "stderr_sha256": "6da111bef98220f47225bfcb5493c8d9ec53b1d0cdec62829adc725b07d71d94"}
+[2026-10-15T19:24:03.183813+00:00] 
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source the
+corresponding env file under $HOME/.cargo.
+
+Consider running the right command for your shell (note the leading DOT):
+. "$HOME/.cargo/env" # For sh/ash/dash/pdksh/bash
+cargo:rerun-if-env-changed=CC_x86_64-unknown-linux-gnu
+CC_x86_64-unknown-linux-gnu = None
+cargo:rerun-if-env-changed=CC_x86_64_unknown_linux_gnu
+CC_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_unknown_linux_gnu
+CFLAGS_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-unknown-linux-gnu
+CFLAGS_x86_64-unknown-linux-gnu = None
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is x86_64-unknown-linux-gnu
+info: skipping toolchain installation
+
+[2026-10-15T19:24:03.183868+00:00] CMD ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"] cwd=None
+[2026-10-15T19:24:15.867541+00:00] RESULT {"argv": ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"], "cwd": "None", "exit_code": 0, "wall_ns": 12683538673, "stdout_sha256": "a162658ac6a697e415ded8bbad66b1cdabb9f58a0d240a248fc27fbf3844a9e3", "stderr_sha256": "710c895bb69f5ca89c9eb2c09a437c9e826a9647741b5be5aaa16ac3be6ab9fc"}
+[2026-10-15T19:24:15.867632+00:00] 
+  1.99.0-x86_64-unknown-linux-gnu installed - rustc 1.99.0 (b940084d7 2026-09-28)
+
+info: syncing channel updates for 1.99.0-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-01 for version 1.99.0 (b940084d7 2026-09-28)
+info: downloading 5 components
+info: default toolchain set to 1.99.0-x86_64-unknown-linux-gnu
+info: checking for self-update (current version: 1.29.1)
+
+[2026-10-15T19:24:15.867688+00:00] CMD ["rustc", "-Vv"] cwd=None
+[2026-10-15T19:24:15.882900+00:00] RESULT {"argv": ["rustc", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 15091878, "stdout_sha256": "b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:15.883046+00:00] rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+[2026-10-15T19:24:15.883124+00:00] CMD ["cargo", "-Vv"] cwd=None
+[2026-10-15T19:24:15.925674+00:00] RESULT {"argv": ["cargo", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 42423483, "stdout_sha256": "2106ad2f6d2494210f01796652ddf5c620d7955ad5e1a4ef2b55500aee9ceab0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:15.925749+00:00] cargo 1.99.0 (5f94df478 2026-08-27)
+release: 1.99.0
+commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e
+commit-date: 2026-08-27
+host: x86_64-unknown-linux-gnu
+libgit2: 1.9.6 (sys:0.21.0 vendored)
+libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)
+ssl: OpenSSL 3.6.3 9 Jun 2026
+os: Ubuntu 24.4.0 (noble) [64-bit]
+
+[2026-10-15T19:24:15.940610+00:00] CMD ["apt-get", "update"] cwd=None
+[2026-10-15T19:24:23.205568+00:00] RESULT {"argv": ["apt-get", "update"], "cwd": "None", "exit_code": 0, "wall_ns": 7264811891, "stdout_sha256": "1f3cff32dd5243d2f6cabdc13719c96e0f1d806926f7ccfe487a9ee9b1e3c70f", "stderr_sha256": "06c9322839309ecb298d9d37a70cf656e6d8d6f6a98e6898748c93fd94792630"}
+[2026-10-15T19:24:23.205645+00:00] Get:1 https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/ InRelease [3,631 B]
+Get:2 https://cli.github.com/packages stable InRelease [3,917 B]
+Hit:3 http://archive.ubuntu.com/ubuntu noble InRelease
+Get:4 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Get:5 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Get:6 https://r2u.stat.illinois.edu/ubuntu noble InRelease [9,161 B]
+Get:7 https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu noble InRelease [17.8 kB]
+Get:8 https://r2u.stat.illinois.edu/ubuntu noble/main all Packages [10.4 MB]
+Get:9 https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu noble/main amd64 Packages [60.1 kB]
+Get:10 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Get:11 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1,409 kB]
+Get:12 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1,729 kB]
+Get:13 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [2,231 kB]
+Get:14 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [2,122 kB]
+Get:15 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [61.7 kB]
+Get:16 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2,168 kB]
+Get:17 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [669 B]
+Get:18 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1,549 kB]
+Get:19 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [55.6 kB]
+Get:20 https://r2u.stat.illinois.edu/ubuntu noble/main amd64 Packages [3,058 kB]
+Fetched 25.2 MB in 6s (4,458 kB/s)
+Reading package lists...
+W: Skipping acquire of configured file 'main/source/Sources' as repository 'https://r2u.stat.illinois.edu/ubuntu noble InRelease' does not seem to provide it (sources.list entry misspelt?)
+
+[2026-10-15T19:24:23.205717+00:00] CMD ["apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "time"] cwd=None
+[2026-10-15T19:24:32.815915+00:00] RESULT {"argv": ["apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "time"], "cwd": "None", "exit_code": 0, "wall_ns": 9610072544, "stdout_sha256": "0683df048c9564f222bb9beb3081c19107be345d02e6d9443208549f517fcf10", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:32.816019+00:00] Reading package lists...
+Building dependency tree...
+Reading state information...
+The following NEW packages will be installed:
+  time
+0 upgraded, 1 newly installed, 0 to remove and 90 not upgraded.
+Need to get 45.2 kB of archives.
+After this operation, 129 kB of additional disk space will be used.
+Get:1 http://archive.ubuntu.com/ubuntu noble/main amd64 time amd64 1.9-0.2build1 [45.2 kB]
+Fetched 45.2 kB in 1s (32.4 kB/s)
+Selecting previously unselected package time.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 125659 files and directories currently installed.)
+Preparing to unpack .../time_1.9-0.2build1_amd64.deb ...
+Unpacking time (1.9-0.2build1) ...
+Setting up time (1.9-0.2build1) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+
+[2026-10-15T19:24:32.816116+00:00] CMD ["/usr/bin/time", "--version"] cwd=None
+[2026-10-15T19:24:32.817228+00:00] RESULT {"argv": ["/usr/bin/time", "--version"], "cwd": "None", "exit_code": 0, "wall_ns": 987880, "stdout_sha256": "a3b64288a651d40a18a243c43c871f7ae2886baa58b7e3c64a1061bfd651245f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:32.817295+00:00] time (GNU Time) UNKNOWN
+Copyright (C) 2018 Free Software Foundation, Inc.
+License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+Written by David Keppel, David MacKenzie, and Assaf Gordon.
+
+[2026-10-15T19:24:32.817442+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/kaggle/working/athena-v21-c2/rss-tool-self-check.txt", "--", "/usr/bin/python3", "-c", "pass"] cwd=None
+[2026-10-15T19:24:32.885500+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/kaggle/working/athena-v21-c2/rss-tool-self-check.txt", "--", "/usr/bin/python3", "-c", "pass"], "cwd": "None", "exit_code": 0, "wall_ns": 67904548, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:24:32.888818+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-pqxwmw2_/baseline/target"] cwd=/tmp/athena-v2-pqxwmw2_/baseline
+[2026-10-15T19:25:59.031650+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-pqxwmw2_/baseline/target"], "cwd": "/tmp/athena-v2-pqxwmw2_/baseline", "exit_code": 0, "wall_ns": 86142673220, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "9d076ea878c07de2bd7fe52f5953830a55728835ed738fdabf11da759586b36e"}
+[2026-10-15T19:25:59.031728+00:00]     Updating crates.io index
+ Downloading crates ...
+  Downloaded displaydoc v0.2.7
+  Downloaded chacha20 v0.10.2
+  Downloaded bytes v1.12.1
+  Downloaded futures-io v0.3.34
+  Downloaded phf_shared v0.13.1
+  Downloaded atomic-waker v1.1.2
+  Downloaded dunce v1.0.5
+  Downloaded httparse v1.10.1
+  Downloaded arrayvec v0.7.8
+  Downloaded autocfg v1.5.1
+  Downloaded derive_more v2.1.1
+  Downloaded ego-tree v0.11.0
+  Downloaded fs_extra v1.3.0
+  Downloaded aws-lc-rs v1.18.2
+  Downloaded cssparser-macros v0.7.1
+  Downloaded dtoa-short v0.3.5
+  Downloaded fastrand v2.5.0
+  Downloaded fnv v1.0.7
+  Downloaded form_urlencoded v1.2.2
+  Downloaded derive_more-impl v2.1.1
+  Downloaded equivalent v1.0.3
+  Downloaded libc v0.2.190
+  Downloaded percent-encoding v2.3.2
+  Downloaded quinn-udp v0.5.16
+  Downloaded html5ever v0.39.0
+  Downloaded http v1.5.0
+  Downloaded phf v0.13.1
+  Downloaded rand_pcg v0.10.2
+  Downloaded dtoa v1.0.11
+  Downloaded jobserver v0.1.35
+  Downloaded parking_lot_core v0.9.12
+  Downloaded phf_macros v0.13.1
+  Downloaded potential_utf v0.1.6
+  Downloaded quote v1.0.47
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_core v0.9.5
+  Downloaded rustc-hash v2.1.3
+  Downloaded rustc_version v0.4.1
+  Downloaded siphasher v1.0.4
+  Downloaded string_cache v0.9.0
+  Downloaded cfg_aliases v0.2.2
+  Downloaded find-msvc-tools v0.1.14
+  Downloaded futures-util v0.3.34
+  Downloaded getrandom v0.4.3
+  Downloaded http-body v1.1.0
+  Downloaded idna v1.1.0
+  Downloaded idna_adapter v1.2.2
+  Downloaded lock_api v0.4.14
+  Downloaded log v0.4.34
+  Downloaded markup5ever v0.39.0
+  Downloaded memchr v2.8.3
+  Downloaded parking_lot v0.12.5
+  Downloaded phf_codegen v0.13.1
+  Downloaded pin-project-lite v0.2.17
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand v0.9.5
+  Downloaded rand_core v0.10.1
+  Downloaded rustls-native-certs v0.8.5
+  Downloaded semver v1.0.28
+  Downloaded servo_arc v0.4.3
+  Downloaded shlex v2.0.1
+  Downloaded slab v0.4.12
+  Downloaded bitflags v2.13.2
+  Downloaded cpufeatures v0.3.1
+  Downloaded cssparser v0.37.0
+  Downloaded futures-channel v0.3.34
+  Downloaded futures-core v0.3.34
+  Downloaded futures-macro v0.3.34
+  Downloaded futures-sink v0.3.34
+  Downloaded getopts v0.2.24
+  Downloaded getrandom v0.3.4
+  Downloaded indexmap v2.14.2
+  Downloaded ipnet v2.12.2
+  Downloaded num-traits v0.2.19
+  Downloaded scopeguard v1.2.0
+  Downloaded scraper v0.27.0
+  Downloaded selectors v0.38.0
+  Downloaded serde_core v1.0.229
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded sync_wrapper v1.0.2
+  Downloaded tower-layer v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded utf8_iter v1.0.4
+  Downloaded web_atoms v0.2.6
+  Downloaded zerovec-derive v0.11.6
+  Downloaded base64 v0.23.1
+  Downloaded futures-task v0.3.34
+  Downloaded http-body-util v0.1.5
+  Downloaded itoa v1.0.18
+  Downloaded lru-slab v0.1.3
+  Downloaded new_debug_unreachable v1.0.6
+  Downloaded once_cell v1.21.4
+  Downloaded rand_distr v0.5.1
+  Downloaded tendril v0.5.1
+  Downloaded tower-service v0.3.3
+  Downloaded want v0.3.2
+  Downloaded yoke-derive v0.8.4
+  Downloaded zerofrom v0.1.8
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded cmake v0.1.58
+  Downloaded constant_time_eq v0.4.2
+  Downloaded phf_generator v0.13.1
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded rustls-platform-verifier v0.7.1
+  Downloaded serde_derive v1.0.229
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded subtle v2.6.1
+  Downloaded synstructure v0.14.0
+  Downloaded thiserror v2.0.21
+  Downloaded tinystr v0.8.4
+  Downloaded tokio-macros v2.7.2
+  Downloaded untrusted v0.9.0
+  Downloaded blake3 v1.8.7
+  Downloaded pkg-config v0.3.34
+  Downloaded precomputed-hash v0.1.1
+  Downloaded thiserror-impl v2.0.21
+  Downloaded tokio-rustls v0.26.6
+  Downloaded writeable v0.6.4
+  Downloaded yoke v0.8.3
+  Downloaded cfg-if v1.0.5
+  Downloaded hyper-rustls v0.27.10
+  Downloaded icu_properties_data v2.3.0
+  Downloaded icu_provider v2.3.1
+  Downloaded litemap v0.8.3
+  Downloaded openssl-probe v0.2.1
+  Downloaded rustls-webpki v0.103.15
+  Downloaded smallvec v1.16.3
+  Downloaded tinyvec v1.13.3
+  Downloaded unicode-ident v1.0.27
+  Downloaded zeroize v1.9.1
+  Downloaded zmij v1.0.23
+  Downloaded getrandom v0.2.17
+  Downloaded serde v1.0.229
+  Downloaded zerotrie v0.2.5
+  Downloaded icu_locale_core v2.3.0
+  Downloaded icu_normalizer v2.3.0
+  Downloaded icu_normalizer_data v2.3.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded rand v0.10.3
+  Downloaded tracing-core v0.1.36
+  Downloaded url v2.5.8
+  Downloaded hyper-util v0.1.21
+  Downloaded icu_collections v2.3.0
+  Downloaded quinn v0.11.12
+  Downloaded socket2 v0.6.5
+  Downloaded tower v0.5.3
+  Downloaded mio v1.2.4
+  Downloaded icu_properties v2.3.0
+  Downloaded cc v1.8.0
+  Downloaded libm v0.2.16
+  Downloaded h2 v0.4.20
+  Downloaded hashbrown v0.17.1
+  Downloaded hyper v1.12.0
+  Downloaded quinn-proto v0.11.19
+  Downloaded reqwest v0.13.5
+  Downloaded serde_json v1.0.154
+  Downloaded zerovec v0.11.8
+  Downloaded tokio-util v0.7.20
+  Downloaded tower-http v0.6.11
+  Downloaded unicode-width v0.2.2
+  Downloaded syn v3.0.9
+  Downloaded zerocopy v0.8.63
+  Downloaded rustls v0.23.46
+  Downloaded syn v2.0.119
+  Downloaded tracing v0.1.44
+  Downloaded tokio v1.53.3
+  Downloaded ring v0.17.14
+  Downloaded aws-lc-sys v0.46.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling cfg-if v1.0.5
+   Compiling futures-core v0.3.34
+   Compiling pkg-config v0.3.34
+   Compiling cc v1.8.0
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling cmake v0.1.58
+   Compiling phf_codegen v0.13.1
+   Compiling litemap v0.8.3
+   Compiling zeroize v1.9.1
+   Compiling aws-lc-sys v0.46.0
+   Compiling writeable v0.6.4
+   Compiling aws-lc-rs v1.18.2
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling parking_lot_core v0.9.12
+   Compiling slab v0.4.12
+   Compiling icu_properties_data v2.3.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.53.3
+   Compiling zerovec v0.11.8
+   Compiling phf_macros v0.13.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling scopeguard v1.2.0
+   Compiling icu_provider v2.3.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling zerocopy v0.8.63
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling futures-sink v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling rustls v0.23.46
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.20
+   Compiling indexmap v2.14.2
+   Compiling web_atoms v0.2.6
+   Compiling tracing v0.1.44
+   Compiling parking_lot v0.12.5
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling h2 v0.4.20
+   Compiling idna_adapter v1.2.2
+   Compiling want v0.3.2
+   Compiling string_cache v0.9.0
+   Compiling futures-channel v0.3.34
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling serde_core v1.0.229
+   Compiling dtoa v1.0.11
+   Compiling bitflags v2.13.2
+   Compiling dtoa-short v0.3.5
+   Compiling num-traits v0.2.19
+   Compiling rand_core v0.9.5
+   Compiling hyper v1.12.0
+   Compiling idna v1.1.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling ipnet v2.12.2
+   Compiling zmij v1.0.23
+   Compiling base64 v0.23.1
+   Compiling derive_more v2.1.1
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling rustls-native-certs v0.8.5
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling url v2.5.8
+   Compiling rand_chacha v0.9.0
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling getopts v0.2.24
+   Compiling rand v0.9.5
+   Compiling tower-http v0.6.11
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling arrayvec v0.7.8
+   Compiling memchr v2.8.3
+   Compiling constant_time_eq v0.4.2
+   Compiling ego-tree v0.11.0
+   Compiling cpufeatures v0.3.1
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-pqxwmw2_/baseline)
+    Finished `release` profile [optimized] target(s) in 1m 26s
+
+[2026-10-15T19:25:59.031832+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-pqxwmw2_/baseline
+[2026-10-15T19:25:59.833555+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-pqxwmw2_/baseline", "exit_code": 0, "wall_ns": 800887473, "stdout_sha256": "df35e30b42a1a93ee4598285069476d59fcc291c2d08a0877f52f2810dc5abd2", "stderr_sha256": "63e71f03383c50ed02832038a630d69541870180bf572fd8fd07e549a7bca984"}
+[2026-10-15T19:25:59.860465+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-pqxwmw2_/candidate/target"] cwd=/tmp/athena-v2-pqxwmw2_/candidate
+[2026-10-15T19:27:20.135684+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-pqxwmw2_/candidate/target"], "cwd": "/tmp/athena-v2-pqxwmw2_/candidate", "exit_code": 0, "wall_ns": 80275071498, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "06a01e4ff77b03e108fe57cc588f1700483c5b8b49501f7861d34d0b7313e138"}
+[2026-10-15T19:27:20.135764+00:00]    Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+   Compiling itoa v1.0.18
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling pin-project-lite v0.2.17
+   Compiling cfg-if v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling cc v1.8.0
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling futures-core v0.3.34
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling cmake v0.1.58
+   Compiling phf_codegen v0.13.1
+   Compiling aws-lc-rs v1.18.2
+   Compiling litemap v0.8.3
+   Compiling zeroize v1.9.1
+   Compiling aws-lc-sys v0.46.0
+   Compiling writeable v0.6.4
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling slab v0.4.12
+   Compiling parking_lot_core v0.9.12
+   Compiling icu_properties_data v2.3.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling tokio v1.53.3
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling phf_macros v0.13.1
+   Compiling tinystr v0.8.4
+   Compiling icu_locale_core v2.3.0
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling icu_provider v2.3.1
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling rustls v0.23.46
+   Compiling zerocopy v0.8.63
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling percent-encoding v2.3.2
+   Compiling futures-sink v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling indexmap v2.14.2
+   Compiling tokio-util v0.7.20
+   Compiling web_atoms v0.2.6
+   Compiling tracing v0.1.44
+   Compiling icu_properties v2.3.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling fnv v1.0.7
+   Compiling h2 v0.4.20
+   Compiling idna_adapter v1.2.2
+   Compiling want v0.3.2
+   Compiling string_cache v0.9.0
+   Compiling futures-channel v0.3.34
+   Compiling bitflags v2.13.2
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling serde_core v1.0.229
+   Compiling dtoa v1.0.11
+   Compiling dtoa-short v0.3.5
+   Compiling num-traits v0.2.19
+   Compiling rand_core v0.9.5
+   Compiling hyper v1.12.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling ipnet v2.12.2
+   Compiling zmij v1.0.23
+   Compiling base64 v0.23.1
+   Compiling derive_more v2.1.1
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling rustls-native-certs v0.8.5
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling url v2.5.8
+   Compiling rand_chacha v0.9.0
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling serde v1.0.229
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling getopts v0.2.24
+   Compiling rand v0.9.5
+   Compiling tower-http v0.6.11
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayvec v0.7.8
+   Compiling memchr v2.8.3
+   Compiling ego-tree v0.11.0
+   Compiling cpufeatures v0.3.1
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-pqxwmw2_/candidate)
+    Finished `release` profile [optimized] target(s) in 1m 20s
+
+[2026-10-15T19:27:20.135861+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-pqxwmw2_/candidate
+[2026-10-15T19:27:20.272107+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-pqxwmw2_/candidate", "exit_code": 0, "wall_ns": 135435466, "stdout_sha256": "7c213964810c369c9c66529fc091b55fc2255a79b6ff0c6cc4cab50d821646ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.295451+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.297496+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1942601, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.297734+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.300652+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2778380, "stdout_sha256": "b27363118c79633a21e040e6cacb44789d02123469b3f95da2d3eead42bfb6cf", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.300997+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.302614+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1545321, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.302755+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.304746+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1928081, "stdout_sha256": "b2bff9d6c983a62d11db38e002a9ea25f031d807c5051f7635752380e95bf7c6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.304969+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.306573+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1465000, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.306773+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.309295+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2434691, "stdout_sha256": "bdccd33a21203b9a6446b2ae8a37f394785a78439c72a32627035497bfb3446f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.309552+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.311888+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2208490, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.312151+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.314684+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2380621, "stdout_sha256": "a78aa19af1bf5c09361f315584775c69841aab6d3eb7db0a66bd2877e3290ac6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.315099+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.316886+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1671930, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.317131+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.319692+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2434011, "stdout_sha256": "466fef5c13aa9f5a0b9bd4461b57a7c4d2f800ba0184581fd917c4cf60216b1d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.320030+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.321748+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1575460, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.322022+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.324456+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2270691, "stdout_sha256": "2eb19fbe1ba17a041150990ec48b678e2e8c39998f7e3c87ec0d681f18a787db", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.324759+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.327077+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2133040, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.327295+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.329785+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2387480, "stdout_sha256": "56970369aa9a853c5f0feb7455dc375cf693d263482b71f2f5748475eeba5e16", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.330112+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.331712+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1471720, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.331988+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.334312+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2207351, "stdout_sha256": "774742c34fc70d4be67b2328cd4c07671ddd59c4a08d9849e27db730ceaf2f03", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.334606+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.336218+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1498171, "stdout_sha256": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.336401+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:27:20.338427+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1901390, "stdout_sha256": "0252a33d38a59c52c3e4977e5a38e6cb17a9d39747244c69ac68bef0cb82f561", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.343210+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.345219+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1847451, "stdout_sha256": "4d36f48ef8e73f323a85180506944f1f3e64eb28e2c95871d7229682f96d2b8c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.345370+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.347196+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1693730, "stdout_sha256": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.352258+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.354697+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2286301, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.354841+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.357571+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2602121, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.358613+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"] cwd=None
+[2026-10-15T19:27:20.364405+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 5603141, "stdout_sha256": "4cd2b8f5eb3d551dd5bd43f1097d3f10299af2686e441ce52347ef8cbe9294ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.364716+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"] cwd=None
+[2026-10-15T19:27:20.370280+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 5429272, "stdout_sha256": "9c5afcb98c35eaf9f36d8ab19af1af12a907993ae343880eacd08efe7f7bb1a9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.370589+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"] cwd=None
+[2026-10-15T19:27:20.376048+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 5271602, "stdout_sha256": "e6a62101057ba155378b49366467512f8ce5467279f179040a06f765b9cf56fc", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.376345+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"] cwd=None
+[2026-10-15T19:27:20.382312+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 5828721, "stdout_sha256": "1ad2ee9c31886187bb2c58e9a2d9bbe6894fef5799ad7ccf00b110b44dd00909", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.382749+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.386201+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3355671, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.386435+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.389892+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3327630, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.390268+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.394064+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3580971, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.394401+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.398072+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-100-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3530891, "stdout_sha256": "ee490f15215146946d5a1cb862841cc14a6b30bdad2094183c559b67cec09e1f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.398741+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.402560+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3657291, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.402699+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.405995+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3073000, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.410328+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"] cwd=None
+[2026-10-15T19:27:20.428063+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 17545314, "stdout_sha256": "898f0822bc77dd7ebcbb890c2e65d2726b464d6901a883abbba21d532dba9e31", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.428347+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"] cwd=None
+[2026-10-15T19:27:20.443977+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 15473184, "stdout_sha256": "89e1da3829169a0005887651cec01adf47263cfcccd30312f14924033ec49dc9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.444253+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"] cwd=None
+[2026-10-15T19:27:20.459261+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 14878472, "stdout_sha256": "a7768b94a5069117d027e9ec41edaf79a0869d057d5b11797eafcf750f3c86ee", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.459550+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"] cwd=None
+[2026-10-15T19:27:20.476613+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 16927033, "stdout_sha256": "ed4d9844f23bd30b1a5f859666bb1e33732a76569070eebf786c06097171d5e5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.476999+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.482013+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4825621, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.482329+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.486606+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4107331, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.486848+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.491670+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4675341, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.492015+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.496983+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-500-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4765371, "stdout_sha256": "a49137d000e8e4605c1ee90ba4938d32ba1b8bdb9132cfb7c1189d21e11223ac", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.497728+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.502864+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4953241, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.503072+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.507623+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4373201, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.514814+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"] cwd=None
+[2026-10-15T19:27:20.546998+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 31965836, "stdout_sha256": "083431e15b91443e70bf82583742f0c1f88a7010a2f311ac19b43ea37778217b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.547282+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"] cwd=None
+[2026-10-15T19:27:20.575281+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 27869356, "stdout_sha256": "338b6dcc95c5373c4126693d95db7897dba87d20493ca7d59759b43d8c3fd482", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.575571+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"] cwd=None
+[2026-10-15T19:27:20.604162+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 28451295, "stdout_sha256": "de6f61c54c34ef0de81af1213e6703e3527d021ce016d758971cc0e5a600becb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.604413+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"] cwd=None
+[2026-10-15T19:27:20.636491+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 31944895, "stdout_sha256": "e0c0d981cbc8f134f0f2a1120ddc4f3c57a0f99cd196f9e3659e441b65f9b8d7", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.636854+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.642919+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 5862411, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.643300+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.648576+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 5109841, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.648854+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.653874+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 4896401, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.654180+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.660598+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-1000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/1000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 6249101, "stdout_sha256": "454c69fc7daeff423839626292b232d66154eae4332ed22ec37d7d5dfae68668", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.661791+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.671516+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 9478012, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.671700+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:20.680159+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 8186192, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.697480+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"] cwd=None
+[2026-10-15T19:27:20.780527+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 82807746, "stdout_sha256": "53928a6caa93e1d24c8c5903f99c54a032ca78da837fd556021f334bcdaf6984", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.780813+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"] cwd=None
+[2026-10-15T19:27:20.858706+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 77756705, "stdout_sha256": "f5345076f81919ef0810bcbe5a9f59f6d9fc2d9b0f3cd6065a904e4b071399de", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.859075+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"] cwd=None
+[2026-10-15T19:27:20.936577+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 77302795, "stdout_sha256": "2ea2ff716c4d1dfa904c950c98bf8088fc03084ed59b7eef0cba7dff96b6e0e8", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:20.936862+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"] cwd=None
+[2026-10-15T19:27:21.022125+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 85117587, "stdout_sha256": "3c9e75487faaa9334e1ea45c539dea9f97373e21aa6815a323b6ec8c3b528515", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.022534+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.033263+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 10486353, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.033669+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.044761+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 10850962, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.045231+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.054105+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 8584762, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.054485+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.063661+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-2500-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/2500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 8942501, "stdout_sha256": "b54dbf60a807e6b12b8acc4150a999c10bee3cfb875153b7c2848d13659de126", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.066013+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.081836+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 15445163, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.082010+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.096259+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 13847613, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.132623+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"] cwd=None
+[2026-10-15T19:27:21.330881+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 198082378, "stdout_sha256": "c37ca04cb687740009906d10bf41879603b48e3c11ab5f7bfa4d352b606e373e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.331197+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"] cwd=None
+[2026-10-15T19:27:21.467892+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 136563226, "stdout_sha256": "e43722d9e1ea189711f2ce3c87034c317021384abc671ab73b30870eefbad560", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.468264+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"] cwd=None
+[2026-10-15T19:27:21.611474+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 143024707, "stdout_sha256": "14329ece40d7df82ed9cdb862f141842dfb5dc36eab232af6f7210b4ec64fc10", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.611775+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"] cwd=None
+[2026-10-15T19:27:21.807043+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 195090657, "stdout_sha256": "c023cc928fb845f16c8a327688749476416518ed8f104ff803c9d0e4744ce213", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.807380+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.824891+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 17143893, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.825497+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.841236+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 15359143, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.841717+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.857867+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 15803983, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.858447+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.876739+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-5000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/5000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 17936324, "stdout_sha256": "35f49374375aa272079b019d5630df2ca08ebdb4a3b30229159d58edf2dad4fb", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.880264+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.913069+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 32165156, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:21.913219+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:21.939390+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 25591374, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:22.007564+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"] cwd=None
+[2026-10-15T19:27:22.383319+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 375591542, "stdout_sha256": "62ab6a29bbbd20b3029fb1048e6c562560b565ede543695d4c6c94e358b06383", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:22.383574+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"] cwd=None
+[2026-10-15T19:27:22.652419+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 268710282, "stdout_sha256": "df84d891fadc603a6d4c9f954f8f2a8151b03599b67e80351dad931035f12fa4", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:22.652766+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"] cwd=None
+[2026-10-15T19:27:22.931267+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 278352684, "stdout_sha256": "a7534e6dc5978db81515307575a7362146fd30282efe1e8d56c5a55a1df4a6f9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:22.931666+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"] cwd=None
+[2026-10-15T19:27:23.315291+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 383480474, "stdout_sha256": "065c38f8d83878d74777869e872f5d2638d29b9786d006a19005a109ef63c9df", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.315643+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.356169+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 39933048, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.356856+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.386827+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 29390796, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.387718+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.416208+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 27894105, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.416977+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.451280+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-10000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/10000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 33693087, "stdout_sha256": "f594da057abf0c0daacabdf67acdebd2f17aca2ddb6a842f52a02fb4612ec57b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.457577+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.524514+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 65913453, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.524663+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:23.575284+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 49557449, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:23.716647+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"] cwd=None
+[2026-10-15T19:27:24.609075+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 892202211, "stdout_sha256": "7c48af254fe6a28c0751bf0dea2e9d463b017145656c548b6f88782415368dbf", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:24.609386+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"] cwd=None
+[2026-10-15T19:27:25.196714+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 587181973, "stdout_sha256": "7bf899c6f044e2295235a1a28a58a9d107660e88a8387085e3b07218532a5c50", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:25.197293+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"] cwd=None
+[2026-10-15T19:27:25.818037+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 620565739, "stdout_sha256": "61cd15cbb1d9538d5cb1854bc9a5a61adda1eea98d8f49fa16ad6023425e68f7", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:25.818294+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"] cwd=None
+[2026-10-15T19:27:26.697649+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/baseline/target/release/bench_core", "fixture", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 879221219, "stdout_sha256": "6ab65435c904f32ae4af9fb6cd65b54e2877a35c59e424c8287198d25e0009be", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.698057+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.765562+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-0-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 66479963, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.766745+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.818392+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-0-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 50617980, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.819584+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.875410+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-1-candidate.txt", "--", "/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 54807681, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.876605+00:00] CMD ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.948571+00:00] RESULT {"argv": ["/usr/bin/time", "-f", "%M", "-o", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/rss-20000-1-baseline.txt", "--", "/tmp/athena-v2-pqxwmw2_/baseline/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/20000.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 70964444, "stdout_sha256": "947bba372bb9a4a63b05cad10749922f274bb1817158d1257ab5bd1a2c105bf3", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.949791+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-50.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.951615+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-50.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1758700, "stdout_sha256": "5b2e2cae0065d8192b3c731093008407ea4806e4c922d763af758ac67951483d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.951836+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-100.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.953660+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-100.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1669130, "stdout_sha256": "4f53ffe7e12e7a391d5d7e30b92f4e2015483c3f882d3c17626643fc5bee11e4", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.954102+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-200.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.956020+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-200.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1740970, "stdout_sha256": "00883a1ae35b2d4b94fc76894cf75ac5f82a73a6fcd9efc006a3ac6128b3a0e5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.956410+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-400.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.958969+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-400.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2419511, "stdout_sha256": "ec1475b5aaf98f3eaf4d7d591c4e7bd5b8fdbd64a2c7886a09f5b849186c829e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:27:26.959279+00:00] CMD ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-500.html", "https://example.org/"] cwd=None
+[2026-10-15T19:27:26.962882+00:00] RESULT {"argv": ["/tmp/athena-v2-pqxwmw2_/candidate/target/release/athena-core-v2", "/tmp/athena-v2-pqxwmw2_/links-u9kyl68_/deep-500.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 3500731, "stdout_sha256": "8507c970082f3ada84121db0fd17a6e163d620fcba5937ca89fb2bb3660d0725", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}

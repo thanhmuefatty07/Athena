@@ -1,0 +1,18 @@
+{
+  "expected_bundle_id": "e09164667909e9c854523cb2d600f71e48644974e75e3e51be93cadb10650cbf",
+  "kernels": {
+    "c1": "vnthanhphm/athena-c1-core-stages-20261015-v21-screen",
+    "c2": "vnthanhphm/athena-c2-dom-rss-20261015-v21-screen",
+    "c3": "vnthanhphm/athena-c3-deps-concurrency-20261015-v21-screen"
+  },
+  "statuses": {
+    "c1": "COMPLETE",
+    "c2": "COMPLETE",
+    "c3": "COMPLETE"
+  },
+  "manifests": {
+    "c1": "kaggle_results\\v21-screen-001\\c1\\athena-v21-c1\\manifest.json",
+    "c2": "kaggle_results\\v21-screen-001\\c2\\athena-v21-c2\\manifest.json",
+    "c3": "kaggle_results\\v21-screen-001\\c3\\athena-v21-c3\\manifest.json"
+  }
+}

@@ -6,6 +6,10 @@ from pathlib import Path
 import random
 
 PROTOCOL_VERSION = "athena-research/2"
+STUDY_REVISION = "2.1"
+ANALYSIS_POLICY = "paired-rounds/2.1"
+LEGACY_ANALYSIS_POLICY = "paired-rounds/2.0"
+C1_STAGES = ("rank", "table", "parse", "export", "export_no_query", "pipeline", "pipeline_no_query")
 QUANTILES = (0.50, 0.95, 0.99)
 REQUIRED_CHECKS = {
     "c1": ("environment", "source_integrity", "build_baseline", "build_candidate",
@@ -16,6 +20,14 @@ REQUIRED_CHECKS = {
     "c3": ("environment", "source_integrity", "build_candidate", "build_rng-upgrade",
            "core_oracles", "singleflight", "ip_classifier", "engine_resource_regressions", "rng_distribution"),
 }
+
+
+def declared_analysis_policy(spec):
+    revision = spec.get("study_revision", "2.0")
+    expected = {"2.0": LEGACY_ANALYSIS_POLICY, STUDY_REVISION: ANALYSIS_POLICY}.get(revision)
+    if expected is None or spec.get("analysis_policy", LEGACY_ANALYSIS_POLICY) != expected:
+        raise ValueError("Unknown or inconsistent predeclared analysis policy")
+    return expected
 
 
 def sha256_file(path):
@@ -64,10 +76,14 @@ def load_measurements(path, manifest=None):
     """Reject incomplete pairs, missing/duplicate iterations, and stale evidence."""
     path = Path(path)
     specifications = None
+    policy = LEGACY_ANALYSIS_POLICY
     if manifest is not None:
         if manifest.get("protocol") != PROTOCOL_VERSION or manifest.get("status") != "COMPLETE":
             raise ValueError("Manifest is not a complete v2 experiment")
+        policy = declared_analysis_policy(manifest.get("spec", {}))
         required = REQUIRED_CHECKS.get(manifest.get("cluster"))
+        if required and policy == ANALYSIS_POLICY:
+            required += {"c1": (), "c2": ("rss_tool",), "c3": ("rng_dependencies",)}[manifest["cluster"]]
         if not required or any(manifest.get("checks", {}).get(name, {}).get("status") != "PASS"
                                for name in required):
             raise ValueError("Required provenance/correctness gates did not pass")
@@ -94,6 +110,10 @@ def load_measurements(path, manifest=None):
         if len(specifications) != len(manifest["spec"]["cases"]):
             raise ValueError("Duplicate case specification")
         family = manifest["spec"].get("simultaneous_family_size")
+        if policy == ANALYSIS_POLICY and (family != 57 or (manifest["cluster"] == "c1" and (
+                set(specifications) != set(C1_STAGES)
+                or any(case["id"] != case["stage"] for case in specifications.values())))):
+            raise ValueError("Study 2.1 requires its complete predeclared family, including export_no_query")
         if (type(family) is not int or family < sum(len(case["quantiles"]) for case in specifications.values())
                 or manifest["spec"].get("family_alpha") != 0.05
                 or manifest["spec"].get("drift_threshold") != 0.5):
@@ -185,6 +205,7 @@ def load_measurements(path, manifest=None):
                 raise ValueError("Iteration count does not match specification")
             normalized.append({arm: [pair[arm][i] for i in range(count)] for arm in pair})
         result[case_id] = {"rounds": normalized, "spec": spec,
+                            "analysis_policy": policy,
                            "quantiles": tuple(spec.get("quantiles", QUANTILES)) if spec else QUANTILES,
                            "family_size": manifest["spec"]["simultaneous_family_size"] if manifest else 0,
                            "screen": manifest is not None and manifest["spec"]["run_kind"] == "screen"}
@@ -251,6 +272,10 @@ def bootstrap_deltas(rounds, probabilities, draws, seed, backend="auto"):
 
 
 def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, backend="auto"):
+    policies = {case.get("analysis_policy", LEGACY_ANALYSIS_POLICY) for case in cases.values()}
+    if len(policies) != 1 or not policies <= {LEGACY_ANALYSIS_POLICY, ANALYSIS_POLICY}:
+        raise ValueError("Unknown or mixed analysis policies")
+    policy = next(iter(policies))
     reported = sum(len(case["quantiles"]) for case in cases.values())
     families = {case.get("family_size", 0) for case in cases.values()}
     if len(families) != 1:
@@ -261,7 +286,8 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
     tail = alpha / (2 * family_size)
     lower_index = math.floor((draws - 1) * tail)
     upper_index = math.ceil((draws - 1) * (1 - tail))
-    report = {"protocol": PROTOCOL_VERSION, "family_size": family_size, "reported_intervals": reported,
+    report = {"protocol": PROTOCOL_VERSION, "analysis_policy": policy,
+               "family_size": family_size, "reported_intervals": reported,
               "family_alpha": alpha, "interval": "two-sided percentile paired-cluster bootstrap, Bonferroni",
               "quantile_method": "nearest, Python round ties to even", "bootstrap_draws": draws,
               "seed": seed, "legacy_input": legacy, "cases": {},
@@ -270,7 +296,7 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
         rounds, probabilities = case["rounds"], case["quantiles"]
         if sorted(probabilities) != list(probabilities) or len(set(probabilities)) != len(probabilities):
             raise ValueError("Quantiles must be unique and ascending")
-        summaries, warnings = {}, []
+        summaries, warnings, diagnostics = {}, [], []
         for arm in ("baseline", "candidate"):
             flat = [value for block in rounds for value in block[arm]]
             medians = [quantile(block[arm], 0.5) for block in rounds]
@@ -283,8 +309,17 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
                               "round_median_lag1": correlation,
                               "within_block_lag1_median": quantile(within, 0.5) if within else None}
             if ((correlation is not None and abs(correlation) >= 0.5)
-                    or (within and abs(quantile(within, 0.5)) >= 0.5)):
+                    or (policy == LEGACY_ANALYSIS_POLICY and within and abs(quantile(within, 0.5)) >= 0.5)):
                 warnings.append(arm + ": dependence/drift screening threshold exceeded")
+            if policy == ANALYSIS_POLICY and within and abs(quantile(within, 0.5)) >= 0.5:
+                diagnostics.append(arm + ": within-block dependence retained by whole paired-block resampling")
+        paired_lags = {}
+        if policy == ANALYSIS_POLICY:
+            for q in probabilities:
+                deltas = [quantile(block["candidate"], q) - quantile(block["baseline"], q) for block in rounds]
+                paired_lags[str(q)] = lag1_autocorrelation(deltas)
+                if paired_lags[str(q)] is not None and abs(paired_lags[str(q)]) >= 0.5:
+                    warnings.append(f"Paired round delta q={q}: dependence/drift screening threshold exceeded")
         distributions, implementation = bootstrap_deltas(rounds, probabilities, draws, seed, backend)
         intervals = {str(q): [values[lower_index], values[upper_index]] for q, values in distributions.items()}
         decision = interval_decision(intervals)
@@ -304,6 +339,7 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
         report["cases"][case_id] = {"decision": decision, "unit": (case["spec"] or {}).get("unit", "ms"),
                                      "baseline": summaries["baseline"], "candidate": summaries["candidate"],
                                      "delta_intervals": intervals, "warnings": warnings,
+                                      "diagnostics": diagnostics, "paired_round_delta_lag1": paired_lags,
                                      "bootstrap_backend": implementation}
     return report
 

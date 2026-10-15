@@ -397,18 +397,36 @@ def execute_c1(run, snapshots):
         timing_case(run, binaries, case)
 
 
-def measured_peak_rss(run, command, rss_path):
+def measured_peak_rss(run, command, rss_path, time_binary=Path("/usr/bin/time")):
     if rss_path.exists():
         raise ValueError("RSS output must be new")
-    run.run(["/usr/bin/time", "-f", "%M", "-o", rss_path, "--", *command], log_output=False)
+    run.run([time_binary, "-f", "%M", "-o", rss_path, "--", *command], log_output=False)
     return parse_peak_rss(rss_path.read_text(encoding="ascii"))
 
 
-def execute_c2(run, snapshots):
-    version = run.run(["/usr/bin/time", "--version"]).decode()
+def prepare_rss_tool(run, time_binary=Path("/usr/bin/time")):
+    installed = False
+    if not time_binary.is_file():
+        if (platform.system() != "Linux" or getattr(os, "geteuid", lambda: -1)() != 0
+                or not shutil.which("apt-get")):
+            raise RuntimeError("GNU time is missing; Linux root with apt-get is required to prepare it")
+        run.run(["apt-get", "update"], timeout=180)
+        run.run(["apt-get", "install", "--yes", "--no-install-recommends", "--no-upgrade", "time"], timeout=180)
+        installed = True
+    if not time_binary.is_file():
+        raise RuntimeError("GNU time preparation did not provide the expected executable")
+    version = run.run([time_binary, "--version"]).decode("utf-8")
     if "GNU" not in version:
         raise RuntimeError("GNU time with %M is required; no statm polling fallback")
-    run.manifest["rss_method"] = {"tool": version, "format": "%M", "unit": "KiB",
+    peak = measured_peak_rss(run, [sys.executable, "-c", "pass"],
+                             run.directory / "rss-tool-self-check.txt", time_binary)
+    return {"path": str(time_binary), "version": version, "sha256": sha256_file(time_binary),
+            "setup": "apt-installed" if installed else "existing", "self_check_peak_rss_kib": peak}
+
+
+def execute_c2(run, snapshots):
+    tool = run.check("rss_tool", lambda: prepare_rss_tool(run))
+    run.manifest["rss_method"] = {"tool": tool, "format": "%M", "unit": "KiB",
         "scope": "kernel peak RSS of one fresh CLI process including startup/input/output; not allocator bytes"}
     binaries = {arm: build(run, source, arm) for arm, source in snapshots.items()}
     fixture_dir = Path(tempfile.mkdtemp(prefix="links-", dir=snapshots["candidate"].parent))
@@ -524,6 +542,42 @@ def rng_dependency_closure(graph):
     return reached
 
 
+def verify_rng_dependency_changes(old_graph, graph):
+    roots = [item["packages"][item["root"]] for item in (old_graph, graph)]
+    if roots[0] != roots[1] or roots[0]["source"] is not None:
+        raise ValueError("RNG experiment changed the root package identity")
+    identities, signatures, closures = [], [], []
+    for item in (old_graph, graph):
+        if not {"rand", "rand_distr"} <= item["direct"].keys():
+            raise ValueError("Missing direct RNG dependencies")
+        # Cargo package IDs are opaque. Only the known root may change its path.
+        keys = {pid: json.dumps([package["name"], package["version"], package["source"],
+                                 "root" if pid == item["root"] else pid if package["source"] is None else ""],
+                                separators=(",", ":")) for pid, package in item["packages"].items()}
+        if len(set(keys.values())) != len(keys):
+            raise ValueError("Ambiguous normalized dependency identity")
+        nodes = {}
+        for node in item["nodes"]:
+            edges = [{"name": dep["name"], "package": keys[dep["pkg"]],
+                      "kinds": sorted(json.dumps(kind, sort_keys=True) for kind in dep["dep_kinds"])}
+                     for dep in node["deps"]
+                     if node["id"] != item["root"] or dep["name"] not in ("rand", "rand_distr")]
+            nodes[keys[node["id"]]] = (sorted(node["features"]),
+                                        sorted(json.dumps(edge, sort_keys=True) for edge in edges))
+        identities.append(set(keys.values()))
+        signatures.append(nodes)
+        closures.append({keys[pid] for pid in rng_dependency_closure(item) if pid != item["root"]})
+    allowed = closures[0] | closures[1]
+    changed = identities[0] ^ identities[1]
+    if changed - allowed:
+        raise ValueError("Unexpected dependency changes outside RNG closure")
+    for key in (identities[0] & identities[1]) - allowed:
+        if signatures[0][key] != signatures[1][key]:
+            raise ValueError("Unexpected feature/dependency-edge changes outside RNG closure")
+    return {"removed": sorted(identities[0] - identities[1]),
+            "added": sorted(identities[1] - identities[0])}
+
+
 def preserve_rng_attempt(run, source):
     parent = run.manifest["snapshots"]["candidate"]
     run.manifest["snapshots"]["rng-upgrade"] = {
@@ -566,14 +620,13 @@ def execute_c3(run, snapshots):
         preserve_rng_attempt(run, upgraded)
     graph = dependency_metadata(run, upgraded)
     old_graph = run.manifest["snapshots"]["candidate"]["dependency_graph"]
-    allowed = rng_dependency_closure(old_graph) | rng_dependency_closure(graph)
-    changed = set(old_graph["packages"]) ^ set(graph["packages"])
-    if changed - allowed:
-        raise ValueError("Unexpected dependency changes outside RNG closure")
+    run.manifest["snapshots"]["rng-upgrade"]["dependency_graph"] = graph
+    run.save()
+    changed = run.check("rng_dependencies", lambda: verify_rng_dependency_changes(old_graph, graph))
     for key, version in (("rand", "0.10.3"), ("rand_distr", "0.6.0")):
         if graph["direct"][key]["version"] != version:
             raise ValueError("Unexpected resolved RNG version")
-    run.manifest["snapshots"]["rng-upgrade"]["dependency_changes"] = sorted(changed)
+    run.manifest["snapshots"]["rng-upgrade"]["dependency_changes"] = changed
     new_bin = build(run, upgraded, "rng-upgrade", run_tests=True)
     binaries = {"baseline": old_bin, "candidate": new_bin}
     cases = run.manifest["spec"]["cases"]
@@ -603,7 +656,7 @@ def execute_c3(run, snapshots):
 def execute_cluster(cluster, payload, spec, bundle_id):
     if not Path("/kaggle/working").is_dir() or platform.system() != "Linux":
         raise RuntimeError("Kaggle/Linux runner only; local use is preparation/unit verification")
-    output = Path("/kaggle/working") / ("athena-v2-" + cluster)
+    output = Path("/kaggle/working") / ("athena-v21-" + cluster)
     run = EvidenceRun(output, cluster, bundle_id, spec)
     try:
         run.check("environment", lambda: prepare_toolchain(run))

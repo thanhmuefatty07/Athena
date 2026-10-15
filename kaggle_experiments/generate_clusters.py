@@ -6,6 +6,11 @@ import hashlib
 import json
 from pathlib import Path
 
+if __package__:
+    from .protocol import ANALYSIS_POLICY, C1_STAGES, STUDY_REVISION
+else:
+    from protocol import ANALYSIS_POLICY, C1_STAGES, STUDY_REVISION
+
 ROOT = Path(__file__).resolve().parent
 CLUSTERS = {
     "c1": "athena-c1-core-stages-20261015",
@@ -22,7 +27,7 @@ def case(identity, stage, size, rounds, iterations, unit="ms", quantiles=(0.5, 0
 def specifications(screen=False):
     rounds, iterations = (2, 5) if screen else (20, 250)
     c1 = [case(stage, stage, 5000 if stage == "table" else 1000, rounds, iterations)
-          for stage in ("rank", "table", "parse", "export", "pipeline", "pipeline_no_query")]
+          for stage in C1_STAGES]
     c2 = []
     for anchors in (100, 500, 1000, 2500, 5000, 10000, 20000):
         c2.extend([
@@ -34,6 +39,7 @@ def specifications(screen=False):
                "ns/draw", (0.5,), alpha=a, beta=b) for a, b in shapes]
     family = sum(len(item["quantiles"]) for cases in (c1, c2, c3) for item in cases)
     return {name: {"run_kind": "screen" if screen else "confirm", "simultaneous_family_size": family,
+                   "study_revision": STUDY_REVISION, "analysis_policy": ANALYSIS_POLICY,
                    "cases": cases, "drift_threshold": 0.5, "family_alpha": 0.05,
                    "wall_budget_seconds": 5400}
             for name, cases in (("c1", c1), ("c2", c2), ("c3", c3))}
@@ -76,7 +82,7 @@ def main(argv=None):
                 + f"    execute_cluster({cluster!r}, PAYLOAD, SPEC, BUNDLE_ID)\n")
         ast.parse(code)
         (destination / "main.py").write_text(code, encoding="utf-8")
-        suffix = "-v2-screen" if args.screen else "-v2"
+        suffix = "-v21-screen" if args.screen else "-v21"
         kernel_metadata = {"id": f"{args.owner}/{directory}{suffix}",
                            "title": (directory + suffix).replace("-", " "),
                            "code_file": "main.py", "language": "python", "kernel_type": "script",

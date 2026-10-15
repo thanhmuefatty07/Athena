@@ -1,0 +1,1825 @@
+[2026-10-15T19:18:27.227098+00:00] CMD ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"] cwd=None
+[2026-10-15T19:18:27.505059+00:00] RESULT {"argv": ["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs"], "cwd": "None", "exit_code": 0, "wall_ns": 275178038, "stdout_sha256": "7d0ea0f8eba7fa1ebfe998091cd7ec4501e33ec5ca6b884eb4d894d7da5170af", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:18:27.505206+00:00] #!/bin/sh
+# shellcheck shell=dash
+# shellcheck disable=SC2039  # local is non-POSIX
+
+# This is just a little script that can be downloaded from the internet to
+# install rustup. It just does platform detection, downloads the installer
+# and runs it.
+
+# It runs on Unix shells like {a,ba,da,k,z}sh. It uses the common `local`
+# extension. Note: Most shells limit `local` to 1 var per line, contra bash.
+
+# Some versions of ksh have no `local` keyword. Alias it to `typeset`, but
+# beware this makes variables global with f()-style function syntax in ksh93.
+# mksh has this alias by default.
+has_local() {
+    # shellcheck disable=SC2034  # deliberately unused
+    local _has_local
+}
+
+has_local 2>/dev/null || alias local=typeset
+
+is_zsh() {
+    [ -n "${ZSH_VERSION-}" ]
+}
+
+set -u
+
+# If RUSTUP_UPDATE_ROOT is unset or empty, default it.
+RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-https://static.rust-lang.org/rustup}"
+# Set quiet as a global for ease of use
+RUSTUP_QUIET=no
+
+# NOTICE: If you change anything here, please make the same changes in setup_mode.rs
+usage() {
+    cat <<EOF
+rustup-init 1.29.1 (3f5811cec 2026-08-12)
+
+The installer for rustup
+
+Usage: rustup-init[EXE] [OPTIONS]
+
+Options:
+  -v, --verbose
+          Set log level to 'DEBUG' if 'RUSTUP_LOG' is unset
+  -q, --quiet
+          Disable progress output, set log level to 'WARN' if 'RUSTUP_LOG' is unset
+  -y, --yes
+          Disable confirmation prompt
+      --default-host <DEFAULT_HOST>
+          Choose a default host tuple
+      --default-toolchain <DEFAULT_TOOLCHAIN>
+          Choose a default toolchain to install. Use 'none' to not install any toolchains at all
+      --profile <PROFILE>
+          [default: default] [possible values: minimal, default, complete]
+  -c, --component <COMPONENT>
+          Comma-separated list of component names to also install
+  -t, --target <TARGET>
+          Comma-separated list of target names to also install
+      --no-update-default-toolchain
+          Don't update any existing default toolchain after install
+      --no-modify-path
+          Don't configure the PATH environment variable
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+EOF
+}
+
+main() {
+    downloader --check
+    need_cmd uname
+    need_cmd mktemp
+    need_cmd chmod
+    need_cmd mkdir
+    need_cmd rm
+    need_cmd rmdir
+
+    get_architecture || return 1
+    local _arch="$RETVAL"
+    assert_nz "$_arch" "arch"
+
+    local _default_host_override=""
+    case "$_arch" in
+        *windows*)
+            _default_host_override="--default-host=$_arch"
+            ;;
+    esac
+
+    local _ext=""
+    case "$_arch" in
+        *windows*)
+            _ext=".exe"
+            ;;
+    esac
+
+    local _url
+    if [ "${RUSTUP_VERSION+set}" = 'set' ]; then
+        say "\`RUSTUP_VERSION\` has been set to \`${RUSTUP_VERSION}\`"
+        _url="${RUSTUP_UPDATE_ROOT}/archive/${RUSTUP_VERSION}"
+    else
+        _url="${RUSTUP_UPDATE_ROOT}/dist"
+    fi
+    _url="${_url}/${_arch}/rustup-init${_ext}"
+
+
+    local _dir
+    if ! _dir="$(ensure mktemp -d)"; then
+        # Because the previous command ran in a subshell, we must manually
+        # propagate exit status.
+        exit 1
+    fi
+    local _file="${_dir}/rustup-init${_ext}"
+
+    local _ansi_escapes_are_valid=false
+    if [ -t 2 ]; then
+        if [ "${TERM+set}" = 'set' ]; then
+            case "$TERM" in
+                xterm*|rxvt*|urxvt*|linux*|vt*)
+                    _ansi_escapes_are_valid=true
+                ;;
+            esac
+        fi
+    fi
+
+    # check if we have to use /dev/tty to prompt the user
+    local need_tty=yes
+    for arg in "$@"; do
+        case "$arg" in
+            --help)
+                usage
+                exit 0
+                ;;
+            --quiet)
+                RUSTUP_QUIET=yes
+                ;;
+            --yes)
+                # user wants to skip the prompt --
+                # we don't need /dev/tty
+                need_tty=no
+                ;;
+            *)
+                OPTIND=1
+                if [ "${arg%%--*}" = "" ]; then
+                    # Long option (other than --help);
+                    # don't attempt to interpret it.
+                    continue
+                fi
+                while getopts :hqy sub_arg "$arg"; do
+                    case "$sub_arg" in
+                        h)
+                            usage
+                            exit 0
+                            ;;
+                        q)
+                            RUSTUP_QUIET=yes
+                            ;;
+                        y)
+                            # user wants to skip the prompt --
+                            # we don't need /dev/tty
+                            need_tty=no
+                            ;;
+                        *)
+                            ;;
+                        esac
+                done
+                ;;
+        esac
+    done
+
+    say 'downloading installer'
+
+    ensure mkdir -p "$_dir"
+    ensure downloader "$_url" "$_file" "$_arch"
+    ensure chmod u+x "$_file"
+    if [ ! -x "$_file" ]; then
+        err "Cannot execute $_file (likely because of mounting /tmp as noexec)."
+        err "Please copy the file to a location where you can execute binaries and run ./rustup-init${_ext}."
+        exit 1
+    fi
+
+    # If a default host has been specified on the command line, we should
+    # revert our own override before calling the installer.
+    for arg in "$@"; do
+        case "$arg" in
+            --default-host|--default-host=*)
+                _default_host_override=
+                break
+                ;;
+        esac
+    done
+
+    if [ "$need_tty" = "yes" ] && [ ! -t 0 ]; then
+        # The installer is going to want to ask for confirmation by
+        # reading stdin.  This script was piped into `sh` though and
+        # doesn't have stdin to pass to its children. Instead we're going
+        # to explicitly connect /dev/tty to the installer's stdin.
+        if [ ! -t 1 ]; then
+            err "Unable to run interactively. Run with -y to accept defaults, --help for additional options"
+            exit 1;
+        fi
+
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@" < /dev/tty
+    else
+        ignore "$_file" ${_default_host_override:+"$_default_host_override"} "$@"
+    fi
+
+    local _retval=$?
+
+    ignore rm "$_file"
+    ignore rmdir "$_dir"
+
+    return "$_retval"
+}
+
+get_current_exe() {
+    # Returns the executable used for system architecture detection
+    # This is only run on Linux
+    local _current_exe
+    if test -L /proc/self/exe ; then
+        _current_exe=/proc/self/exe
+    else
+        warn "Unable to find /proc/self/exe. System architecture detection might be inaccurate."
+        if test -n "$SHELL" ; then
+            _current_exe=$SHELL
+        else
+            need_cmd /bin/sh
+            _current_exe=/bin/sh
+        fi
+        warn "Falling back to $_current_exe."
+    fi
+    echo "$_current_exe"
+}
+
+get_bitness() {
+    need_cmd head
+    # Architecture detection without dependencies beyond coreutils.
+    # ELF files start out "\x7fELF", and the following byte is
+    #   0x01 for 32-bit and
+    #   0x02 for 64-bit.
+    # The printf builtin on some shells like dash only supports octal
+    # escape sequences, so we use those.
+    local _current_exe=$1
+    local _current_exe_head
+    _current_exe_head=$(head -c 5 "$_current_exe")
+    if [ "$_current_exe_head" = "$(printf '\177ELF\001')" ]; then
+        echo 32
+    elif [ "$_current_exe_head" = "$(printf '\177ELF\002')" ]; then
+        echo 64
+    else
+        err "unknown platform bitness"
+        exit 1;
+    fi
+}
+
+is_host_amd64_elf() {
+    local _current_exe=$1
+
+    need_cmd head
+    need_cmd tail
+    # ELF e_machine detection without dependencies beyond coreutils.
+    # Two-byte field at offset 0x12 indicates the CPU,
+    # but we're interested in it being 0x3E to indicate amd64, or not that.
+    local _current_exe_machine
+    _current_exe_machine=$(head -c 19 "$_current_exe" | tail -c 1)
+    [ "$_current_exe_machine" = "$(printf '\076')" ]
+}
+
+get_endianness() {
+    local _current_exe=$1
+    local cputype=$2
+    local suffix_eb=$3
+    local suffix_el=$4
+
+    # detect endianness without od/hexdump, like get_bitness() does.
+    need_cmd head
+    need_cmd tail
+
+    local _current_exe_endianness
+    _current_exe_endianness="$(head -c 6 "$_current_exe" | tail -c 1)"
+    if [ "$_current_exe_endianness" = "$(printf '\001')" ]; then
+        echo "${cputype}${suffix_el}"
+    elif [ "$_current_exe_endianness" = "$(printf '\002')" ]; then
+        echo "${cputype}${suffix_eb}"
+    else
+        err "unknown platform endianness"
+        exit 1
+    fi
+}
+
+# Detect the Linux/LoongArch UAPI flavor, with all errors being non-fatal.
+# Returns 0 or 234 in case of successful detection, 1 otherwise (/tmp being
+# noexec, or other causes).
+check_loongarch_uapi() {
+    need_cmd base64
+
+    local _tmp
+    if ! _tmp="$(ensure mktemp)"; then
+        return 1
+    fi
+
+    # Minimal Linux/LoongArch UAPI detection, exiting with 0 in case of
+    # upstream ("new world") UAPI, and 234 (-EINVAL truncated) in case of
+    # old-world (as deployed on several early commercial Linux distributions
+    # for LoongArch).
+    #
+    # See https://gist.github.com/xen0n/5ee04aaa6cecc5c7794b9a0c3b65fc7f for
+    # source to this helper binary.
+    ignore base64 -d > "$_tmp" <<EOF
+f0VMRgIBAQAAAAAAAAAAAAIAAgEBAAAAeAAgAAAAAABAAAAAAAAAAAAAAAAAAAAAQQAAAEAAOAAB
+AAAAAAAAAAEAAAAFAAAAAAAAAAAAAAAAACAAAAAAAAAAIAAAAAAAJAAAAAAAAAAkAAAAAAAAAAAA
+AQAAAAAABCiAAwUAFQAGABUAByCAAwsYggMAACsAC3iBAwAAKwAxen0n
+EOF
+
+    ignore chmod u+x "$_tmp"
+    if [ ! -x "$_tmp" ]; then
+        ignore rm "$_tmp"
+        return 1
+    fi
+
+    "$_tmp"
+    local _retval=$?
+
+    ignore rm "$_tmp"
+    return "$_retval"
+}
+
+ensure_loongarch_uapi() {
+    check_loongarch_uapi
+    case $? in
+        0)
+            return 0
+            ;;
+        234)
+            err 'Your Linux kernel does not provide the ABI required by this Rust distribution.'
+            err 'Please check with your OS provider for how to obtain a compatible Rust package for your system.'
+            exit 1
+            ;;
+        *)
+            warn "Cannot determine current system's ABI flavor, continuing anyway."
+            warn 'Note that the official Rust distribution only works with the upstream kernel ABI.'
+            warn 'Installation will fail if your running kernel happens to be incompatible.'
+            ;;
+    esac
+}
+
+get_architecture() {
+    local _ostype _cputype _bitness _arch _clibtype
+    _ostype="$(uname -s)"
+    _cputype="$(uname -m)"
+    _clibtype="gnu"
+
+    if [ "$_ostype" = Linux ]; then
+        if [ "$(uname -o)" = Android ]; then
+            _ostype=Android
+        fi
+        if ldd --version 2>&1 | grep -q 'musl'; then
+            _clibtype="musl"
+        fi
+    fi
+
+    if [ "$_ostype" = Darwin ]; then
+        # Darwin `uname -m` can lie due to Rosetta shenanigans. If you manage to
+        # invoke a native shell binary and then a native uname binary, you can
+        # get the real answer, but that's hard to ensure, so instead we use
+        # `sysctl` (which doesn't lie) to check for the actual architecture.
+        if [ "$_cputype" = i386 ]; then
+            # Handling i386 compatibility mode in older macOS versions (<10.15)
+            # running on x86_64-based Macs.
+            # Starting from 10.15, macOS explicitly bans all i386 binaries from running.
+            # See: <https://support.apple.com/en-us/HT208436>
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.x86_64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=x86_64
+            fi
+        elif [ "$_cputype" = x86_64 ]; then
+            # Handling x86-64 compatibility mode (a.k.a. Rosetta 2)
+            # in newer macOS versions (>=11) running on arm64-based Macs.
+            # Rosetta 2 is built exclusively for x86-64 and cannot run i386 binaries.
+
+            # Avoid `sysctl: unknown oid` stderr output and/or non-zero exit code.
+            if (sysctl hw.optional.arm64 2> /dev/null || true) | grep -q ': 1'; then
+                _cputype=arm64
+            fi
+        fi
+    fi
+
+    if [ "$_ostype" = SunOS ]; then
+        # Both Solaris and illumos presently announce as "SunOS" in "uname -s"
+        # so use "uname -o" to disambiguate.  We use the full path to the
+        # system uname in case the user has coreutils uname first in PATH,
+        # which has historically sometimes printed the wrong value here.
+        if [ "$(/usr/bin/uname -o)" = illumos ]; then
+            _ostype=illumos
+        fi
+
+        # illumos systems have multi-arch userlands, and "uname -m" reports the
+        # machine hardware name; e.g., "i86pc" on both 32- and 64-bit x86
+        # systems.  Check for the native (widest) instruction set on the
+        # running kernel:
+        if [ "$_cputype" = i86pc ]; then
+            _cputype="$(isainfo -n)"
+        fi
+    fi
+
+    local _current_exe
+    case "$_ostype" in
+
+        Android)
+            _ostype=linux-android
+            ;;
+
+        Linux)
+            _current_exe=$(get_current_exe)
+            _ostype=unknown-linux-$_clibtype
+            _bitness=$(get_bitness "$_current_exe")
+            ;;
+
+        FreeBSD)
+            _ostype=unknown-freebsd
+            ;;
+
+        NetBSD)
+            _ostype=unknown-netbsd
+            ;;
+
+        DragonFly)
+            _ostype=unknown-dragonfly
+            ;;
+
+        Darwin)
+            _ostype=apple-darwin
+            ;;
+
+        illumos)
+            _ostype=unknown-illumos
+            ;;
+
+        SunOS)
+            if [ "$_cputype" = sun4v ]; then
+               _ostype=sun-solaris
+            else
+               _ostype=pc-solaris
+            fi
+            ;;
+
+        MINGW* | MSYS* | CYGWIN* | Windows_NT)
+            _ostype=pc-windows-gnu
+            ;;
+
+        *)
+            err "unrecognized OS type: $_ostype"
+            exit 1
+            ;;
+
+    esac
+
+    case "$_cputype" in
+
+        i386 | i486 | i686 | i786 | x86)
+            _cputype=i686
+            ;;
+
+        xscale | arm)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            fi
+            ;;
+
+        armv6l)
+            _cputype=arm
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        armv7l | armv8l)
+            _cputype=armv7
+            if [ "$_ostype" = "linux-android" ]; then
+                _ostype=linux-androideabi
+            else
+                _ostype="${_ostype}eabihf"
+            fi
+            ;;
+
+        aarch64 | arm64)
+            _cputype=aarch64
+            # Windows aarch64 uses gnullvm instead of gnu
+            if [ "$_ostype" = "pc-windows-gnu" ]; then
+                _ostype=pc-windows-gnullvm
+            fi
+            ;;
+
+        x86_64 | x86-64 | x64 | amd64)
+            _cputype=x86_64
+            ;;
+
+        mips)
+            _cputype=$(get_endianness "$_current_exe" mips '' el)
+            ;;
+
+        mips64)
+            if [ "$_bitness" -eq 64 ]; then
+                # only n64 ABI is supported for now
+                _ostype="${_ostype}abi64"
+                _cputype=$(get_endianness "$_current_exe" mips64 '' el)
+            fi
+            ;;
+
+        ppc)
+            _cputype=powerpc
+            ;;
+
+        ppc64)
+            _cputype=powerpc64
+            ;;
+
+        ppc64le)
+            _cputype=powerpc64le
+            ;;
+
+        s390x)
+            _cputype=s390x
+            ;;
+        sun4v)
+            _cputype=sparcv9
+            ;;
+        riscv64)
+            _cputype=riscv64gc
+            ;;
+        loongarch64)
+            _cputype=loongarch64
+            ensure_loongarch_uapi
+            ;;
+        *)
+            err "unknown CPU type: $_cputype"
+            exit 1
+
+    esac
+
+    # Detect 64-bit linux with 32-bit userland
+    if [ "${_ostype}" = unknown-linux-gnu ] && [ "${_bitness}" -eq 32 ]; then
+        case $_cputype in
+            x86_64)
+                if [ -n "${RUSTUP_CPUTYPE:-}" ]; then
+                    _cputype="$RUSTUP_CPUTYPE"
+                else {
+                    # 32-bit executable for amd64 = x32
+                    if is_host_amd64_elf "$_current_exe"; then {
+                        err "This host is running an x32 userland, for which no native toolchain is provided."
+                        err "You will have to install multiarch compatibility with i686 or amd64."
+                        err "To do so, set the RUSTUP_CPUTYPE environment variable set to i686 or amd64 and re-run this script."
+                        err "You will be able to add an x32 target after installation by running \`rustup target add x86_64-unknown-linux-gnux32\`."
+                         exit 1
+                    }; else
+                        _cputype=i686
+                    fi
+                }; fi
+                ;;
+            mips64)
+                _cputype=$(get_endianness "$_current_exe" mips '' el)
+                ;;
+            powerpc64)
+                _cputype=powerpc
+                ;;
+            aarch64)
+                _cputype=armv7
+                if [ "$_ostype" = "linux-android" ]; then
+                    _ostype=linux-androideabi
+                else
+                    _ostype="${_ostype}eabihf"
+                fi
+                ;;
+            riscv64gc)
+                err "riscv64 with 32-bit userland unsupported"
+                exit 1
+                ;;
+        esac
+    fi
+
+    # Detect armv7 but without the CPU features Rust needs in that build,
+    # and fall back to arm.
+    # See https://github.com/rust-lang/rustup.rs/issues/587.
+    if [ "$_ostype" = "unknown-linux-gnueabihf" ] && [ "$_cputype" = armv7 ]; then
+        if ! (ensure grep '^Features' /proc/cpuinfo | grep -E -q 'neon|simd') ; then
+            # Either `/proc/cpuinfo` is malformed or unavailable, or
+            # at least one processor does not have NEON (which is asimd on armv8+).
+            _cputype=arm
+        fi
+    fi
+
+    _arch="${_cputype}-${_ostype}"
+
+    RETVAL="$_arch"
+}
+
+__print() {
+    if $_ansi_escapes_are_valid; then
+        printf '\33[1m%s:\33[0m %s\n' "$1" "$2" >&2
+    else
+        printf '%s: %s\n' "$1" "$2" >&2
+    fi
+}
+
+warn() {
+    __print 'warn' "$1" >&2
+}
+
+say() {
+    if [ "$RUSTUP_QUIET" = "no" ]; then
+        __print 'info' "$1" >&2
+    fi
+}
+
+# NOTE: you are required to exit yourself
+# we don't do it here because of multiline errors
+err() {
+    __print 'error' "$1" >&2
+}
+
+need_cmd() {
+    if ! check_cmd "$1"; then
+        err "need '$1' (command not found)"
+        exit 1
+    fi
+}
+
+check_cmd() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+assert_nz() {
+    if [ -z "$1" ]; then
+        err "assert_nz $2"
+        exit 1
+    fi
+}
+
+# Run a command that should never fail. If the command fails execution
+# will immediately terminate with an error showing the failing
+# command.
+ensure() {
+    if ! "$@"; then
+        err "command failed: $*"
+        exit 1
+    fi
+}
+
+# This is just for indicating that commands' results are being
+# intentionally ignored. Usually, because it's being executed
+# as part of error handling.
+ignore() {
+    "$@"
+}
+
+# This wraps curl or wget. Try curl first, if not installed,
+# use wget instead.
+downloader() {
+    # zsh does not split words by default, Required for curl retry arguments below.
+    is_zsh && setopt local_options shwordsplit
+
+    local _dld
+    local _ciphersuites
+    local _err
+    local _status
+    local _retry
+    if check_cmd curl; then
+        # Check if we have a broken snap curl
+        # https://github.com/boukendesho/curl-snap/issues/1
+        _curl_path=$(command -v curl)
+        if echo "$_curl_path" | grep "/snap/" > /dev/null 2>&1; then
+            if check_cmd wget; then
+                _dld=wget
+            else
+                err "curl installed with snap cannot be used to install Rust"
+                err "due to missing permissions. Please uninstall it and"
+                err "reinstall curl with a different package manager (e.g., apt)."
+                err "See https://github.com/boukendesho/curl-snap/issues/1"
+                exit 1
+            fi
+        else
+            _dld=curl
+        fi
+    elif check_cmd wget; then
+        _dld=wget
+    else
+        _dld='curl or wget' # to be used in error message of need_cmd
+    fi
+
+    if [ "$1" = --check ]; then
+        need_cmd "$_dld"
+    elif [ "$_dld" = curl ]; then
+        check_curl_for_retry_support
+        _retry="$RETVAL"
+        get_ciphersuites_for_curl
+        _ciphersuites="$RETVAL"
+        if [ -n "$_ciphersuites" ]; then
+            # shellcheck disable=SC2086
+            _err=$(curl $_retry --proto '=https' --tlsv1.2 --ciphers "$_ciphersuites" --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+            _status=$?
+        else
+            warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+            if ! check_help_for "$3" curl --proto --tlsv1.2; then
+                warn "Not enforcing TLS v1.2, this is potentially less secure"
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            else
+                # shellcheck disable=SC2086
+                _err=$(curl $_retry --proto '=https' --tlsv1.2 --silent --show-error --fail --location "$1" --output "$2" 2>&1)
+                _status=$?
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q 404$; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    elif [ "$_dld" = wget ]; then
+        if [ "$(wget -V 2>&1|head -2|tail -1|cut -f1 -d" ")" = "BusyBox" ]; then
+            warn "using the BusyBox version of wget.  Not enforcing strong cipher suites for TLS or TLS v1.2, this is potentially less secure"
+            _err=$(wget "$1" -O "$2" 2>&1)
+            _status=$?
+        else
+            get_ciphersuites_for_wget
+            _ciphersuites="$RETVAL"
+            if [ -n "$_ciphersuites" ]; then
+                _err=$(wget --https-only --secure-protocol=TLSv1_2 --ciphers "$_ciphersuites" "$1" -O "$2" 2>&1)
+                _status=$?
+            else
+                warn "Not enforcing strong cipher suites for TLS, this is potentially less secure"
+                if ! check_help_for "$3" wget --https-only --secure-protocol; then
+                    warn "Not enforcing TLS v1.2, this is potentially less secure"
+                    _err=$(wget "$1" -O "$2" 2>&1)
+                    _status=$?
+                else
+                    _err=$(wget --https-only --secure-protocol=TLSv1_2 "$1" -O "$2" 2>&1)
+                    _status=$?
+                fi
+            fi
+        fi
+        if [ -n "$_err" ]; then
+            warn "$_err"
+            if echo "$_err" | grep -q ' 404 Not Found$'; then
+                err "installer for platform '$3' not found, this may be unsupported"
+                exit 1
+            fi
+        fi
+        return $_status
+    else
+        err "Unknown downloader"   # should not reach here
+        exit 1
+    fi
+}
+
+check_help_for() {
+    local _arch
+    local _cmd
+    local _arg
+    _arch="$1"
+    shift
+    _cmd="$1"
+    shift
+
+    local _category
+    if "$_cmd" --help | grep -q '"--help all"'; then
+      _category="all"
+    else
+      _category=""
+    fi
+
+    case "$_arch" in
+
+        *darwin*)
+        if check_cmd sw_vers; then
+            local _os_version
+            local _os_major
+            _os_version=$(sw_vers -productVersion)
+            _os_major=$(echo "$_os_version" | cut -d. -f1)
+            case $_os_major in
+                10)
+                    # If we're running on macOS, older than 10.13, then we always
+                    # fail to find these options to force fallback
+                    if [ "$(echo "$_os_version" | cut -d. -f2)" -lt 13 ]; then
+                        # Older than 10.13
+                        warn "Detected macOS platform older than 10.13"
+                        return 1
+                    fi
+                    ;;
+                *)
+                    if ! { [ "$_os_major" -eq "$_os_major" ] 2>/dev/null && [ "$_os_major" -ge 11 ]; }; then
+                        # Unknown product version, warn and continue
+                        warn "Detected unknown macOS major version: $_os_version"
+                        warn "TLS capabilities detection may fail"
+                    fi
+                    ;; # We assume that macOS v11+ will always be okay.
+            esac
+        fi
+        ;;
+
+    esac
+
+    for _arg in "$@"; do
+        if ! "$_cmd" --help "$_category" | grep -q -- "$_arg"; then
+            return 1
+        fi
+    done
+
+    true # not strictly needed
+}
+
+# Check if curl supports the --retry flag, then pass it to the curl invocation.
+check_curl_for_retry_support() {
+    local _retry_supported=""
+    # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+    if check_help_for "notspecified" "curl" "--retry"; then
+        _retry_supported="--retry 3"
+        if check_help_for "notspecified" "curl" "--continue-at"; then
+            # "-C -" tells curl to automatically find where to resume the download when retrying.
+            _retry_supported="--retry 3 -C -"
+        fi
+    fi
+
+    RETVAL="$_retry_supported"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these curl backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_curl() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _openssl_syntax="no"
+    local _gnutls_syntax="no"
+    local _backend_supported="yes"
+    if curl -V | grep -q ' OpenSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' LibreSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' BoringSSL/'; then
+        _openssl_syntax="yes"
+    elif curl -V | grep -iq ' GnuTLS/'; then
+        _gnutls_syntax="yes"
+    else
+        _backend_supported="no"
+    fi
+
+    local _args_supported="no"
+    if [ "$_backend_supported" = "yes" ]; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "curl" "--tlsv1.2" "--ciphers" "--proto"; then
+            _args_supported="yes"
+        fi
+    fi
+
+    local _cs=""
+    if [ "$_args_supported" = "yes" ]; then
+        if [ "$_openssl_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        elif [ "$_gnutls_syntax" = "yes" ]; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return cipher suite string specified by user, otherwise return strong TLS 1.2-1.3 cipher suites
+# if support by local tools is detected. Detection currently supports these wget backends:
+# GnuTLS and OpenSSL (possibly also LibreSSL and BoringSSL). Return value can be empty.
+get_ciphersuites_for_wget() {
+    if [ -n "${RUSTUP_TLS_CIPHERSUITES-}" ]; then
+        # user specified custom cipher suites, assume they know what they're doing
+        RETVAL="$RUSTUP_TLS_CIPHERSUITES"
+        return
+    fi
+
+    local _cs=""
+    if wget -V | grep -q '\-DHAVE_LIBSSL'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "openssl")
+        fi
+    elif wget -V | grep -q '\-DHAVE_LIBGNUTLS'; then
+        # "unspecified" is for arch, allows for possibility old OS using macports, homebrew, etc.
+        if check_help_for "notspecified" "wget" "TLSv1_2" "--ciphers" "--https-only" "--secure-protocol"; then
+            _cs=$(get_strong_ciphersuites_for "gnutls")
+        fi
+    fi
+
+    RETVAL="$_cs"
+}
+
+# Return strong TLS 1.2-1.3 cipher suites in OpenSSL or GnuTLS syntax. TLS 1.2
+# excludes non-ECDHE and non-AEAD cipher suites. DHE is excluded due to bad
+# DH params often found on servers (see RFC 7919). Sequence matches or is
+# similar to Firefox 68 ESR with weak cipher suites disabled via about:config.
+# $1 must be openssl or gnutls.
+get_strong_ciphersuites_for() {
+    if [ "$1" = "openssl" ]; then
+        # OpenSSL is forgiving of unknown values, no problems with TLS 1.3 values on versions that don't support it yet.
+        echo "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+    elif [ "$1" = "gnutls" ]; then
+        # GnuTLS isn't forgiving of unknown values, so this may require a GnuTLS version that supports TLS 1.3 even if wget doesn't.
+        # Begin with SECURE128 (and higher) then remove/add to build cipher suites. Produces same 9 cipher suites as OpenSSL but in slightly different order.
+        echo "SECURE128:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-DTLS-ALL:-CIPHER-ALL:-MAC-ALL:-KX-ALL:+AEAD:+ECDHE-ECDSA:+ECDHE-RSA:+AES-128-GCM:+CHACHA20-POLY1305:+AES-256-GCM"
+    fi
+}
+
+set +u
+case "$RUSTUP_INIT_SH_PRINT" in
+    arch | architecture)
+        get_architecture || exit 1
+        echo "$RETVAL"
+        ;;
+    *)
+        main "$@" || exit 1
+        ;;
+esac
+
+[2026-10-15T19:18:27.505647+00:00] CMD ["sh", "/kaggle/working/athena-v21-c1/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"] cwd=None
+[2026-10-15T19:18:28.147258+00:00] RESULT {"argv": ["sh", "/kaggle/working/athena-v21-c1/rustup-init.sh", "-y", "--profile", "minimal", "--default-toolchain", "none"], "cwd": "None", "exit_code": 0, "wall_ns": 641458381, "stdout_sha256": "27341d26076a7995760787cd0d0fa04d7d3be8951ba8b1be93628676a5d96e3b", "stderr_sha256": "6da111bef98220f47225bfcb5493c8d9ec53b1d0cdec62829adc725b07d71d94"}
+[2026-10-15T19:18:28.147325+00:00] 
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source the
+corresponding env file under $HOME/.cargo.
+
+Consider running the right command for your shell (note the leading DOT):
+. "$HOME/.cargo/env" # For sh/ash/dash/pdksh/bash
+cargo:rerun-if-env-changed=CC_x86_64-unknown-linux-gnu
+CC_x86_64-unknown-linux-gnu = None
+cargo:rerun-if-env-changed=CC_x86_64_unknown_linux_gnu
+CC_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64_unknown_linux_gnu
+CFLAGS_x86_64_unknown_linux_gnu = None
+cargo:rerun-if-env-changed=CFLAGS_x86_64-unknown-linux-gnu
+CFLAGS_x86_64-unknown-linux-gnu = None
+info: downloading installer
+info: profile set to minimal
+info: default host tuple is x86_64-unknown-linux-gnu
+info: skipping toolchain installation
+
+[2026-10-15T19:18:28.147383+00:00] CMD ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"] cwd=None
+[2026-10-15T19:18:42.318555+00:00] RESULT {"argv": ["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal", "--component", "rustfmt", "--component", "clippy"], "cwd": "None", "exit_code": 0, "wall_ns": 14171020311, "stdout_sha256": "a162658ac6a697e415ded8bbad66b1cdabb9f58a0d240a248fc27fbf3844a9e3", "stderr_sha256": "710c895bb69f5ca89c9eb2c09a437c9e826a9647741b5be5aaa16ac3be6ab9fc"}
+[2026-10-15T19:18:42.318643+00:00] 
+  1.99.0-x86_64-unknown-linux-gnu installed - rustc 1.99.0 (b940084d7 2026-09-28)
+
+info: syncing channel updates for 1.99.0-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-01 for version 1.99.0 (b940084d7 2026-09-28)
+info: downloading 5 components
+info: default toolchain set to 1.99.0-x86_64-unknown-linux-gnu
+info: checking for self-update (current version: 1.29.1)
+
+[2026-10-15T19:18:42.318714+00:00] CMD ["rustc", "-Vv"] cwd=None
+[2026-10-15T19:18:42.335028+00:00] RESULT {"argv": ["rustc", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 16184678, "stdout_sha256": "b569b0c98ea3133c7252b4b8ea6b39b7b353813df0dd5f5c412c355691424112", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:18:42.335096+00:00] rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+[2026-10-15T19:18:42.335151+00:00] CMD ["cargo", "-Vv"] cwd=None
+[2026-10-15T19:18:42.374866+00:00] RESULT {"argv": ["cargo", "-Vv"], "cwd": "None", "exit_code": 0, "wall_ns": 39549259, "stdout_sha256": "2106ad2f6d2494210f01796652ddf5c620d7955ad5e1a4ef2b55500aee9ceab0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:18:42.374944+00:00] cargo 1.99.0 (5f94df478 2026-08-27)
+release: 1.99.0
+commit-hash: 5f94df4789f005f9a352888e8355ffc645b7ed0e
+commit-date: 2026-08-27
+host: x86_64-unknown-linux-gnu
+libgit2: 1.9.6 (sys:0.21.0 vendored)
+libcurl: 8.21.0-DEV (sys:0.4.90+curl-8.21.0 vendored ssl:OpenSSL/3.6.3)
+ssl: OpenSSL 3.6.3 9 Jun 2026
+os: Ubuntu 24.4.0 (noble) [64-bit]
+
+[2026-10-15T19:18:42.391062+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-b55par9d/baseline/target"] cwd=/tmp/athena-v2-b55par9d/baseline
+[2026-10-15T19:20:34.952404+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-b55par9d/baseline/target"], "cwd": "/tmp/athena-v2-b55par9d/baseline", "exit_code": 0, "wall_ns": 112561035471, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "f61c213bbf9face50d838aa5033cd9d4cd83e57df193502955fa80f8ec6b8cae"}
+[2026-10-15T19:20:34.952510+00:00]     Updating crates.io index
+ Downloading crates ...
+  Downloaded atomic-waker v1.1.2
+  Downloaded autocfg v1.5.1
+  Downloaded rustc_version v0.4.1
+  Downloaded arrayvec v0.7.8
+  Downloaded new_debug_unreachable v1.0.6
+  Downloaded itoa v1.0.18
+  Downloaded dtoa v1.0.11
+  Downloaded ego-tree v0.11.0
+  Downloaded chacha20 v0.10.2
+  Downloaded httparse v1.10.1
+  Downloaded rustc-hash v2.1.3
+  Downloaded futures-sink v0.3.34
+  Downloaded openssl-probe v0.2.1
+  Downloaded cfg-if v1.0.5
+  Downloaded cssparser-macros v0.7.1
+  Downloaded phf_generator v0.13.1
+  Downloaded rand_core v0.10.1
+  Downloaded rustls-native-certs v0.8.5
+  Downloaded http-body-util v0.1.5
+  Downloaded derive_more v2.1.1
+  Downloaded dunce v1.0.5
+  Downloaded futures-core v0.3.34
+  Downloaded dtoa-short v0.3.5
+  Downloaded http-body v1.1.0
+  Downloaded indexmap v2.14.2
+  Downloaded displaydoc v0.2.7
+  Downloaded getopts v0.2.24
+  Downloaded pkg-config v0.3.34
+  Downloaded rand_core v0.9.5
+  Downloaded rustls-webpki v0.103.15
+  Downloaded scraper v0.27.0
+  Downloaded untrusted v0.9.0
+  Downloaded want v0.3.2
+  Downloaded yoke-derive v0.8.4
+  Downloaded form_urlencoded v1.2.2
+  Downloaded percent-encoding v2.3.2
+  Downloaded constant_time_eq v0.4.2
+  Downloaded fnv v1.0.7
+  Downloaded markup5ever v0.39.0
+  Downloaded phf_macros v0.13.1
+  Downloaded synstructure v0.14.0
+  Downloaded thiserror-impl v2.0.21
+  Downloaded tokio-macros v2.7.2
+  Downloaded zerofrom-derive v0.1.8
+  Downloaded cc v1.8.0
+  Downloaded ipnet v2.12.2
+  Downloaded parking_lot_core v0.9.12
+  Downloaded quote v1.0.47
+  Downloaded siphasher v1.0.4
+  Downloaded futures-macro v0.3.34
+  Downloaded bitflags v2.13.2
+  Downloaded cpufeatures v0.3.1
+  Downloaded log v0.4.34
+  Downloaded precomputed-hash v0.1.1
+  Downloaded semver v1.0.28
+  Downloaded string_cache v0.9.0
+  Downloaded sync_wrapper v1.0.2
+  Downloaded tower-service v0.3.3
+  Downloaded cfg_aliases v0.2.2
+  Downloaded http v1.5.0
+  Downloaded rand_distr v0.5.1
+  Downloaded rand_pcg v0.10.2
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded tower-layer v0.3.3
+  Downloaded try-lock v0.2.5
+  Downloaded base64 v0.23.1
+  Downloaded fs_extra v1.3.0
+  Downloaded hyper-rustls v0.27.10
+  Downloaded phf_codegen v0.13.1
+  Downloaded scopeguard v1.2.0
+  Downloaded smallvec v1.16.3
+  Downloaded utf8_iter v1.0.4
+  Downloaded zerofrom v0.1.8
+  Downloaded aws-lc-rs v1.18.2
+  Downloaded icu_properties v2.3.0
+  Downloaded idna_adapter v1.2.2
+  Downloaded litemap v0.8.3
+  Downloaded lru-slab v0.1.3
+  Downloaded parking_lot v0.12.5
+  Downloaded phf v0.13.1
+  Downloaded rustls v0.23.46
+  Downloaded shlex v2.0.1
+  Downloaded tokio-rustls v0.26.6
+  Downloaded zerovec-derive v0.11.6
+  Downloaded bytes v1.12.1
+  Downloaded derive_more-impl v2.1.1
+  Downloaded fastrand v2.5.0
+  Downloaded futures-io v0.3.34
+  Downloaded futures-task v0.3.34
+  Downloaded hashbrown v0.17.1
+  Downloaded jobserver v0.1.35
+  Downloaded num-traits v0.2.19
+  Downloaded phf_shared v0.13.1
+  Downloaded potential_utf v0.1.6
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand_chacha v0.9.0
+  Downloaded cmake v0.1.58
+  Downloaded equivalent v1.0.3
+  Downloaded find-msvc-tools v0.1.14
+  Downloaded futures-channel v0.3.34
+  Downloaded once_cell v1.21.4
+  Downloaded pin-project-lite v0.2.17
+  Downloaded cssparser v0.37.0
+  Downloaded html5ever v0.39.0
+  Downloaded hyper v1.12.0
+  Downloaded icu_normalizer_data v2.3.0
+  Downloaded icu_provider v2.3.1
+  Downloaded proc-macro2 v1.0.107
+  Downloaded rand v0.9.5
+  Downloaded quinn v0.11.12
+  Downloaded blake3 v1.8.7
+  Downloaded getrandom v0.4.3
+  Downloaded hyper-util v0.1.21
+  Downloaded icu_collections v2.3.0
+  Downloaded getrandom v0.2.17
+  Downloaded idna v1.1.0
+  Downloaded libm v0.2.16
+  Downloaded memchr v2.8.3
+  Downloaded quinn-udp v0.5.16
+  Downloaded icu_properties_data v2.3.0
+  Downloaded mio v1.2.4
+  Downloaded rand v0.10.3
+  Downloaded futures-util v0.3.34
+  Downloaded h2 v0.4.20
+  Downloaded icu_normalizer v2.3.0
+  Downloaded libc v0.2.190
+  Downloaded string_cache_codegen v0.6.1
+  Downloaded quinn-proto v0.11.19
+  Downloaded servo_arc v0.4.3
+  Downloaded slab v0.4.12
+  Downloaded subtle v2.6.1
+  Downloaded thiserror v2.0.21
+  Downloaded tinystr v0.8.4
+  Downloaded writeable v0.6.4
+  Downloaded zeroize v1.9.1
+  Downloaded zmij v1.0.23
+  Downloaded tinyvec v1.13.3
+  Downloaded tracing-core v0.1.36
+  Downloaded unicode-ident v1.0.27
+  Downloaded web_atoms v0.2.6
+  Downloaded yoke v0.8.3
+  Downloaded icu_locale_core v2.3.0
+  Downloaded serde_derive v1.0.229
+  Downloaded socket2 v0.6.5
+  Downloaded zerotrie v0.2.5
+  Downloaded rustls-platform-verifier v0.7.1
+  Downloaded selectors v0.38.0
+  Downloaded serde v1.0.229
+  Downloaded serde_core v1.0.229
+  Downloaded tendril v0.5.1
+  Downloaded url v2.5.8
+  Downloaded tower v0.5.3
+  Downloaded zerovec v0.11.8
+  Downloaded reqwest v0.13.5
+  Downloaded serde_json v1.0.154
+  Downloaded tokio-util v0.7.20
+  Downloaded tower-http v0.6.11
+  Downloaded syn v2.0.119
+  Downloaded syn v3.0.9
+  Downloaded unicode-width v0.2.2
+  Downloaded zerocopy v0.8.63
+  Downloaded tracing v0.1.44
+  Downloaded lock_api v0.4.14
+  Downloaded tokio v1.53.3
+  Downloaded getrandom v0.3.4
+  Downloaded ring v0.17.14
+  Downloaded aws-lc-sys v0.46.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling smallvec v1.16.3
+   Compiling stable_deref_trait v1.2.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling shlex v2.0.1
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling cfg-if v1.0.5
+   Compiling itoa v1.0.18
+   Compiling cc v1.8.0
+   Compiling pin-project-lite v0.2.17
+   Compiling fs_extra v1.3.0
+   Compiling futures-core v0.3.34
+   Compiling pkg-config v0.3.34
+   Compiling dunce v1.0.5
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling cmake v0.1.58
+   Compiling once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+   Compiling writeable v0.6.4
+   Compiling aws-lc-rs v1.18.2
+   Compiling aws-lc-sys v0.46.0
+   Compiling litemap v0.8.3
+   Compiling zeroize v1.9.1
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling parking_lot_core v0.9.12
+   Compiling slab v0.4.12
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling displaydoc v0.2.7
+   Compiling tokio-macros v2.7.2
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.53.3
+   Compiling zerovec v0.11.8
+   Compiling phf_macros v0.13.1
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling icu_provider v2.3.1
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling lock_api v0.4.14
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling getrandom v0.3.4
+   Compiling futures-sink v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling rustls v0.23.46
+   Compiling zerocopy v0.8.63
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling indexmap v2.14.2
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.20
+   Compiling web_atoms v0.2.6
+   Compiling tracing v0.1.44
+   Compiling icu_normalizer v2.3.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_properties v2.3.0
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling fnv v1.0.7
+   Compiling want v0.3.2
+   Compiling h2 v0.4.20
+   Compiling string_cache v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling futures-channel v0.3.34
+   Compiling bitflags v2.13.2
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling serde_core v1.0.229
+   Compiling dtoa v1.0.11
+   Compiling dtoa-short v0.3.5
+   Compiling num-traits v0.2.19
+   Compiling idna v1.1.0
+   Compiling hyper v1.12.0
+   Compiling rand_core v0.9.5
+   Compiling ppv-lite86 v0.2.21
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling ipnet v2.12.2
+   Compiling zmij v1.0.23
+   Compiling base64 v0.23.1
+   Compiling derive_more v2.1.1
+   Compiling tower v0.5.3
+   Compiling hyper-util v0.1.21
+   Compiling rustls-native-certs v0.8.5
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling url v2.5.8
+   Compiling rand_chacha v0.9.0
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling rustc-hash v2.1.3
+   Compiling getopts v0.2.24
+   Compiling rand v0.9.5
+   Compiling tower-http v0.6.11
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling cpufeatures v0.3.1
+   Compiling arrayvec v0.7.8
+   Compiling memchr v2.8.3
+   Compiling ego-tree v0.11.0
+   Compiling constant_time_eq v0.4.2
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-b55par9d/baseline)
+    Finished `release` profile [optimized] target(s) in 1m 52s
+
+[2026-10-15T19:20:34.952683+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-b55par9d/baseline
+[2026-10-15T19:20:35.944262+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-b55par9d/baseline", "exit_code": 0, "wall_ns": 988238968, "stdout_sha256": "1532f977d02f3429bac1ea096a5501dfc67078516ee7e8fb90a19570f41a9cfe", "stderr_sha256": "8ad323d9ecbc1c8c4720f1f35802f9d2a0990e7bed6750c30e1f0ce1ebe7002b"}
+[2026-10-15T19:20:35.992888+00:00] CMD ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-b55par9d/candidate/target"] cwd=/tmp/athena-v2-b55par9d/candidate
+[2026-10-15T19:22:25.360466+00:00] RESULT {"argv": ["cargo", "build", "--locked", "--release", "--bin", "athena-core-v2", "--bin", "bench_core", "--bin", "research_probe", "--target-dir", "/tmp/athena-v2-b55par9d/candidate/target"], "cwd": "/tmp/athena-v2-b55par9d/candidate", "exit_code": 0, "wall_ns": 109367342350, "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "stderr_sha256": "cda491c8c6b6d3e2059ecbb9ba0cae1be5155716317a93e5fd34bd14925073ae"}
+[2026-10-15T19:22:25.360556+00:00]    Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.190
+   Compiling stable_deref_trait v1.2.1
+   Compiling smallvec v1.16.3
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling siphasher v1.0.4
+   Compiling phf_shared v0.13.1
+   Compiling fastrand v2.5.0
+   Compiling syn v3.0.9
+   Compiling phf_generator v0.13.1
+   Compiling itoa v1.0.18
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.1
+   Compiling jobserver v0.1.35
+   Compiling cfg-if v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling cc v1.8.0
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling futures-core v0.3.34
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling syn v2.0.119
+   Compiling once_cell v1.21.4
+   Compiling phf_codegen v0.13.1
+   Compiling cmake v0.1.58
+   Compiling zeroize v1.9.1
+   Compiling writeable v0.6.4
+   Compiling aws-lc-rs v1.18.2
+   Compiling aws-lc-sys v0.46.0
+   Compiling litemap v0.8.3
+   Compiling http v1.5.0
+   Compiling synstructure v0.14.0
+   Compiling icu_normalizer_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling parking_lot_core v0.9.12
+   Compiling slab v0.4.12
+   Compiling icu_properties_data v2.3.0
+   Compiling rustls-pki-types v1.15.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.6
+   Compiling displaydoc v0.2.7
+   Compiling yoke v0.8.3
+   Compiling tokio-macros v2.7.2
+   Compiling zerotrie v0.2.5
+   Compiling tokio v1.53.3
+   Compiling phf_macros v0.13.1
+   Compiling zerovec v0.11.8
+   Compiling new_debug_unreachable v1.0.6
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_locale_core v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling phf v0.13.1
+   Compiling futures-macro v0.3.34
+   Compiling icu_provider v2.3.1
+   Compiling http-body v1.1.0
+   Compiling tracing-core v0.1.36
+   Compiling string_cache_codegen v0.6.1
+   Compiling untrusted v0.9.0
+   Compiling futures-task v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling futures-sink v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling hashbrown v0.17.1
+   Compiling equivalent v1.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling rustls v0.23.46
+   Compiling zerocopy v0.8.63
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling indexmap v2.14.2
+   Compiling futures-util v0.3.34
+   Compiling tokio-util v0.7.20
+   Compiling tracing v0.1.44
+   Compiling web_atoms v0.2.6
+   Compiling icu_properties v2.3.0
+   Compiling parking_lot v0.12.5
+   Compiling icu_normalizer v2.3.0
+   Compiling fnv v1.0.7
+   Compiling atomic-waker v1.1.2
+   Compiling try-lock v0.2.5
+   Compiling tower-service v0.3.3
+   Compiling subtle v2.6.1
+   Compiling want v0.3.2
+   Compiling h2 v0.4.20
+   Compiling idna_adapter v1.2.2
+   Compiling string_cache v0.9.0
+   Compiling futures-channel v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling dtoa v1.0.11
+   Compiling bitflags v2.13.2
+   Compiling autocfg v1.5.1
+   Compiling libm v0.2.16
+   Compiling num-traits v0.2.19
+   Compiling dtoa-short v0.3.5
+   Compiling rand_core v0.9.5
+   Compiling idna v1.1.0
+   Compiling hyper v1.12.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling form_urlencoded v1.2.2
+   Compiling tendril v0.5.1
+   Compiling derive_more-impl v2.1.1
+   Compiling cssparser-macros v0.7.1
+   Compiling selectors v0.38.0
+   Compiling sync_wrapper v1.0.2
+   Compiling ipnet v2.12.2
+   Compiling zmij v1.0.23
+   Compiling base64 v0.23.1
+   Compiling tower-layer v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling hyper-util v0.1.21
+   Compiling tower v0.5.3
+   Compiling rustls-native-certs v0.8.5
+   Compiling derive_more v2.1.1
+   Compiling cssparser v0.37.0
+   Compiling markup5ever v0.39.0
+   Compiling rand_chacha v0.9.0
+   Compiling url v2.5.8
+   Compiling blake3 v1.8.7
+   Compiling servo_arc v0.4.3
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-width v0.2.2
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling getopts v0.2.24
+   Compiling tower-http v0.6.11
+   Compiling rand v0.9.5
+   Compiling html5ever v0.39.0
+   Compiling http-body-util v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling arrayvec v0.7.8
+   Compiling memchr v2.8.3
+   Compiling ego-tree v0.11.0
+   Compiling constant_time_eq v0.4.2
+   Compiling cpufeatures v0.3.1
+   Compiling scraper v0.27.0
+   Compiling rand_distr v0.5.1
+   Compiling rustls-webpki v0.103.15
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling athena-core-v2 v0.1.0 (/tmp/athena-v2-b55par9d/candidate)
+    Finished `release` profile [optimized] target(s) in 1m 49s
+
+[2026-10-15T19:22:25.360672+00:00] CMD ["cargo", "metadata", "--locked", "--format-version", "1"] cwd=/tmp/athena-v2-b55par9d/candidate
+[2026-10-15T19:22:25.535844+00:00] RESULT {"argv": ["cargo", "metadata", "--locked", "--format-version", "1"], "cwd": "/tmp/athena-v2-b55par9d/candidate", "exit_code": 0, "wall_ns": 171977364, "stdout_sha256": "dab6e0f27c99cbaa5719b608f34e71d5b36294aee0daec9adb7e6d29f17d265b", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.583301+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.585557+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2118458, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.585755+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.588089+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2221097, "stdout_sha256": "b27363118c79633a21e040e6cacb44789d02123469b3f95da2d3eead42bfb6cf", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.588374+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.590252+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1772012, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.590453+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.592523+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1971494, "stdout_sha256": "b2bff9d6c983a62d11db38e002a9ea25f031d807c5051f7635752380e95bf7c6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.592754+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.594565+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1722175, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.594714+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.596793+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1967031, "stdout_sha256": "bdccd33a21203b9a6446b2ae8a37f394785a78439c72a32627035497bfb3446f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.597132+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.598904+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1622594, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.599083+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.601102+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1917730, "stdout_sha256": "a78aa19af1bf5c09361f315584775c69841aab6d3eb7db0a66bd2877e3290ac6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.601344+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.603056+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1619551, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.603209+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.605203+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1897380, "stdout_sha256": "466fef5c13aa9f5a0b9bd4461b57a7c4d2f800ba0184581fd917c4cf60216b1d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.605464+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.607165+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1612129, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.607337+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.609435+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2000023, "stdout_sha256": "2eb19fbe1ba17a041150990ec48b678e2e8c39998f7e3c87ec0d681f18a787db", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.609677+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.611525+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1736712, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.611710+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.613953+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2124792, "stdout_sha256": "56970369aa9a853c5f0feb7455dc375cf693d263482b71f2f5748475eeba5e16", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.614212+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.615991+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1655312, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.616156+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.618242+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 1987285, "stdout_sha256": "774742c34fc70d4be67b2328cd4c07671ddd59c4a08d9849e27db730ceaf2f03", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.624332+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.626867+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2351756, "stdout_sha256": "82223d8db4a405ff3489398572e99894e781e270bcd367880d6fc3c9af67d817", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.627171+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.629866+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2538515, "stdout_sha256": "11b9b99d8b4d0fcb9d76f7768963464d0400638f1c24abc0d38dfa1ae3e8e499", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.630097+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.632378+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2164653, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.632584+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.634779+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2083190, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.634980+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.637306+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2219468, "stdout_sha256": "94ee082b3a33b9ec1f25b35b9468097b2ec891828e31c668c967602ffe6fe0e8", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.637490+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.639599+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2010024, "stdout_sha256": "1e43016e56707e760cd07ba4205e58aad0486ca42cd6807afa2a57032132f2ab", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.639737+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.642107+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2274963, "stdout_sha256": "ac8e2f3b3e3f3dc5475657a507c5768cd00c65241a76dc9c6a16b83bf89d0d5c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.642251+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.644357+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 1965686, "stdout_sha256": "d505e30033287489bea69cd2315e49d9a0ac1c312d0697c26e4dc1da58d2949c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.650288+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.652503+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2062680, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.652693+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.655328+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2495042, "stdout_sha256": "b27363118c79633a21e040e6cacb44789d02123469b3f95da2d3eead42bfb6cf", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.655724+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.657726+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1865169, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.657966+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.660306+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2224530, "stdout_sha256": "b2bff9d6c983a62d11db38e002a9ea25f031d807c5051f7635752380e95bf7c6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.660651+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.662614+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1840512, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.662796+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.665059+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2105175, "stdout_sha256": "bdccd33a21203b9a6446b2ae8a37f394785a78439c72a32627035497bfb3446f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.665417+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.667394+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1818722, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.667596+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.670006+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2292284, "stdout_sha256": "a78aa19af1bf5c09361f315584775c69841aab6d3eb7db0a66bd2877e3290ac6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.670361+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.672300+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1821975, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.672483+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.674898+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2233754, "stdout_sha256": "466fef5c13aa9f5a0b9bd4461b57a7c4d2f800ba0184581fd917c4cf60216b1d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.675281+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.677275+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1874996, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.677487+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.679692+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2095789, "stdout_sha256": "2eb19fbe1ba17a041150990ec48b678e2e8c39998f7e3c87ec0d681f18a787db", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.680105+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.681990+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1770228, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.682166+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.684439+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2155662, "stdout_sha256": "56970369aa9a853c5f0feb7455dc375cf693d263482b71f2f5748475eeba5e16", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.684776+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.686665+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1733934, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.686926+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.689167+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2131642, "stdout_sha256": "774742c34fc70d4be67b2328cd4c07671ddd59c4a08d9849e27db730ceaf2f03", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.695144+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.697972+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2650038, "stdout_sha256": "82223d8db4a405ff3489398572e99894e781e270bcd367880d6fc3c9af67d817", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.698217+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.700557+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2211499, "stdout_sha256": "11b9b99d8b4d0fcb9d76f7768963464d0400638f1c24abc0d38dfa1ae3e8e499", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.700758+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.703124+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2246038, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.703326+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"] cwd=None
+[2026-10-15T19:22:25.705682+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "rank"], "cwd": "None", "exit_code": 0, "wall_ns": 2240141, "stdout_sha256": "2638d1fed39b66e86e7390ce2127416d0050b9ca9c807bf1e89b42f9da696a17", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.705907+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.708162+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2138549, "stdout_sha256": "94ee082b3a33b9ec1f25b35b9468097b2ec891828e31c668c967602ffe6fe0e8", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.708337+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.710609+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2162185, "stdout_sha256": "1e43016e56707e760cd07ba4205e58aad0486ca42cd6807afa2a57032132f2ab", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.710765+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.713194+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2309205, "stdout_sha256": "ac8e2f3b3e3f3dc5475657a507c5768cd00c65241a76dc9c6a16b83bf89d0d5c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.713357+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"] cwd=None
+[2026-10-15T19:22:25.715956+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "table"], "cwd": "None", "exit_code": 0, "wall_ns": 2465144, "stdout_sha256": "d505e30033287489bea69cd2315e49d9a0ac1c312d0697c26e4dc1da58d2949c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.722203+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.724356+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2014676, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.724548+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.727238+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2521428, "stdout_sha256": "b27363118c79633a21e040e6cacb44789d02123469b3f95da2d3eead42bfb6cf", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.727736+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.729859+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1955958, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.730068+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.732410+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2225721, "stdout_sha256": "b2bff9d6c983a62d11db38e002a9ea25f031d807c5051f7635752380e95bf7c6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.732770+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.735023+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2135375, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.735200+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.737499+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2160777, "stdout_sha256": "bdccd33a21203b9a6446b2ae8a37f394785a78439c72a32627035497bfb3446f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.737834+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.739927+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1896891, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.740114+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.742604+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2383915, "stdout_sha256": "a78aa19af1bf5c09361f315584775c69841aab6d3eb7db0a66bd2877e3290ac6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.745109+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.747045+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1810199, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.747232+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.749429+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2047644, "stdout_sha256": "466fef5c13aa9f5a0b9bd4461b57a7c4d2f800ba0184581fd917c4cf60216b1d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.749770+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.751571+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1695225, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.751750+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.754170+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2314661, "stdout_sha256": "2eb19fbe1ba17a041150990ec48b678e2e8c39998f7e3c87ec0d681f18a787db", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.754503+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.756696+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2073566, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.756926+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.759040+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2006581, "stdout_sha256": "56970369aa9a853c5f0feb7455dc375cf693d263482b71f2f5748475eeba5e16", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.759372+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.761196+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1709888, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.761435+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.763663+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2121034, "stdout_sha256": "774742c34fc70d4be67b2328cd4c07671ddd59c4a08d9849e27db730ceaf2f03", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.764001+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.765791+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1687431, "stdout_sha256": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.766003+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"] cwd=None
+[2026-10-15T19:22:25.768214+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/research_probe", "hash"], "cwd": "None", "exit_code": 0, "wall_ns": 2077292, "stdout_sha256": "0252a33d38a59c52c3e4977e5a38e6cb17a9d39747244c69ac68bef0cb82f561", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.774515+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.776596+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1951923, "stdout_sha256": "4d36f48ef8e73f323a85180506944f1f3e64eb28e2c95871d7229682f96d2b8c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.776711+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.778560+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/preformatted.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1737364, "stdout_sha256": "6273703b21d94d41da851b594516a1c1aff1f14cf63c5a16e5df4500a212a804", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.784881+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.787028+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2005560, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.787153+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.789483+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2188468, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.789982+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.792169+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 2060924, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.792295+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.794381+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1921022, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.794882+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.796768+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1768711, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.796938+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.798880+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1806969, "stdout_sha256": "6dabd2dbd3bdf2e48c4cb0a9acb569b94f4b9befaead3631fb4ae7052d3581ad", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.799344+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.801235+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1773875, "stdout_sha256": "07f0778d69a15fb16e2b5b4a0fa45e29ea6837d14e97203466af3010d6fc4b8e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.801355+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.803272+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/candidate/fixtures/example.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1809036, "stdout_sha256": "07f0778d69a15fb16e2b5b4a0fa45e29ea6837d14e97203466af3010d6fc4b8e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.803751+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.805493+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1642157, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.805597+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.807472+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1762285, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.807696+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.809516+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1717006, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.809629+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.811423+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1691186, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.811631+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.813509+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1772777, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.813620+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.815529+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1797346, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.815742+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.817560+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1714372, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.817672+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.819382+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/entities.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1600592, "stdout_sha256": "0c9bc62de9b69e78f586d9b60a1436f8b60542f9a7601bc51108d0c48d8cd609", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.819621+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.821362+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1631851, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.821472+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.823561+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1979852, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.823768+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.825652+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1771093, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.825785+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.827881+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1921202, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.828123+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.830070+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1811265, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.830208+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.832418+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 2027791, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.832660+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.834564+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1767556, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.834722+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.836696+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/framing.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1854219, "stdout_sha256": "9d05c8d3a6f410896f51662487dae719aac3289cda0819ea586b3d3663e13d7e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.837006+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.838906+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1740823, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.839043+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.840855+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1663050, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.841103+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.843026+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1808818, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.843167+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.845047+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1772875, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.845266+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.847220+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1832302, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.847338+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.849266+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1814486, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.849516+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.851284+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1661548, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.851402+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.853129+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/implicit-p.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1630246, "stdout_sha256": "8f2caf3e2476145762da0f76a969f9e2ff7521e5727fbe25fbce3348182039a5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.853359+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.855018+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1564328, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.855117+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.856794+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1577723, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.857041+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.858773+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1622125, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.858929+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.860731+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1706294, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.860980+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.862829+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1719159, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.862990+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.864890+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1754053, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.865100+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.867007+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1801836, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.867118+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.869041+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/inline-repair.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1804781, "stdout_sha256": "7656ab5bb84de5c4f97f4a1511f08ec3d4657fadc49065c764f25b884583c6b9", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.869275+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.871566+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 2085995, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.871728+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.873748+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1898745, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.874055+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.875982+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1809435, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.876104+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.877945+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1723773, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.878163+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.880005+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1722825, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.880121+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.881922+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1691291, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.882134+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.884056+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1819267, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.884185+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.885988+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/links.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1704857, "stdout_sha256": "aa078659d1d7c2313f17e8096d9e78b56dcb147a058f5d90507ab390ea51b959", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.886205+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.887913+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1610603, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.888027+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.889710+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1587479, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.889966+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.891631+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1559329, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.891751+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.893510+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1650455, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.893699+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.895538+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1744926, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.895638+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.897431+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1678505, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.897627+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.899348+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1627461, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.899488+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.901226+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/scripts.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1632634, "stdout_sha256": "8f26f74a7eb3ccf1d65dd1fa9730e5ce2ac51406ca93927a34ae07d6cde3972c", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.901447+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.903182+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1635157, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.903284+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.904958+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1582609, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.905158+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.906834+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1562078, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.906952+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.908826+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1753915, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.909076+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.910979+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1787325, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.911104+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.913037+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1809933, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.913265+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.915210+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1803364, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.915359+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.917146+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/table-repair.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1692182, "stdout_sha256": "e480bbd456b35c5e1797220a044409eac4032aac8c8c56ba2a665659c1208f2e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.917419+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.919296+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1780448, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.919400+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"] cwd=None
+[2026-10-15T19:22:25.921308+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/"], "cwd": "None", "exit_code": 0, "wall_ns": 1819845, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.921525+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.923306+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1684717, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.923416+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "tokio runtime"] cwd=None
+[2026-10-15T19:22:25.925068+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "tokio runtime"], "cwd": "None", "exit_code": 0, "wall_ns": 1560770, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.925259+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.927006+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1655617, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.927103+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"] cwd=None
+[2026-10-15T19:22:25.928754+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "t\u00e0i \u5185\u5bb9"], "cwd": "None", "exit_code": 0, "wall_ns": 1561964, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.929028+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.930685+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1558642, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.930786+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "H100 pricing"] cwd=None
+[2026-10-15T19:22:25.932520+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/athena-core-v2", "/tmp/athena-v2-b55par9d/fixtures-pcn8xyeu/unicode.html", "https://example.org/", "H100 pricing"], "cwd": "None", "exit_code": 0, "wall_ns": 1594339, "stdout_sha256": "1d8b9a3b1d166a66e4fb583b763acf7ee566176953b779b823d5c2ebf666a03e", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:25.932754+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "rank", "1000", "5"] cwd=None
+[2026-10-15T19:22:26.236385+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "rank", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 303429015, "stdout_sha256": "b3aa777e1d0f362eab58059233d10ebaf57da9b09e70eedcca99ebdb9880b2b5", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.236753+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "rank", "1000", "5"] cwd=None
+[2026-10-15T19:22:26.345419+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "rank", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 108504240, "stdout_sha256": "c2a54b7b0a67b3241e4b7071e6f74ea717d60530d6313d578c05e61f0e51d5d0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.345758+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "rank", "1000", "5"] cwd=None
+[2026-10-15T19:22:26.457545+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "rank", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 111632488, "stdout_sha256": "07024fbc95542f86df6b7cade668021f5360dd9c82c325bfd93742f49c18da77", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.457953+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "rank", "1000", "5"] cwd=None
+[2026-10-15T19:22:26.762378+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "rank", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 304270545, "stdout_sha256": "c60bd98d2aeccb2bb66a07e519d8a2bfe9f7c036022458479f19c662cae719ab", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.762730+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "table", "5000", "5"] cwd=None
+[2026-10-15T19:22:26.894410+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "table", "5000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 131528854, "stdout_sha256": "76915f04fdd272458e85db4e3e0a523344a41f5e1f6fa26508c40d5711fe83d1", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.894756+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "table", "5000", "5"] cwd=None
+[2026-10-15T19:22:26.921942+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "table", "5000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 26984234, "stdout_sha256": "3b5f34d02becfcb85d69a943a00c86ed8796ba9b51f5cc4bb2cd04f7f10611b1", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.922285+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "table", "5000", "5"] cwd=None
+[2026-10-15T19:22:26.950254+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "table", "5000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 27814658, "stdout_sha256": "7eed5413fab0d9be81e79a75e774c44d22cc498a46259a351653481a8dfaa881", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:26.950635+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "table", "5000", "5"] cwd=None
+[2026-10-15T19:22:27.085118+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "table", "5000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 134322810, "stdout_sha256": "afc7b16b325a4241e7b61a46f6808c50f2b5e6278432bb6c1b028d541f9d1c18", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:27.085500+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "parse", "1000", "5"] cwd=None
+[2026-10-15T19:22:27.223983+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "parse", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 138266906, "stdout_sha256": "a5b97d316bb389b5e6522f23d71d165b655cd1f49108f710359972954dcc48d0", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:27.224323+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "parse", "1000", "5"] cwd=None
+[2026-10-15T19:22:27.359644+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "parse", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 135126448, "stdout_sha256": "240cb5697fbf86179a140b0f2e15e070e0bdb98e00a5910d2cde6775e18415be", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:27.360125+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "parse", "1000", "5"] cwd=None
+[2026-10-15T19:22:27.507837+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "parse", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 147526085, "stdout_sha256": "c58986dbf7bf391bb3676aecd7e8c8f41e080133707220bee7981e60cfc08469", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:27.508174+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "parse", "1000", "5"] cwd=None
+[2026-10-15T19:22:27.656313+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "parse", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 147984171, "stdout_sha256": "ecf5027a090021447d81ec254dfdc4d8a2480f3954252b05765752efd05e95a6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:27.656640+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.060617+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 403826143, "stdout_sha256": "a9ec8e599a46c4596968d6a067987234c6a1f4a01c4a969352e3ec85faeca827", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.060983+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.237924+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 176759135, "stdout_sha256": "bb36b6231da3348064898c04c025b4d121d2c0fa7db0c7f53482218f3b12f6df", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.238272+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.415324+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 176898795, "stdout_sha256": "c0173bd9ce606c08fc9c307e622cd6c3a0390ac473fa24678c3de69ed54d7a8f", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.415660+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.798795+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 382970638, "stdout_sha256": "790e04e2590d61de1be8770a13645fa6c3b87c7104c0eb9fb7035ee6a8bfea59", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.799179+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.865103+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 65771138, "stdout_sha256": "440b6b3918749268f49d1d79e44a3cec790d58144fbacc69b6a3abb0c14e5e93", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.865492+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:28.933104+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 67436275, "stdout_sha256": "4a1b11e292081824d0aed7f551dde51241732ec52e3d62bb8d179081af498878", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:28.933450+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:29.000305+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "export_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 66690626, "stdout_sha256": "89594dff19cf8a90cf935398d07462c8ca6c6af1221fb427fb17f1adda43a049", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:29.000659+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:29.064313+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "export_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 63488255, "stdout_sha256": "ff3ee4ce661a405609287a8ba1bc241df90992d6999c5c5fce9ed363aaac2bf7", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:29.064650+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline", "1000", "5"] cwd=None
+[2026-10-15T19:22:29.563631+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 498801948, "stdout_sha256": "a92900caeb82b9f6a13c4806527926823dee1b1e6199032346239339dd199569", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:29.564055+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline", "1000", "5"] cwd=None
+[2026-10-15T19:22:29.831639+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 267423779, "stdout_sha256": "61b7df36baacc889e4a8443f36b9ddfecbdb6c256fe42085f70c1bb164addcba", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:29.832056+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline", "1000", "5"] cwd=None
+[2026-10-15T19:22:30.099599+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 267340945, "stdout_sha256": "61296652a164e8696dd6be4d9d0064d79510515af6c8d439b13cda5e9aad4e90", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:30.099989+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline", "1000", "5"] cwd=None
+[2026-10-15T19:22:30.630126+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 529981060, "stdout_sha256": "23741685bef87505f8764b3a67c1385aedb933eae513e6cb2bd29ef9734034ce", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:30.630686+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:30.810649+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 179793304, "stdout_sha256": "a870f4004d5369d5dce8afc1b4a31ef8681a8472929ac6f5b0719916f3f78229", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:30.811069+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:30.998660+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 187438051, "stdout_sha256": "9a4dc9fb6758ece6e204ee4c64dead690012ee8dd4b96c1d4ffb8040a9e6352d", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:30.999104+00:00] CMD ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:31.184517+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/candidate/target/release/bench_core", "pipeline_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 185254108, "stdout_sha256": "be9324446b5f6a89824f2cadea0f42cf19a16b5890da05ce4d2576f11ffacfe6", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+[2026-10-15T19:22:31.184899+00:00] CMD ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline_no_query", "1000", "5"] cwd=None
+[2026-10-15T19:22:31.371421+00:00] RESULT {"argv": ["/tmp/athena-v2-b55par9d/baseline/target/release/bench_core", "pipeline_no_query", "1000", "5"], "cwd": "None", "exit_code": 0, "wall_ns": 186280768, "stdout_sha256": "d57aada0d8086580606838b80544ba8aaf6d420d41617afbc7a3879556ade587", "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
