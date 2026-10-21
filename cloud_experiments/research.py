@@ -596,6 +596,17 @@ def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
             any(not isinstance(item, str) or not item or len(item) > 512 for item in command)
             or "run-native" not in command):
         raise ValueError("Launch receipt command is invalid")
+    if ("--pilot-only" in command) != request["pilot_only"]:
+        raise ValueError("Launch receipt command/request mismatch")
+    if variants is None:
+        if "--variants" in command:
+            raise ValueError("Launch receipt command/request mismatch")
+    else:
+        if command.count("--variants") != 1:
+            raise ValueError("Launch receipt command/request mismatch")
+        variant_index = command.index("--variants")
+        if command[variant_index + 1:] != variants:
+            raise ValueError("Launch receipt command/request mismatch")
     if any(any(secret in item.lower() for secret in ("api_key", "api-key", "token=", "password", "secret="))
            for item in command):
         raise ValueError("Launch receipt command must not contain credentials")

@@ -1671,7 +1671,11 @@ class ExpandedResearchControls(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "request mismatch"):
                 research.validate_launch_receipt(receipt, spec, budget, requested)
             payload["request"] = requested
-            payload["command"] = ["run-native", "--api-key=leak"]
+            payload["command"] = ["run-native"]
+            research.campaign.write_json(receipt, payload)
+            with self.assertRaisesRegex(ValueError, "command/request"):
+                research.validate_launch_receipt(receipt, spec, budget, requested)
+            payload["command"] = ["run-native", "--pilot-only", "--api-key=leak"]
             research.campaign.write_json(receipt, payload)
             with self.assertRaisesRegex(ValueError, "credentials"):
                 research.validate_launch_receipt(receipt, spec, budget, requested)
