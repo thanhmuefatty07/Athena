@@ -1033,14 +1033,18 @@ def compose_finalist(selected):
     return name
 
 
-def _oracles(run, binary, baseline, cases, paths):
+def _oracles(run, binary, baseline, cases, paths, *, header_mode="explicit"):
     from cloud_experiments import workloads
+    if header_mode not in ("explicit", "scope"):
+        raise ValueError("Unsupported HTML header oracle mode")
+    if header_mode == "scope" and any(case["stage"] != "html-table" for case in cases):
+        raise ValueError("Scope header oracle is limited to HTML table cases")
     for case in cases:
         actual = _invoke(run, binary, case, paths[case["id"]], 0, None)
         reference = _invoke(run, baseline, case, paths[case["id"]], 0, None)
-        if actual != reference:
+        if header_mode == "explicit" and actual != reference:
             raise ValueError("Canonical output parity failed: " + case["id"])
-        errors = workloads.envelope_errors(actual, case["fixture"])
+        errors = workloads.envelope_errors(actual, case["fixture"], header_mode=header_mode)
         if errors:
             raise ValueError("Independent contract oracle failed: " + case["id"] + ": " + "; ".join(errors))
         if case["stage"] in ("export", "pipeline") and "expected_error" not in case["fixture"]:
@@ -1054,7 +1058,9 @@ def _oracles(run, binary, baseline, cases, paths):
     oracle_dir = run.directory / ("oracle-" + binary.name)
     oracle_dir.mkdir(exist_ok=True)
     runner.content_oracles(run, binary, oracle_dir, include_pre=True)
-    return {"parity_cases": len(cases), "independent_native_controls": control,
+    return {"parity_cases": len(cases) if header_mode == "explicit" else 0,
+            "intentional_output_difference_cases": len(cases) if header_mode == "scope" else 0,
+            "independent_native_controls": control,
             "limit": "Finite independent oracles and differential outputs; no exhaustive correctness claim"}
 
 
@@ -1508,8 +1514,9 @@ def _complete_finalist_selection(run, selected, chosen, binaries, *, workspace, 
         if joint not in binaries:
             run.manifest["planned_variants"].append(joint)
             binaries[joint] = _build(run, workspace, files, joint, cache)
+            joint_header_mode = "scope" if contenders.metadata(joint)["factors"].get("html_headers") == "scope" else "explicit"
             run.check("oracle:" + joint, lambda: _oracles(run, binaries[joint], binaries["baseline"],
-                _variant_cases(joint, cases), paths))
+                _variant_cases(joint, cases), paths, header_mode=joint_header_mode))
         selected.append(joint)
     if joint is not None:
         chosen["combined_finalist"] = {"variant": joint, "rule": "Union of compatible owner-selected factors, fixed before confirmation; not an observed sum of speedups"}
@@ -1689,7 +1696,8 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, pilot
                 continue
             try:
                 binaries[variant] = _build(run, workspace, files, variant, cache)
-                run.check("oracle:" + variant, lambda: _oracles(run, binaries[variant], binaries["baseline"], cases, paths["screen"]))
+                header_mode = "scope" if contenders.metadata(variant)["factors"].get("html_headers") == "scope" else "explicit"
+                run.check("oracle:" + variant, lambda: _oracles(run, binaries[variant], binaries["baseline"], cases, paths["screen"], header_mode=header_mode))
             except lifecycle.IntegrityError:
                 raise
             except (subprocess.CalledProcessError, ValueError) as error:

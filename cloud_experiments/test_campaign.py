@@ -1070,7 +1070,7 @@ class ExpandedResearchControls(unittest.TestCase):
         cross = [contenders.metadata(name)["factors"] for name in design["cross_cells"]]
         baseline = contenders.metadata("baseline")["factors"]
         levels = {axis: {value} for axis, value in baseline.items()
-                  if axis not in ("prepared", "table", "html_extractor")}
+                  if axis not in ("prepared", "table", "html_extractor", "html_headers")}
         for definition in contenders.definitions().values():
             for axis, value in definition["factors"].items():
                 if axis in levels:
@@ -1397,10 +1397,14 @@ class ExpandedResearchControls(unittest.TestCase):
         self.assertIn("I-HASH-LIBRARY", panels)
         self.assertIn("I-PARSER-LIBRARY", panels)
         self.assertEqual(panels["I-HTML-TABLE"], ["baseline", "table-html-selectors"])
+        self.assertEqual(panels["I-HTML-HEADERS"], ["baseline", "table-html-scope"])
         self.assertIn("table-html-selectors", variants)
+        self.assertIn("table-html-scope", variants)
         self.assertEqual(contenders.metadata("table-html-selectors")["implementation_scopes"], ["html_table_stage_only"])
         self.assertEqual(contenders.metadata("table-html-selectors")["build"]["env"][
             "ATHENA_RESEARCH_TABLE_EXTRACTOR"], "selectors")
+        self.assertEqual(contenders.metadata("table-html-scope")["build"]["env"][
+            "ATHENA_RESEARCH_TABLE_HEADERS"], "scope")
         self.assertFalse(contenders.compatible("table-html-selectors", "aae-direct"))
         self.assertEqual(set(panels.get("I-JSON-PROJECT", [])), {
             "baseline", "projection-fused", "lib-json-sonic", "projection-fused+lib-json-sonic"})
@@ -1415,7 +1419,8 @@ class ExpandedResearchControls(unittest.TestCase):
         from cloud_experiments import workloads
         cases = workloads.native_cases("screen")
         html_cases = [case for case in cases if case["stage"] == "html-table"]
-        self.assertEqual({case["id"] for case in html_cases}, {"html-table-spans", "html-table-nested"})
+        self.assertEqual({case["id"] for case in html_cases}, {
+            "html-table-spans", "html-table-scope-headers", "html-table-nested"})
         self.assertTrue(all(case["owners"] == ["H06"] for case in html_cases))
         assignments = research.screen_plan(
             ["baseline", "table-html-selectors"], {"I-HTML-TABLE": panels["I-HTML-TABLE"]}, cases)
@@ -1435,6 +1440,21 @@ class ExpandedResearchControls(unittest.TestCase):
         corrupted["tables"][0]["rows"][1]["cells"][0]["rowspan"] = 1
         self.assertTrue(workloads.envelope_errors(
             json.dumps(corrupted, separators=(",", ":")).encode(), fixture))
+
+        scope_case = next(case for case in html_cases if case["id"] == "html-table-scope-headers")
+        scope_fixture = scope_case["fixture"]
+        scope_observation = {"schema": "athena-html-table-candidate/1", "parse_warnings": 0,
+                             "header_associations": "scope-derived-v1",
+                             "cell_text": "normalized DOM text, including nested-table descendant text",
+                             "tables": scope_fixture["expected_html_tables_by_header_mode"]["scope"]}
+        scope_encoded = json.dumps(scope_observation, separators=(",", ":")).encode()
+        self.assertEqual(workloads.envelope_errors(scope_encoded, scope_fixture, header_mode="scope"), [])
+        scope_corrupted = json.loads(scope_encoded)
+        scope_corrupted["tables"][0]["rows"][1]["cells"][1]["associated_headers"] = ["east", "amount"]
+        self.assertTrue(workloads.envelope_errors(
+            json.dumps(scope_corrupted, separators=(",", ":")).encode(), scope_fixture, header_mode="scope"))
+        with self.assertRaisesRegex(ValueError, "Scope header oracle is limited to HTML table cases"):
+            research._oracles(None, None, None, [{"stage": "pipeline"}], {}, header_mode="scope")
 
         rounds = lambda baseline, candidate: [
             {"baseline": [baseline], "candidate": [candidate]},

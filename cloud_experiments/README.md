@@ -183,7 +183,7 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
 
 ### Nội dung đã triển khai và giới hạn
 
-- Sinh 204 variants: 203 cấu hình trước đó và một H06 CSS-selector comparator.
+- Sinh 205 variants: 203 cấu hình trước đó, một H06 CSS-selector comparator và một H06 scope-header comparator.
   Gồm I-AAE 48 cell (writer × hash × reserve), I-RANK
   6 cell (lookup × selection), I-PROJECT 4 cell (fusion × link lookup), cùng
   prepared state, logical table và build factors. Thêm I-HASH-LIBRARY 12,
@@ -195,7 +195,10 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   nhóm writer/hash/lookup/projection bốn yếu tố. Ba tuple Sonic/streaming không
   tương thích được ghi rõ. 203 cell trước đó đã qua kiểm phép biến đổi source;
   H06 selector arm là stage-only trên cùng parser/grid và được nối vào build,
-  oracle, fixture và cohort. Parser DOM-node cap nay được kiểm trước mỗi lần
+  oracle, fixture và cohort. H06 scope-header arm thêm liên kết `scope=col/row`
+  trên logical grid với ưu tiên `headers`, từ chối ID trùng/tham chiếu thiếu và
+  oracle literal độc lập; đây vẫn là stage-only, không phải WHATWG đầy đủ hay
+  production integration. Parser DOM-node cap nay được kiểm trước mỗi lần
   `HtmlTreeSink` cấp node; sau khi chạm ngưỡng, runner ngừng đưa các chunk HTML
   tiếp theo vào parser. Input được cấp theo chunk UTF-8 16 KiB để giới hạn phần
   parser nội bộ còn xử lý sau khi báo vượt ngưỡng. Tổng logical grid-slot budget
@@ -290,7 +293,9 @@ Mọi transport được tiêm vào hoặc bị thay thế trước lần dispat
 đã được nhận dạng. Nhãn này ghi nhận quan sát trong tiến trình, không chứng minh
 độc lập danh tính model/provider hay tính xác thực của kết quả. Các test stub
 chỉ là test doubles trong process, không chứng minh kết quả provider thật.
-F04 thiếu HTML table header/group integration: đúng vài cell chưa đủ task PASS.
+F04 vẫn thiếu integration với consumer/task: comparator scope-header mới chỉ đo
+liên kết bounded trên logical grid, không phải inferred-header WHATWG đầy đủ;
+đúng vài cell chưa đủ task PASS.
 **W3/general generated-code sandbox chưa triển khai**; không chạy code model.
 Live model quality, MCP transport và deployment cost/SLO chưa được xác nhận.
 
@@ -548,8 +553,8 @@ because a local archive or outcome receipt exists.
 One VM is prepared and currently stopped; a comprehensive campaign is **NOT
 READY**. See plan 19.17–19.19 and the private checkpoint for exact whole-core
 obligations, bounded-preflight evidence and cost assumptions. Remaining gaps
-include missing language/browser/MCP adapters; H06 semantic header association,
-representative table corpus and F04 integration; independent corpus,
+include missing language/browser/MCP adapters; H06 full inferred-header
+semantics, representative table corpus and F04 integration; independent corpus,
 aggregate load/recovery controls, verified billing facts, NIM inference
 eligibility and the combined campaign executor. Native/service/agent commands
 are separate subset entry points. An installed unit, mapped decision or passing

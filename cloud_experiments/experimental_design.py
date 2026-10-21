@@ -80,7 +80,10 @@ def factorial_panels():
 
 def scoped_factorial_panels():
     """Exact full-factorial comparisons outside the mixed-strength whole-path axes."""
-    return {"I-HTML-TABLE": ["baseline", "table-html-selectors"]}
+    return {
+        "I-HTML-TABLE": ["baseline", "table-html-selectors"],
+        "I-HTML-HEADERS": ["baseline", "table-html-scope"],
+    }
 
 
 def _name(parts):

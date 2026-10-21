@@ -709,6 +709,12 @@
       "decisions": ["H06", "H09"],
       "mechanism": "Table and row discovery strategies may change HTML-to-grid cost while nested-table ownership and public span semantics must remain identical.",
       "design": "One-factor full comparison: current explicit DOM traversal versus precompiled Scraper CSS selectors on the same HTML5 parser, exact literal table/cell/group/span/unit/header-attribute/locator/grid oracle, nested-table ownership and resource caps. This is a stage-only research comparator; no inferred header associations, production integration or whole-path gain is claimed."
+    },
+    {
+      "id": "I-HTML-HEADERS",
+      "decisions": ["H06", "H09"],
+      "mechanism": "Header association inference adds bounded logical-grid indexing and metadata work after table extraction; explicit references, duplicate IDs and missing targets affect correctness and failure behavior.",
+      "design": "One-factor full comparison: explicit-attributes-only baseline versus a bounded scope-derived v1 mode on the same Scraper HTML5 parser, exact literal row/column association oracle, explicit headers precedence, duplicate-ID and missing-reference rejection, and declared table resource caps. This is a stage-only research comparator; it does not claim the full WHATWG inferred-header algorithm, representative corpus coverage, production integration or whole-path gain."
     }
   ]
 }

@@ -4,7 +4,7 @@ from copy import deepcopy
 from hashlib import sha256
 
 
-_DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde"}
+_DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "html_headers": "explicit", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde"}
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
     "src/aae.rs": "169a53a88caa5a471c690e7a78e143d97063a6c80e902b89b5baadc7c106ffde",
@@ -29,7 +29,7 @@ def stage_contracts():
         "serialization": "Equivalent writer primitive over immutable prebuilt typed AAE frames; excludes frame/hash/rank preparation.",
         "prepared": "Complete one-shot or prepared build, 1/2/8/32-query execution, source-key verification and drop lifetime; no export integration claim.",
         "table": "Actual public Row/Cell-to-Grid construction, dense materialization and drop; no HTML extraction claim.",
-        "html-table": "Same locked HTML5 parser plus table/row enumeration, explicit attributes, existing public span-aware grid construction and drop; no inferred header semantics or production integration claim.",
+        "html-table": "Same locked HTML5 parser plus table/row enumeration, explicit attributes, existing public span-aware grid construction and drop; the bounded scope-derived header mode is a separate stage-only comparator, not a full inferred-header or production integration claim.",
         "budget": "Actual oversized public Projection export; only the specific AAE output byte-budget error is expected.",
         "controls": "Independent literal/numeric real-core controls; a correctness command, not a performance stage.",
     }
@@ -41,7 +41,7 @@ def _definition(decisions, factors, description, scope="whole_path", stages=None
 
 def _build(factors):
     probe = {}
-    for factor, variable in [("writer", "ATHENA_RESEARCH_WRITER"), ("hash", "ATHENA_RESEARCH_HASH"), ("reserve", "ATHENA_RESEARCH_RESERVE"), ("prepared", "ATHENA_RESEARCH_PREPARED"), ("html_extractor", "ATHENA_RESEARCH_TABLE_EXTRACTOR")]:
+    for factor, variable in [("writer", "ATHENA_RESEARCH_WRITER"), ("hash", "ATHENA_RESEARCH_HASH"), ("reserve", "ATHENA_RESEARCH_RESERVE"), ("prepared", "ATHENA_RESEARCH_PREPARED"), ("html_extractor", "ATHENA_RESEARCH_TABLE_EXTRACTOR"), ("html_headers", "ATHENA_RESEARCH_TABLE_HEADERS")]:
         if factor in factors:
             probe[variable] = str(factors[factor])
     profile = {}
@@ -72,6 +72,7 @@ def definitions():
         "links-btree": _definition(["H05"], {"links": "btree"}, "Use ordered tree lookup for resolved unique links while preserving insertion-order IDs."),
         "table-sparse": _definition(["H06"], {"table": "sparse"}, "Sparse row occupancy maps followed by exact public dense-grid materialization.", "logical_grid_only", ["table"]),
         "table-html-selectors": _definition([], {"html_extractor": "selectors"}, "Precompiled CSS table/row selection over the same Scraper HTML5 DOM, with nearest-table ownership and the existing public span-aware grid.", "html_table_stage_only", ["html-table"]),
+        "table-html-scope": _definition(["H06"], {"html_headers": "scope"}, "Bounded scope-derived row/column header associations on the same HTML5 DOM and logical grid; explicit headers take precedence; no full WHATWG inferred-header claim.", "html_table_stage_only", ["html-table"]),
         "build-lto-off": _definition(["H10"], {"lto": "off"}, "Keep source/lock fixed and disable release LTO.", "build_factor"),
         "build-lto-full": _definition(["H10"], {"lto": "fat"}, "Keep source/lock fixed and enable full release LTO.", "build_factor"),
         "build-codegen1": _definition(["H10"], {"codegen_units": 1}, "Keep source/lock fixed and compile release with one codegen unit.", "build_factor"),

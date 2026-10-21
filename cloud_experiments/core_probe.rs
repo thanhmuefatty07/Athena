@@ -500,9 +500,147 @@ fn span_attribute(cell: ElementRef<'_>, name: &str) -> usize {
     }
 }
 
+#[derive(Clone)]
+struct HtmlCellMeta {
+    tag: String,
+    id: Option<String>,
+    headers: Vec<String>,
+    scope: Option<String>,
+    locator: String,
+}
+
+fn derive_header_associations(
+    grid: &Grid,
+    cells: &[HtmlCellMeta],
+) -> Result<Vec<Vec<String>>, String> {
+    if grid.cells.len() != cells.len() {
+        return Err("HTML table cell metadata does not match logical grid".into());
+    }
+    let mut ids = BTreeMap::new();
+    for (index, cell) in cells.iter().enumerate() {
+        if let Some(id) = &cell.id {
+            if ids.insert(id.clone(), index).is_some() {
+                return Err("duplicate table header id".into());
+            }
+        }
+    }
+
+    let mut coordinates = vec![Vec::new(); cells.len()];
+    for (row, slots) in grid.slots.iter().enumerate() {
+        for (column, index) in slots
+            .iter()
+            .enumerate()
+            .filter_map(|(column, index)| index.map(|value| (column, value)))
+        {
+            coordinates[index].push((row, column));
+        }
+    }
+    let mut bounds = Vec::with_capacity(cells.len());
+    for points in &coordinates {
+        let Some(&(first_row, first_column)) = points.first() else {
+            return Err("table cell is absent from logical grid".into());
+        };
+        let (last_row, last_column) = points.iter().copied().fold(
+            (first_row, first_column),
+            |(last_row, last_column), (row, column)| (last_row.max(row), last_column.max(column)),
+        );
+        bounds.push((first_row, first_column, last_row, last_column));
+    }
+
+    let mut column_headers = vec![Vec::new(); grid.width];
+    let mut row_headers = vec![Vec::new(); grid.slots.len()];
+    for (index, cell) in cells.iter().enumerate() {
+        if cell.tag != "th" {
+            continue;
+        }
+        let scope = cell.scope.as_deref().unwrap_or("");
+        match scope {
+            "col" | "colgroup" => {
+                for &(_, column) in &coordinates[index] {
+                    column_headers[column].push(index);
+                }
+            }
+            "row" | "rowgroup" => {
+                for &(row, _) in &coordinates[index] {
+                    row_headers[row].push(index);
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let mut result = vec![Vec::new(); cells.len()];
+    for (index, cell) in cells.iter().enumerate() {
+        if cell.tag != "td" {
+            continue;
+        }
+        if !cell.headers.is_empty() {
+            let mut associated = Vec::with_capacity(cell.headers.len());
+            for id in &cell.headers {
+                let Some(&header_index) = ids.get(id) else {
+                    return Err("explicit table header reference is missing".into());
+                };
+                if cells[header_index].tag != "th" {
+                    return Err("explicit table header reference is not a header".into());
+                }
+                associated.push(id.clone());
+            }
+            result[index] = associated;
+            continue;
+        }
+        let (first_row, first_column, _, _) = bounds[index];
+        let mut candidates = BTreeMap::<usize, (u8, usize, usize)>::new();
+        for column in first_column..=bounds[index].3 {
+            for &header_index in &column_headers[column] {
+                let (header_row, header_column, last_row, _) = bounds[header_index];
+                if last_row < first_row {
+                    candidates
+                        .entry(header_index)
+                        .or_insert((0, header_row, header_column));
+                }
+            }
+        }
+        for row in first_row..=bounds[index].2 {
+            for &header_index in &row_headers[row] {
+                let (header_row, header_column, _, last_column) = bounds[header_index];
+                if last_column < first_column {
+                    candidates
+                        .entry(header_index)
+                        .or_insert((1, header_row, header_column));
+                }
+            }
+        }
+        let mut ordered = candidates.into_iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|(header_index, (kind, row, column))| {
+            (*kind, *row, *column, *header_index)
+        });
+        result[index] = ordered
+            .into_iter()
+            .map(|(header_index, _)| {
+                cells[header_index]
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| cells[header_index].locator.clone())
+            })
+            .collect();
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
 fn extract_html_tables(
     html: &str,
     algorithm: &str,
+    selectors: &TableSelectors,
+    limits: &HtmlTableLimits,
+) -> Result<Value, String> {
+    extract_html_tables_with_headers(html, algorithm, "explicit", selectors, limits)
+}
+
+fn extract_html_tables_with_headers(
+    html: &str,
+    algorithm: &str,
+    header_mode: &str,
     selectors: &TableSelectors,
     limits: &HtmlTableLimits,
 ) -> Result<Value, String> {
@@ -517,6 +655,7 @@ fn extract_html_tables(
         return Err("invalid resource budget".into());
     }
     if !matches!(algorithm, "traversal" | "selectors")
+        || !matches!(header_mode, "explicit" | "scope")
         || limits.max_tables == 0
         || limits.max_tables > 64
         || limits.max_rows == 0
@@ -572,6 +711,7 @@ fn extract_html_tables(
         }
         let mut grid_rows = Vec::with_capacity(rows.len());
         let mut output_rows = Vec::with_capacity(rows.len());
+        let mut cell_metadata = Vec::new();
         for (row_index, (row, group, group_type)) in rows.into_iter().enumerate() {
             let mut grid_cells = Vec::new();
             let mut output_cells = Vec::new();
@@ -610,6 +750,13 @@ fn extract_html_tables(
                     "headers": header_ids, "unit": cell.attr("data-unit"), "abbr": cell.attr("abbr"),
                     "id": cell.attr("id"), "locator": locator
                 }));
+                cell_metadata.push(HtmlCellMeta {
+                    tag: tag.to_owned(),
+                    id: cell.attr("id").map(str::to_owned),
+                    headers: header_ids.iter().map(|value| (*value).to_owned()).collect(),
+                    scope: cell.attr("scope").map(str::to_owned),
+                    locator: locator.clone(),
+                });
                 grid_cells.push(Cell {
                     text,
                     rowspan,
@@ -670,6 +817,19 @@ fn extract_html_tables(
                 return Err("decoded text byte budget exceeded".into());
             }
         }
+        if header_mode == "scope" {
+            let associations = derive_header_associations(&grid, &cell_metadata)?;
+            let mut cell_index = 0;
+            for row in &mut output_rows {
+                for cell in row["cells"]
+                    .as_array_mut()
+                    .ok_or("HTML table output cell list missing")?
+                {
+                    cell["associated_headers"] = json!(associations[cell_index]);
+                    cell_index += 1;
+                }
+            }
+        }
         output_tables.push(json!({
             "table_index":table_index, "id":table.attr("id"), "caption":caption,
             "rows":output_rows, "grid":{"width":grid.width,"slots":slots}
@@ -677,7 +837,7 @@ fn extract_html_tables(
     }
     Ok(json!({
         "schema":"athena-html-table-candidate/1",
-        "parse_warnings":document.errors.len(), "header_associations":"explicit-attributes-only",
+            "parse_warnings":document.errors.len(), "header_associations":if header_mode == "scope" { "scope-derived-v1" } else { "explicit-attributes-only" },
         "cell_text":"normalized DOM text, including nested-table descendant text", "tables":output_tables
     }))
 }
@@ -1414,9 +1574,10 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
             input.max_rows,
             input.max_cols,
         ))),
-        "html-table" => extract_html_tables(
+        "html-table" => extract_html_tables_with_headers(
             &input.html,
             option_env!("ATHENA_RESEARCH_TABLE_EXTRACTOR").unwrap_or("traversal"),
+            option_env!("ATHENA_RESEARCH_TABLE_HEADERS").unwrap_or("explicit"),
             input
                 .table_selectors
                 .as_ref()
@@ -1529,6 +1690,16 @@ mod tests {
     ) -> Result<Value, String> {
         let selectors = TableSelectors::new().unwrap();
         extract_html_tables(html, algorithm, &selectors, &limits)
+    }
+
+    fn extract_tables_with_headers(
+        html: &str,
+        algorithm: &str,
+        header_mode: &str,
+        limits: HtmlTableLimits,
+    ) -> Result<Value, String> {
+        let selectors = TableSelectors::new().unwrap();
+        extract_html_tables_with_headers(html, algorithm, header_mode, &selectors, &limits)
     }
 
     fn test_table_limits(max_tables: usize, max_rows: usize, max_cols: usize) -> HtmlTableLimits {
@@ -1673,6 +1844,42 @@ mod tests {
         assert_eq!(nested[0]["rows"].as_array().unwrap().len(), 1);
         assert_eq!(nested[0]["rows"][0]["cells"][0]["text"], "outer inner");
         assert_eq!(nested[1]["rows"][0]["cells"][0]["text"], "inner");
+    }
+
+    #[test]
+    fn scope_header_mode_derives_column_and_row_headers_from_the_logical_grid() {
+        let html = "<table id=metrics><thead><tr><th id=region scope=col>Region</th><th id=amount scope=col>Amount</th></tr></thead><tbody><tr><th id=east scope=row>East</th><td>1200</td></tr><tr><th id=west scope=row>West</th><td>900</td></tr></tbody></table>";
+        let output =
+            extract_tables_with_headers(html, "traversal", "scope", test_table_limits(8, 32, 16))
+                .unwrap();
+        assert_eq!(output["header_associations"], "scope-derived-v1");
+        let rows = output["tables"][0]["rows"].as_array().unwrap();
+        assert_eq!(
+            rows[1]["cells"][1]["associated_headers"],
+            json!(["amount", "east"])
+        );
+        assert_eq!(
+            rows[2]["cells"][1]["associated_headers"],
+            json!(["amount", "west"])
+        );
+    }
+
+    #[test]
+    fn scope_header_mode_rejects_duplicate_header_ids() {
+        let html = "<table><tr><th id=h scope=col>One</th><th id=h scope=col>Two</th></tr><tr><td>1</td></tr></table>";
+        let error =
+            extract_tables_with_headers(html, "traversal", "scope", test_table_limits(8, 32, 16))
+                .unwrap_err();
+        assert_eq!(error, "duplicate table header id");
+    }
+
+    #[test]
+    fn scope_header_mode_rejects_missing_explicit_header_reference() {
+        let html = "<table><tr><th id=known scope=col>Known</th></tr><tr><td headers=missing>1</td></tr></table>";
+        let error =
+            extract_tables_with_headers(html, "traversal", "scope", test_table_limits(8, 32, 16))
+                .unwrap_err();
+        assert_eq!(error, "explicit table header reference is missing");
     }
 
     #[test]
