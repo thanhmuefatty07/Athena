@@ -174,6 +174,15 @@ class MeasurementResourceControls(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "byte limit"):
                     protocol.load_measurements(path)
 
+    def test_measurement_line_limit_is_checked_before_json_parse(self):
+        with tempfile.TemporaryDirectory(prefix="athena-measurement-line-limit-") as directory:
+            path = Path(directory) / "samples.jsonl"
+            path.write_bytes(b"{" + b"x" * 32 + b"}\n")
+            with patch.object(protocol, "MAX_MEASUREMENT_LINE_BYTES", 4):
+                with patch.object(protocol.json, "loads", side_effect=AssertionError("parse reached")):
+                    with self.assertRaisesRegex(ValueError, "line limit"):
+                        protocol.load_measurements(path)
+
     def test_bootstrap_draw_limit_rejects_unbounded_work(self):
         cases = {"case": {"rounds": [{"baseline": [1.0], "candidate": [1.0]}] * 20,
                            "quantiles": [0.5], "family_size": 1,

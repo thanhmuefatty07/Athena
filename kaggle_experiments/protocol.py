@@ -133,12 +133,18 @@ def load_measurements(path, manifest=None):
                 or manifest["spec"].get("drift_threshold") != 0.5):
             raise ValueError("Missing or inconsistent predeclared statistical family")
     groups, identifiers, records, fingerprints = {}, set(), 0, {}
-    with path.open(encoding="utf-8") as stream:
-        for line_number, line in enumerate(stream, 1):
+    with path.open("rb") as stream:
+        line_number = 0
+        while True:
+            raw_line = stream.readline(MAX_MEASUREMENT_LINE_BYTES + 1)
+            if not raw_line:
+                break
+            line_number += 1
             if line_number > MAX_MEASUREMENT_RECORDS:
                 raise ValueError("Measurement artifact exceeds record limit")
-            if len(line.encode("utf-8")) > MAX_MEASUREMENT_LINE_BYTES:
+            if len(raw_line) > MAX_MEASUREMENT_LINE_BYTES:
                 raise ValueError("Measurement record exceeds line limit")
+            line = raw_line.decode("utf-8")
             record = json.loads(line)
             case_id = record.get("case_id", record.get("stage"))
             arm = record.get("candidate")
