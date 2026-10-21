@@ -58,8 +58,10 @@ def main(argv=None):
     metadata = json.loads((ROOT / "snapshots_meta.json").read_text(encoding="utf-8"))
     if metadata.get("protocol") != "athena-research/2":
         parser.error("Prepare v2 snapshots first: python -B -m kaggle_experiments.pack_snapshots")
-    payload = {"metadata": metadata,
-               "probe": base64.b64encode((ROOT / "probe.rs").read_bytes()).decode()}
+    # Normalize source newlines before hashing/embedding so Windows and Linux
+    # produce the same probe bytes and bundle identity.
+    probe = (ROOT / "probe.rs").read_text(encoding="utf-8").encode("utf-8")
+    payload = {"metadata": metadata, "probe": base64.b64encode(probe).decode()}
     for arm in ("baseline", "candidate"):
         encoded = (ROOT / (arm + ".b64")).read_text(encoding="ascii").strip()
         raw = base64.b64decode(encoded, validate=True)
