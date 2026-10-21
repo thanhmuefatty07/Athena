@@ -1629,6 +1629,75 @@ class ExpandedResearchControls(unittest.TestCase):
                     self.assertRaisesRegex(RuntimeError, "does not match"):
                 research._capture_build_receipt(object(), workspace, build)
 
+    def test_launch_receipt_binds_study_budget_scope_and_explicit_confirmation(self):
+        design = research.manifest_design()
+        design["study_id"] = research.identity(design)
+        with tempfile.TemporaryDirectory(prefix="athena-launch-receipt-") as folder:
+            root = Path(folder)
+            spec = root / "spec.json"
+            budget = root / "budget.json"
+            receipt = root / "launch-receipt.json"
+            research.campaign.write_json(spec, design)
+            research.campaign.write_json(budget, {
+                "remaining_usd": "250", "ceiling_usd": "300", "reserve_usd": "80",
+                "spent_usd": "0", "hourly_usd": "0.15", "storage_usd": "0.01",
+                "deadline_seconds": 7200, "enforcement_verified": True,
+                "enforced_memory_bytes": 8 * 1024 ** 3, "memory_bytes": 8 * 1024 ** 3,
+                "free_bytes": 40 * 1024 ** 3,
+            })
+            requested = {"pilot_only": True, "variants": None}
+            payload = {
+                "schema": "athena-launch-receipt/1",
+                "target": "gce",
+                "operator_confirmed": True,
+                "confirmed_at": "2026-10-21T12:00:00Z",
+                "study_id": design["study_id"],
+                "spec_sha256": research.protocol.sha256_file(spec),
+                "budget_sha256": research.protocol.sha256_file(budget),
+                "request": requested,
+                "deadline_seconds": 7200,
+                "command": ["run-native", "--pilot-only"],
+            }
+            research.campaign.write_json(receipt, payload)
+            checked = research.validate_launch_receipt(receipt, spec, budget, requested)
+            self.assertEqual(checked["study_id"], design["study_id"])
+            payload["operator_confirmed"] = False
+            research.campaign.write_json(receipt, payload)
+            with self.assertRaisesRegex(ValueError, "operator confirmation"):
+                research.validate_launch_receipt(receipt, spec, budget, requested)
+            payload["operator_confirmed"] = True
+            payload["request"] = {"pilot_only": False, "variants": None}
+            research.campaign.write_json(receipt, payload)
+            with self.assertRaisesRegex(ValueError, "request mismatch"):
+                research.validate_launch_receipt(receipt, spec, budget, requested)
+            payload["request"] = requested
+            payload["command"] = ["run-native", "--api-key=leak"]
+            research.campaign.write_json(receipt, payload)
+            with self.assertRaisesRegex(ValueError, "credentials"):
+                research.validate_launch_receipt(receipt, spec, budget, requested)
+
+    def test_native_execution_requires_receipt_before_lock_or_runner(self):
+        from unittest.mock import patch
+        with patch.object(research, "_execute_native_locked") as locked:
+            with self.assertRaisesRegex(ValueError, "launch receipt"):
+                research.execute_native("source", "spec", "output", budget_path="budget", launch_receipt=None)
+            locked.assert_not_called()
+        with tempfile.TemporaryDirectory(prefix="athena-launch-lock-") as folder:
+            root = Path(folder)
+            source, spec, budget, output = root / "source", root / "spec.json", root / "budget.json", root / "output"
+            source.mkdir()
+            (source / "owned.txt").write_bytes(b"owned")
+            design = {"protocol": research.PROTOCOL, "files": {"owned.txt": research.protocol.sha256_file(source / "owned.txt")},
+                      "limits": {"minimum_free_bytes": 1, "wall_seconds": 60}}
+            design["study_id"] = research.identity(design)
+            research.campaign.write_json(spec, design)
+            research.campaign.write_json(budget, {"deadline_seconds": 7200})
+            with patch.object(research, "_analysis_lock") as lock:
+                with self.assertRaises(ValueError):
+                    research.execute_native(str(source), str(spec), str(output), budget_path=str(budget),
+                                            launch_receipt=str(root / "missing-launch-receipt.json"))
+                lock.assert_not_called()
+
     def test_literal_oracle_rejects_corruption_and_wrong_denial_even_with_valid_json(self):
         from cloud_experiments import workloads
         fixture = {"expected_blocks": [{"role": "paragraph", "text": "visible", "links": []}]}

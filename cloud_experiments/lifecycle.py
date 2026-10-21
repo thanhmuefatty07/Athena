@@ -716,7 +716,7 @@ def export_finalized_run(output):
 def supervise(job_path):
     from cloud_experiments import research
     job = read_json(job_path)
-    required = {"source", "spec", "output", "budget"}
+    required = {"source", "spec", "output", "budget", "launch_receipt"}
     if not required <= set(job) or set(job) - required - {"pilot_only", "variants"}:
         raise ValueError("Unknown or incomplete supervisor job")
     root = Path("/opt/athena/runs").resolve(strict=True)
@@ -731,8 +731,10 @@ def supervise(job_path):
         raise ValueError("Supervisor job identity changed")
     design = read_json(job["spec"])
     research.verify_snapshot(job["source"], design)
-    requested = {"pilot_only": job.get("pilot_only", False), "variants": job.get("variants"),
-                 "budget_sha256": protocol.sha256_file(job["budget"])}
+    request = {"pilot_only": job.get("pilot_only", False), "variants": job.get("variants")}
+    research.validate_launch_receipt(job["launch_receipt"], job["spec"], job["budget"], request)
+    requested = {**request, "budget_sha256": protocol.sha256_file(job["budget"]),
+                 "launch_receipt_sha256": protocol.sha256_file(job["launch_receipt"])}
     if (output / "manifest.json").exists():
         manifest = read_json(output / "manifest.json", 16 * 1024 ** 2)
         if (manifest.get("bundle_id") != design["study_id"] or manifest.get("spec") != design
@@ -756,7 +758,8 @@ def supervise(job_path):
             state["export_error_type"] = type(export_error).__name__
     try:
         research.execute_native(job["source"], job["spec"], job["output"], budget_path=job["budget"],
-                                pilot_only=job.get("pilot_only", False), variants=job.get("variants"), resume=True)
+                                launch_receipt=job["launch_receipt"], pilot_only=job.get("pilot_only", False),
+                                variants=job.get("variants"), resume=True)
         export_run(output, output.with_name(output.name + "-evidence.tgz"))
         return 0
     except (InterruptedError, OSError) as error:

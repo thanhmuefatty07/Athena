@@ -540,6 +540,68 @@ def verify_snapshot(source, design):
     return {name: campaign.canonical_source_bytes((source / name).read_bytes()) for name in design["files"]}
 
 
+def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
+    """Validate the operator-approved launch intent before creating a run.
+
+    A receipt is authorization and binding evidence, not an independent
+    attestation.  It must bind the exact frozen spec and reviewed budget to the
+    requested mode/variants/deadline so a stale or partial cloud job cannot be
+    started accidentally.
+    """
+    if not isinstance(request, dict) or set(request) != {"pilot_only", "variants"}:
+        raise ValueError("Invalid launch request shape")
+    if type(request["pilot_only"]) is not bool:
+        raise ValueError("Invalid launch request mode")
+    variants = request["variants"]
+    if variants is not None and (not isinstance(variants, list)
+                                 or not variants
+                                 or any(not isinstance(value, str) or not value for value in variants)
+                                 or len(set(variants)) != len(variants)):
+        raise ValueError("Invalid launch request variants")
+    receipt = lifecycle.read_json(receipt_path, 256 * 1024)
+    spec = lifecycle.read_json(spec_path, 16 * 1024 ** 2)
+    budget = lifecycle.read_json(budget_path, 256 * 1024)
+    if not isinstance(receipt, dict) or not isinstance(spec, dict) or not isinstance(budget, dict):
+        raise ValueError("Launch receipt, spec and budget must be JSON objects")
+    spec_document = {key: value for key, value in spec.items() if key != "study_id"}
+    if spec.get("protocol") != PROTOCOL or not protocol.is_digest(spec.get("study_id")) \
+            or identity(spec_document) != spec.get("study_id"):
+        raise ValueError("Launch receipt spec identity is invalid")
+    allowed = {"schema", "target", "operator_confirmed", "confirmed_at", "study_id",
+               "spec_sha256", "budget_sha256", "request", "deadline_seconds", "command"}
+    if set(receipt) != allowed:
+        raise ValueError("Launch receipt has unknown or missing fields")
+    if receipt["schema"] != "athena-launch-receipt/1":
+        raise ValueError("Unsupported launch receipt schema")
+    if receipt["target"] != "gce":
+        raise ValueError("Launch receipt target must be gce")
+    if receipt["operator_confirmed"] is not True:
+        raise ValueError("Explicit operator confirmation is required")
+    if (not isinstance(receipt["confirmed_at"], str) or not receipt["confirmed_at"].strip()
+            or len(receipt["confirmed_at"]) > 128):
+        raise ValueError("Launch receipt confirmation time is invalid")
+    if receipt["study_id"] != spec.get("study_id") or not protocol.is_digest(receipt["study_id"]):
+        raise ValueError("Launch receipt study identity mismatch")
+    if protocol.sha256_file(spec_path) != receipt["spec_sha256"] or not protocol.is_digest(receipt["spec_sha256"]):
+        raise ValueError("Launch receipt spec hash mismatch")
+    if protocol.sha256_file(budget_path) != receipt["budget_sha256"] or not protocol.is_digest(receipt["budget_sha256"]):
+        raise ValueError("Launch receipt budget hash mismatch")
+    if receipt["request"] != request:
+        raise ValueError("Launch receipt request mismatch")
+    deadline = receipt["deadline_seconds"]
+    if type(deadline) is not int or deadline <= 0 or budget.get("deadline_seconds") != deadline:
+        raise ValueError("Launch receipt deadline mismatch")
+    command = receipt["command"]
+    if (not isinstance(command, list) or not command or
+            any(not isinstance(item, str) or not item or len(item) > 512 for item in command)
+            or "run-native" not in command):
+        raise ValueError("Launch receipt command is invalid")
+    if any(any(secret in item.lower() for secret in ("api_key", "api-key", "token=", "password", "secret="))
+           for item in command):
+        raise ValueError("Launch receipt command must not contain credentials")
+    return receipt
+
+
 def readiness(design, records):
     """Explicit experiment gaps survive preparation and successful subset runs."""
     required = design["required_decisions"] + design["required_interactions"]
@@ -1603,17 +1665,29 @@ def _complete_finalist_selection(run, selected, chosen, binaries, *, workspace, 
         chosen["finalist_service_contracts"][variant] = run.check(key, contracts)
 
 
-def execute_native(source, spec_path, output, *, budget_path=None, pilot_only=False, variants=None, resume=False):
+def execute_native(source, spec_path, output, *, budget_path=None, launch_receipt=None,
+                   pilot_only=False, variants=None, resume=False):
+    if launch_receipt is None:
+        raise ValueError("Explicit launch receipt is required before native execution")
+    if budget_path is None:
+        raise ValueError("Reviewed budget is required before native execution")
+    request = {"pilot_only": pilot_only, "variants": variants}
+    # Fail closed before creating the execution lock or touching the output
+    # directory.  The locked path validates again to cover file replacement
+    # between this preflight and the actual run.
+    validate_launch_receipt(launch_receipt, spec_path, budget_path, request)
     output = Path(output)
     if output.is_symlink():
         raise ValueError("Run output cannot be a symlink")
     output = output.parent.resolve(strict=True) / output.name
     with _analysis_lock(output.with_name(output.name + ".execution.lock")):
         return _execute_native_locked(source, spec_path, output, budget_path=budget_path,
-                                      pilot_only=pilot_only, variants=variants, resume=resume)
+                                      launch_receipt=launch_receipt, pilot_only=pilot_only,
+                                      variants=variants, resume=resume)
 
 
-def _execute_native_locked(source, spec_path, output, *, budget_path=None, pilot_only=False, variants=None, resume=False):
+def _execute_native_locked(source, spec_path, output, *, budget_path=None, launch_receipt=None,
+                           pilot_only=False, variants=None, resume=False):
     """Run real native comparators; incomplete service/model scopes remain explicit."""
     from cloud_experiments import contenders
     source, output = Path(source).resolve(strict=True), Path(output).resolve()
@@ -1627,6 +1701,9 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, pilot
         raise RuntimeError("Insufficient free capacity for declared source/cache/evidence")
     if budget_path is None:
         raise ValueError("Pilot and expanded execution require reviewed price/credit/supervisor admission facts")
+    request = {"pilot_only": pilot_only, "variants": variants}
+    receipt = validate_launch_receipt(launch_receipt, spec_path, budget_path, request)
+    receipt_sha256 = protocol.sha256_file(launch_receipt)
     budget = lifecycle.read_json(budget_path)
     limits = design["limits"]
     physical_memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
@@ -1660,7 +1737,8 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, pilot
     if work_deadline < 1:
         raise RuntimeError("No supervised time remains after export and shutdown reserves")
     run.bind_deadline(min(limits["wall_seconds"], work_deadline))
-    requested = {"pilot_only": pilot_only, "variants": variants, "budget_sha256": protocol.sha256_file(budget_path)}
+    requested = {**request, "budget_sha256": protocol.sha256_file(budget_path),
+                 "launch_receipt_sha256": receipt_sha256}
     if run.manifest.get("execution_request", requested) != requested:
         raise ValueError("Resume cannot change planned variants, pilot mode or budget facts")
     run.manifest["execution_request"] = requested
@@ -1967,6 +2045,8 @@ def main():
     run_parser.add_argument("--pilot-only", action="store_true")
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument("--budget-file")
+    run_parser.add_argument("--launch-receipt", required=True,
+                            help="Operator-approved athena-launch-receipt/1 bound to this spec, budget and request")
     run_parser.add_argument("--variants", nargs="+")
     analyzer = commands.add_parser("analyze")
     analyzer.add_argument("directory")
@@ -2016,7 +2096,8 @@ def main():
             return 2
     else:
         result = execute_native(args.source, args.spec, args.output, budget_path=args.budget_file,
-                                pilot_only=args.pilot_only, variants=args.variants, resume=args.resume)
+                                launch_receipt=args.launch_receipt, pilot_only=args.pilot_only,
+                                variants=args.variants, resume=args.resume)
         result = {"status": result["status"], "overall_decision": result["overall_decision"], "phase": result["current_phase"]}
     print(json.dumps(result, ensure_ascii=False, allow_nan=False))
     return 0

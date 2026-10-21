@@ -138,9 +138,18 @@ class LifecycleControls(unittest.TestCase):
                     "limits": {"export_bytes": 1048576}}
             spec["study_id"] = research.identity(spec)
             job = {"source": str(source), "spec": str(root / "spec.json"),
-                   "output": str(output), "budget": str(root / "budget.json")}
+                   "output": str(output), "budget": str(root / "budget.json"),
+                   "launch_receipt": str(root / "launch-receipt.json")}
             research.campaign.write_json(root / "spec.json", spec)
-            research.campaign.write_json(root / "budget.json", {"reviewed": "synthetic"})
+            research.campaign.write_json(root / "budget.json", {"reviewed": "synthetic", "deadline_seconds": 7200})
+            research.campaign.write_json(root / "launch-receipt.json", {
+                "schema": "athena-launch-receipt/1", "target": "gce", "operator_confirmed": True,
+                "confirmed_at": "2026-10-21T12:00:00Z", "study_id": spec["study_id"],
+                "spec_sha256": lifecycle.protocol.sha256_file(root / "spec.json"),
+                "budget_sha256": lifecycle.protocol.sha256_file(root / "budget.json"),
+                "request": {"pilot_only": False, "variants": None}, "deadline_seconds": 7200,
+                "command": ["run-native"],
+            })
             research.campaign.write_json(root / "job.json", job)
             manifest = {"status": "COMPLETE", "bundle_id": "b" * 64, "spec": spec}
             research.campaign.write_json(output / "manifest.json", manifest)
@@ -152,14 +161,15 @@ class LifecycleControls(unittest.TestCase):
             self.assertFalse((root / "output-evidence.tgz").exists())
             self.assertEqual(lifecycle.read_json(output / "manifest.json"), manifest)
             manifest.update(bundle_id=spec["study_id"], execution_request={"pilot_only": False, "variants": None,
-                "budget_sha256": lifecycle.protocol.sha256_file(root / "budget.json")})
+                "budget_sha256": lifecycle.protocol.sha256_file(root / "budget.json"),
+                "launch_receipt_sha256": lifecycle.protocol.sha256_file(root / "launch-receipt.json")})
             research.campaign.write_json(output / "manifest.json", manifest)
             with patch.object(lifecycle, "Path", side_effect=configured_path):
                 self.assertEqual(lifecycle.supervise(root / "job.json"), 0)
             original = (root / "output-evidence.tgz").read_bytes()
             research.campaign.write_json(root / "budget.json", {"reviewed": "changed budget"})
             with patch.object(lifecycle, "Path", side_effect=configured_path):
-                with self.assertRaisesRegex(ValueError, "identity|job|study"):
+                with self.assertRaisesRegex(ValueError, "identity|job|study|receipt|budget"):
                     lifecycle.supervise(root / "job.json")
             self.assertEqual((root / "output-evidence.tgz").read_bytes(), original)
 

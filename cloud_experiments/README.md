@@ -369,12 +369,21 @@ python -B -m unittest cloud_experiments.test_campaign kaggle_experiments.test_pr
 python -B -m cloud_experiments.contenders
 python -B -m cloud_experiments.research inventory
 python -B -m cloud_experiments.research prepare results/research-input --wall-seconds <bounded-seconds>
-python3 -B -m cloud_experiments.research run-native <source> <spec.json> <output> --pilot-only --budget-file <reviewed-budget.json>
-python3 -B -m cloud_experiments.research run-native <source> <spec.json> <output> --resume --budget-file <same-reviewed-budget.json>
+python3 -B -m cloud_experiments.research run-native <source> <spec.json> <output> --pilot-only --budget-file <reviewed-budget.json> --launch-receipt <launch-receipt.json>
+python3 -B -m cloud_experiments.research run-native <source> <spec.json> <output> --resume --budget-file <same-reviewed-budget.json> --launch-receipt <same-launch-receipt.json>
 python3 -B -m cloud_experiments.research analyze <output> <variant> <new-analysis.json>
 python3 -B -m cloud_experiments.research run-service <service_probe> <new-output>
 python3 -B -m cloud_experiments.research run-agent <core_probe> <new-output> --policy W2 --representation compact
 ```
+
+`run-native` and its supervisor require an explicit `athena-launch-receipt/1`
+JSON file. The receipt must bind the exact `spec.json` and reviewed budget
+SHA-256, request (`pilot_only`/`variants`), `deadline_seconds`, target `gce`,
+the exact command and a separate `operator_confirmed: true` decision. It must
+contain no API key, token or secret. A missing, stale, changed or scope-mismatched
+receipt is rejected before the run lock or output manifest is created. The
+receipt is authorization evidence, not independent execution attestation; the
+user must review and approve the exact values before launching.
 
 Muốn W1 với NVIDIA NIM, thêm `--policy W1 --provider nim --model <provider/model>
 --request-cap <N> --confirm-provider-no-charge`. Chỉ dùng cờ này sau khi tự kiểm
