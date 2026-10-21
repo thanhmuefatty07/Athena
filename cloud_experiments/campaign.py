@@ -227,6 +227,8 @@ def source_files(root, names):
     files = {}
     for name in names:
         origin = root / name
+        if not origin.exists() and not origin.is_symlink():
+            raise ValueError("Missing source input: " + name)
         paths = [origin] if origin.is_file() else sorted(origin.rglob("*"))
         for path in paths:
             if path.is_symlink() or not path.resolve().is_relative_to(root):

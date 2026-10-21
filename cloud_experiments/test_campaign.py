@@ -134,6 +134,14 @@ class CampaignControls(unittest.TestCase):
             self.assertLess(peak, 8 * 1024 ** 2 + 256 * 1024,
                             "Admission must bound the read, not read the whole file then reject it")
 
+    def test_source_collector_rejects_missing_declared_input(self):
+        with tempfile.TemporaryDirectory(prefix="athena-source-missing-") as folder:
+            root = Path(folder)
+            (root / "src").mkdir()
+            (root / "src/lib.rs").write_text("pub fn keep() {}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Missing source input"):
+                campaign.source_files(root, ["src", "fixtures"])
+
     def test_source_snapshot_normalizes_text_line_endings_for_cross_platform_identity(self):
         with tempfile.TemporaryDirectory(prefix="athena-source-eol-") as folder:
             root = Path(folder)
