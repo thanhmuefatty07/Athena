@@ -232,9 +232,30 @@ def process_tree_rss(pid):
         try:
             status = Path(f"/proc/{current}/status").read_text()
             total += next(int(line.split()[1]) * 1024 for line in status.splitlines() if line.startswith("VmRSS:"))
-            pending.extend(int(value) for value in Path(f"/proc/{current}/task/{current}/children").read_text().split())
         except (OSError, StopIteration, ValueError):
             continue
+        # A child created by a non-leader thread is exposed through that
+        # thread's /proc task entry on Linux.  Reading only task/<pid>/children
+        # can therefore under-report the supervised tree and let an external
+        # worker evade the sampled RSS evidence.  Enumerate every live thread,
+        # while retaining the PID visited set so a process is counted once.
+        task_root = Path(f"/proc/{current}/task")
+        try:
+            tids = [entry.name for entry in task_root.iterdir() if entry.name.isdigit()]
+        except OSError:
+            tids = [str(current)]
+        for tid in tids:
+            try:
+                children = (task_root / tid / "children").read_text().split()
+            except OSError:
+                continue
+            for value in children:
+                try:
+                    child = int(value)
+                except ValueError:
+                    continue
+                if child not in visited:
+                    pending.append(child)
     return total
 
 

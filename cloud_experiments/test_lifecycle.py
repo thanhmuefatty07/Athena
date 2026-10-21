@@ -286,6 +286,37 @@ class LifecycleControls(unittest.TestCase):
             finally:
                 run.sample_stream.close()
 
+    @unittest.skipUnless(os.name == "posix" and Path("/proc").is_dir(), "Linux process-tree boundary")
+    def test_linux_rss_includes_worker_thread_descendant(self):
+        with tempfile.TemporaryDirectory(prefix="athena-thread-tree-") as folder:
+            root = Path(folder)
+            marker = root / "descendant.pid"
+            descendant = ("import os,sys,time;from pathlib import Path;"
+                          "owned=bytearray(b'x'*(32*1024**2));"
+                          "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)")
+            parent = ("import subprocess,sys,threading,time\n"
+                      "def spawn():\n"
+                      "    subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]])\n"
+                      "threading.Thread(target=spawn).start()\n"
+                      "time.sleep(30)")
+            run = research.ResearchRun(root / "run", "control", "a" * 64, {})
+            try:
+                with self.assertRaisesRegex(TimeoutError, "timed out"):
+                    run.run([sys.executable, "-B", "-c", parent, descendant, str(marker)], timeout=2)
+                self.assertTrue(marker.exists())
+                self.assertGreater(run.manifest["sampled_process_tree_rss_bytes"], 32 * 1024 ** 2)
+                process = Path("/proc") / marker.read_text() / "status"
+                deadline = time.monotonic() + 2
+                while process.exists() and time.monotonic() < deadline:
+                    state = next(line for line in process.read_text().splitlines() if line.startswith("State:"))
+                    if "Z" in state:
+                        break
+                    time.sleep(.02)
+                if process.exists():
+                    self.assertIn("Z", next(line for line in process.read_text().splitlines() if line.startswith("State:")))
+            finally:
+                run.sample_stream.close()
+
     def test_export_requires_complete_bytes_and_verified_distinct_copy_before_acknowledgement(self):
         with tempfile.TemporaryDirectory(prefix="athena-export-") as folder:
             root = Path(folder)
