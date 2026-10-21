@@ -236,10 +236,19 @@ def source_files(root, names):
                     data = stream.read(8 * 1024 * 1024 + 1)
                 if len(data) > 8 * 1024 * 1024:
                     raise ValueError("Oversized source input")
-                files[path.relative_to(root).as_posix()] = data
+                files[path.relative_to(root).as_posix()] = canonical_source_bytes(data)
     if sum(map(len, files.values())) > 16 * 1024 * 1024:
         raise ValueError("Source bundle exceeds budget")
     return files
+
+
+def canonical_source_bytes(data):
+    """Use one byte representation for UTF-8 text on every checkout platform."""
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def replace_once(text, old, new):

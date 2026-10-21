@@ -534,9 +534,10 @@ def verify_snapshot(source, design):
         path = source / name
         if ("\\" in name or Path(name).is_absolute() or ".." in Path(name).parts
                 or path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(source)
-                or not protocol.is_digest(digest) or protocol.sha256_file(path) != digest):
+                or not protocol.is_digest(digest)
+                or hashlib.sha256(campaign.canonical_source_bytes(path.read_bytes())).hexdigest() != digest):
             raise ValueError("Frozen input missing/changed/escaped: " + name)
-    return {name: (source / name).read_bytes() for name in design["files"]}
+    return {name: campaign.canonical_source_bytes((source / name).read_bytes()) for name in design["files"]}
 
 
 def readiness(design, records):

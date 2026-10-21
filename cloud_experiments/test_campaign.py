@@ -112,6 +112,15 @@ class CampaignControls(unittest.TestCase):
             self.assertLess(peak, 8 * 1024 ** 2 + 256 * 1024,
                             "Admission must bound the read, not read the whole file then reject it")
 
+    def test_source_snapshot_normalizes_text_line_endings_for_cross_platform_identity(self):
+        with tempfile.TemporaryDirectory(prefix="athena-source-eol-") as folder:
+            root = Path(folder)
+            (root / "crlf.rs").write_bytes(b"fn main() {}\r\n")
+            (root / "lf.rs").write_bytes(b"fn main() {}\n")
+            snapshots = campaign.source_files(root, ["crlf.rs", "lf.rs"])
+            self.assertEqual(snapshots["crlf.rs"], snapshots["lf.rs"])
+            self.assertEqual(snapshots["crlf.rs"], b"fn main() {}\n")
+
     def rows(self):
         return [dict(case="tiny", arm=arm, block=block, iteration=i,
                      order=(0 if arm == "baseline" else 1) ^ (block % 2),
