@@ -8,7 +8,7 @@ _DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
     "src/aae.rs": "f5806098dfcce627b57d93ad9795fbc3599c8dce64905484feebfbfee216e983",
-    "src/rank.rs": "bc5262f761c6fef1112cbca89b3984245b94e961ef43e86810d3c08e0563d22d",
+    "src/rank.rs": "6a0ef072798c17c41284be06599f2b6ec17e97fe4a20049069e841c78f9dc2ff",
     "src/projection.rs": "7f201ea9e43a357ff36d84040503df8065e61fdc378016e4704a55b9792a72d2",
     "src/table.rs": "eb1933a8f29d21f0a8887a6c17cebfc4a2f78b98a73f7a2040139966a561533e",
 }
