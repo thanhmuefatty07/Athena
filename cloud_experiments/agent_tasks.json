@@ -5,7 +5,7 @@
     "live_web": false,
     "web_index": false,
     "source": "Hand-authored HTML/snippets and literal independent expected facts/citations; domains are reserved examples.",
-    "limits": "Finite structured fact task contract; not open-ended web discovery. F04 HTML-to-table header integration remains unimplemented. F08 concurrency is a separate real synchronization gate."
+    "limits": "Finite structured fact task contract; not open-ended web discovery. F04 uses a bounded scope-derived HTML-to-table header comparator; full inferred-header consumer integration remains unimplemented. F08 concurrency is a separate real synchronization gate."
   },
   "tasks": [
     {

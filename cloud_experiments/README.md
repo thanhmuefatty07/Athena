@@ -281,7 +281,9 @@ stdout+stderr gộp ở 64 KiB mỗi lệnh; thời hạn lần lượt là 5 gi
 
 `agent_lab.py` và `agent_tasks.json` chứa F01–F08, W0 rules/W2 batching,
 actual native AAE producer, full/compact+expand, scope/revision/expiry của handle
-và oracle facts/units/citations độc lập. W1 chỉ gọi model sau khi chọn rõ model,
+và oracle facts/units/citations độc lập. Native producer timeout và early-leader-exit
+được cô lập trong process-group POSIX; hành vi descendant trên Windows và sandbox
+cross-runtime vẫn chưa được xác minh. W1 chỉ gọi model sau khi chọn rõ model,
 đặt request/token/byte/time cap và truyền cờ `--confirm-provider-no-charge`.
 Cờ này xác nhận operator đã kiểm tra riêng giá của đúng model và tài khoản; runner
 không kiểm chứng được giá NIM. NIM catalog chỉ xác nhận model được liệt kê, nên
@@ -298,9 +300,9 @@ Mọi transport được tiêm vào hoặc bị thay thế trước lần dispat
 đã được nhận dạng. Nhãn này ghi nhận quan sát trong tiến trình, không chứng minh
 độc lập danh tính model/provider hay tính xác thực của kết quả. Các test stub
 chỉ là test doubles trong process, không chứng minh kết quả provider thật.
-F04 vẫn thiếu integration với consumer/task: comparator scope-header mới chỉ đo
-liên kết bounded trên logical grid, không phải inferred-header WHATWG đầy đủ;
-đúng vài cell chưa đủ task PASS.
+F04 đã có comparator scope-header bounded trên logical grid, cùng units/locators và
+literal oracle; nó chưa phải inferred-header WHATWG đầy đủ hoặc integration với
+consumer/task. Đúng vài cell chưa đủ task PASS.
 **W3/general generated-code sandbox chưa triển khai**; không chạy code model.
 Live model quality, MCP transport và deployment cost/SLO chưa được xác nhận.
 

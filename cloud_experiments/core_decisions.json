@@ -164,8 +164,8 @@
       "oracle": "Hand-derived logical cell slots, rowspan=0/group limits, overlap rejection and row/column budget boundaries; literal HTML tables with header/unit/source-locator expectations for the new capability.",
       "closure": "Keep logical-grid and HTML extraction decisions separate; confirm changed storage end-to-end, including construction and materialization; no HTML extraction claim from Row/Cell-only tests.",
       "gaps": [
-    "Stage-only DOM-traversal versus CSS-selector HTML table comparator and two literal fixture families are in the research harness; semantic header association/inference and a representative licensed corpus remain NOT_IMPLEMENTED",
-        "F04 cell literals alone cannot establish table task completion or units/locator integration",
+        "Stage-only DOM-traversal versus CSS-selector HTML table comparator and two literal fixture families are in the research harness; bounded scope-derived row/column associations, explicit-header precedence, units and locators have a local oracle",
+        "Full WHATWG inferred-header semantics, consumer/task integration and a representative licensed corpus remain NOT_IMPLEMENTED; F04 cell literals and the bounded scope comparator alone cannot establish task PASS",
         "PLANNED L04: native/JSON/Arrow comparators and independent schema/null/order/unit/locator/lifecycle controls are NOT_IMPLEMENTED; Arrow C Data is in-process, not a substitute for IPC or HTML extraction."
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",
@@ -229,7 +229,7 @@
       "gaps": [
         "Finite independent-load and deterministic cancellation/recovery controls exist; soak/deployment SLOs remain NOT VERIFIED",
         "Linux snapshot003 exposed a leader-cancel schedule defect; snapshot004 revised pending/join controls and17service scenarios passed, but broad offered-load/soak/production success remains NOT VERIFIED",
-        "PLANNED I-LANG-SCHED: bounded cross-runtime IPC/backpressure, total CPU/thread budgets, fairness, worker exit/cancellation and restart controls are NOT_IMPLEMENTED; a worker future timeout does not establish process termination."
+        "Native producer timeout and early-leader-exit paths now kill a private POSIX process group with focused regression coverage; Windows descendant behavior, bounded cross-runtime IPC/backpressure, total CPU/thread budgets, fairness, worker restart and deployed recovery remain NOT_IMPLEMENTED/NOT_VERIFIED."
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",
       "harness": [

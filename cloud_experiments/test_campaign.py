@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -291,6 +292,88 @@ class DecisionMapControls(unittest.TestCase):
 
 
 class AgentBoundaryControls(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix" and Path("/proc").is_dir(),
+                         "POSIX producer process-group boundary")
+    def test_native_producer_timeout_reaps_descendant_process_group(self):
+        """A producer timeout must not leave a child holding the captured pipe."""
+        with tempfile.TemporaryDirectory(prefix="athena-producer-group-") as folder:
+            root = Path(folder)
+            marker = root / "descendant.pid"
+            descendant = (
+                "import os,sys,time;from pathlib import Path;"
+                "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
+                "time.sleep(30)"
+            )
+            with self.assertRaisesRegex(agent_lab.LabError, "PRODUCER_TIMEOUT"):
+                agent_lab._bounded_process(
+                    [sys.executable, "-B", "-c", parent, descendant, str(marker)],
+                    timeout_s=1,
+                    max_bytes=4096,
+                    cwd=root,
+                )
+            self.assertTrue(marker.exists(), "child must reach the timeout boundary")
+            child_status = Path("/proc") / marker.read_text() / "status"
+            deadline = time.monotonic() + 3
+            while child_status.exists() and time.monotonic() < deadline:
+                state = next(
+                    (line for line in child_status.read_text().splitlines()
+                     if line.startswith("State:")),
+                    "",
+                )
+                if "Z" in state:
+                    break
+                time.sleep(0.02)
+            if child_status.exists():
+                state = next(line for line in child_status.read_text().splitlines()
+                             if line.startswith("State:"))
+                self.assertIn("Z", state, "descendant must not remain runnable")
+
+    @unittest.skipUnless(os.name == "posix" and Path("/proc").is_dir(),
+                         "POSIX producer process-group boundary")
+    def test_native_producer_parent_exit_reaps_descendant_process_group(self):
+        """A successful leader exit must also close descendants that own its pipes."""
+        with tempfile.TemporaryDirectory(prefix="athena-producer-exit-") as folder:
+            root = Path(folder)
+            marker = root / "descendant.pid"
+            descendant = (
+                "import os,sys,time;from pathlib import Path;"
+                "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
+                "time.sleep(.3)"
+            )
+            self.assertEqual(
+                agent_lab._bounded_process(
+                    [sys.executable, "-B", "-c", parent, descendant, str(marker)],
+                    timeout_s=2,
+                    max_bytes=4096,
+                    cwd=root,
+                ),
+                b"",
+            )
+            self.assertTrue(marker.exists(), "child must reach the leader-exit boundary")
+            child_status = Path("/proc") / marker.read_text() / "status"
+            deadline = time.monotonic() + 3
+            while child_status.exists() and time.monotonic() < deadline:
+                state = next(
+                    (line for line in child_status.read_text().splitlines()
+                     if line.startswith("State:")),
+                    "",
+                )
+                if "Z" in state:
+                    break
+                time.sleep(0.02)
+            if child_status.exists():
+                state = next(line for line in child_status.read_text().splitlines()
+                             if line.startswith("State:"))
+                self.assertIn("Z", state, "descendant must not remain runnable")
+
     def test_provider_boundary_requires_the_unmodified_default_transport(self):
         from datetime import datetime, timezone
         from cloud_experiments.nim import NimClient, NimConfig

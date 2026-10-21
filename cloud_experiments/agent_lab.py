@@ -9,9 +9,11 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import subprocess
 import tempfile
 import threading
@@ -219,9 +221,29 @@ def validate_aae(data, source_url, max_bytes=262144):
 
 
 def _bounded_process(command, timeout_s, max_bytes, cwd):
+    options = {}
+    if os.name == "posix":
+        # A native producer is an untrusted boundary. Give it a private
+        # process group so timeout/output failure cannot leave a child holding
+        # a pipe or consuming the campaign after the parent exits.
+        options["start_new_session"] = True
+    elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, cwd=cwd,
-                               env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
+                               env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, **options)
+
+    def terminate():
+        try:
+            if os.name == "posix":
+                # The leader may already have exited while a descendant still
+                # owns stdout/stderr; kill the group regardless of leader state.
+                os.killpg(process.pid, signal.SIGKILL)
+            elif process.poll() is None:
+                process.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+
     buffers = [bytearray(), bytearray()]
     overflow = threading.Event()
 
@@ -233,7 +255,7 @@ def _bounded_process(command, timeout_s, max_bytes, cwd):
             buffer.extend(part)
             if len(buffer) > cap:
                 overflow.set()
-                process.kill()
+                terminate()
                 break
         stream.close()
 
@@ -244,11 +266,19 @@ def _bounded_process(command, timeout_s, max_bytes, cwd):
     try:
         code = process.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired as exc:
-        process.kill()
-        process.wait(timeout=5)
+        terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            terminate()
+            process.wait(timeout=5)
         for thread in threads:
             thread.join(timeout=5)
         raise LabError("PRODUCER_TIMEOUT") from exc
+    finally:
+        # The overflow path can terminate from a drain thread before wait()
+        # returns; repeat the group kill defensively for the process boundary.
+        terminate()
     for thread in threads:
         thread.join(timeout=5)
     if any(thread.is_alive() for thread in threads):
