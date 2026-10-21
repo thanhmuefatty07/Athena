@@ -315,10 +315,7 @@ mod tests {
             ("tokio 内容", 1.2, 0.75),
             ("missing", 2.0, 0.5),
         ] {
-            assert_eq!(
-                prepared.scores(query, k1, b),
-                bm25(&docs, query, k1, b)
-            );
+            assert_eq!(prepared.scores(query, k1, b), bm25(&docs, query, k1, b));
         }
         assert!(prepared.matches_revision("source-1"));
         assert!(!prepared.matches_revision("source-2"));
