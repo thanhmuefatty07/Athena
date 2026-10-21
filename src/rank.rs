@@ -35,6 +35,7 @@ pub enum PreparedRankError {
 pub struct PreparedRank {
     source_revision: String,
     lengths: Vec<usize>,
+    avg_len: f64,
     postings: HashMap<String, Vec<(usize, usize)>>,
 }
 
@@ -70,9 +71,12 @@ impl PreparedRank {
                 postings.entry(term).or_default().push((index, count));
             }
         }
+        let total_len: usize = lengths.iter().sum();
+        let avg_len = (total_len as f64 / lengths.len().max(1) as f64).max(1.0);
         Ok(Self {
             source_revision,
             lengths,
+            avg_len,
             postings,
         })
     }
@@ -102,13 +106,6 @@ impl PreparedRank {
                 .map(|(i, _)| (i, 0.0))
                 .collect();
         }
-        let total_len: usize = self.lengths.iter().sum();
-        let avg_len = (total_len as f64 / self.lengths.len() as f64).max(1.0);
-        let norms: Vec<f64> = self
-            .lengths
-            .iter()
-            .map(|&len| k1 * (1.0 - b + b * len as f64 / avg_len))
-            .collect();
         let n = self.lengths.len() as f64;
         let mut scores: Vec<_> = (0..self.lengths.len()).map(|i| (i, 0.0)).collect();
         for term in terms {
@@ -119,7 +116,8 @@ impl PreparedRank {
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
             for &(index, frequency) in matches {
                 let freq = frequency as f64;
-                scores[index].1 += idf * freq * (k1 + 1.0) / (freq + norms[index]);
+                let norm = k1 * (1.0 - b + b * self.lengths[index] as f64 / self.avg_len);
+                scores[index].1 += idf * freq * (k1 + 1.0) / (freq + norm);
             }
         }
         scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));
@@ -130,6 +128,7 @@ impl PreparedRank {
         std::mem::size_of_val(self)
             + self.source_revision.capacity()
             + self.lengths.capacity() * std::mem::size_of::<usize>()
+            + std::mem::size_of_val(&self.avg_len)
             + self
                 .postings
                 .iter()
@@ -310,10 +309,15 @@ mod tests {
             chunk("unrelated"),
         ];
         let prepared = PreparedRank::new(&docs, "source-1", 64).unwrap();
-        for query in ["RUST rust", "tài", "tokio 内容", "missing"] {
+        for (query, k1, b) in [
+            ("RUST rust", 1.2, 0.75),
+            ("tài", 2.0, 0.5),
+            ("tokio 内容", 1.2, 0.75),
+            ("missing", 2.0, 0.5),
+        ] {
             assert_eq!(
-                prepared.scores(query, 1.2, 0.75),
-                bm25(&docs, query, 1.2, 0.75)
+                prepared.scores(query, k1, b),
+                bm25(&docs, query, k1, b)
             );
         }
         assert!(prepared.matches_revision("source-1"));
