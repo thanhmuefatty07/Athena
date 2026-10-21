@@ -343,6 +343,28 @@ def write_json(path, value, *, max_bytes=None):
         temporary.unlink(missing_ok=True)
 
 
+def write_bytes(path, data, *, max_bytes=None):
+    """Publish bounded binary bytes atomically with a directory sync."""
+    path = Path(path)
+    if not isinstance(data, bytes):
+        raise TypeError("Binary publication requires bytes")
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1 or len(data) > max_bytes):
+        raise ValueError("Binary publication exceeds its byte bound")
+    if path.is_symlink():
+        raise ValueError("Binary output cannot be a symlink")
+    descriptor, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def prepare(destination):
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
@@ -360,7 +382,7 @@ def prepare(destination):
     raw = pack_snapshots.archive_files(files)
     if len(raw) > pack_snapshots.GIT_ARCHIVE_OUTPUT_BYTES:
         raise ValueError("Source archive exceeds bundle budget")
-    (destination / "source.tgz").write_bytes(raw)
+    write_bytes(destination / "source.tgz", raw, max_bytes=pack_snapshots.GIT_ARCHIVE_OUTPUT_BYTES)
     spec = study_spec()
     spec.update(source_sha256=digest(raw), files={key: digest(value) for key, value in sorted(files.items())},
                 git_head=pack_snapshots.bounded_command_output(

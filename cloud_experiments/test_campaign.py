@@ -118,6 +118,21 @@ class CampaignControls(unittest.TestCase):
             finally:
                 run.sample_stream.close()
 
+    def test_binary_commit_preserves_old_state_and_rejects_over_budget_before_staging(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory(prefix="athena-binary-commit-") as folder:
+            root = Path(folder)
+            target = root / "source.tgz"
+            target.write_bytes(b"old archive")
+            with patch("cloud_experiments.campaign.os.replace", side_effect=OSError("commit interrupted")):
+                with self.assertRaisesRegex(OSError, "commit interrupted"):
+                    campaign.write_bytes(target, b"new archive")
+            self.assertEqual(target.read_bytes(), b"old archive")
+            self.assertEqual(list(root.glob(".source.tgz.*.tmp")), [])
+            with self.assertRaisesRegex(ValueError, "byte bound"):
+                campaign.write_bytes(target, b"too large", max_bytes=3)
+            self.assertEqual(target.read_bytes(), b"old archive")
+
     def test_source_collector_rejects_oversize_before_allocating_whole_file(self):
         import tracemalloc
         with tempfile.TemporaryDirectory(prefix="athena-source-cap-") as folder:
