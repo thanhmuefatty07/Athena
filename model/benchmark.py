@@ -5,10 +5,34 @@ No network or production latency claims.
 import argparse
 import hashlib
 import json
+import os
 import platform
 import statistics
 import subprocess
 from pathlib import Path
+
+
+_BENCHMARK_ENV_KEYS = frozenset({
+    "LANG", "LC_ALL", "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP",
+    "TMPDIR", "TZ", "WINDIR",
+})
+
+
+def benchmark_child_environment():
+    """Return the minimal runtime environment for an offline benchmark child.
+
+    Baseline and candidate binaries are executable inputs. They must not see
+    provider, cloud, notebook, proxy or arbitrary parent-process credentials.
+    Windows environment names are case-insensitive, so compare normalized
+    names while preserving the host spelling in the returned mapping.
+    """
+    return {key: value for key, value in os.environ.items()
+            if key.upper() in _BENCHMARK_ENV_KEYS}
+
+
+def _run_benchmark_process(*args, **kwargs):
+    kwargs["env"] = benchmark_child_environment()
+    return subprocess.run(*args, **kwargs)
 
 
 def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
@@ -35,7 +59,8 @@ def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
                 args = [str(directory / ('athena-core-v2' + suffix)), str(fixture), 'https://example.org/']
                 if query is not None:
                     args.append(query)
-                outputs.append(subprocess.run(args, check=True, capture_output=True, timeout=120).stdout)
+                outputs.append(_run_benchmark_process(
+                    args, check=True, capture_output=True, timeout=120).stdout)
             if outputs[0] != outputs[1]:
                 raise ValueError(f'{fixture.name}, {query}: AAE bytes differ; review before benchmarking')
             equivalent.append({'fixture': fixture.name, 'query': query,
@@ -49,7 +74,7 @@ def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
             if trial % 2:
                 order.reverse()
             for label, directory in order:
-                process = subprocess.run(
+                process = _run_benchmark_process(
                     [str(directory / ('bench_core' + suffix)), stage, str(size), str(iterations)],
                     check=True, capture_output=True, text=True, timeout=120)
                 samples[label].append(json.loads(process.stdout))
@@ -78,7 +103,7 @@ def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
             for label, directory in order:
                 args = [str(directory / ('bench_html' + suffix)), str(fixture.resolve()),
                         'https://example.org/', str(iterations)]
-                output = subprocess.run(args, check=True, capture_output=True, text=True, timeout=120)
+                output = _run_benchmark_process(args, check=True, capture_output=True, text=True, timeout=120)
                 samples[label].append(json.loads(output.stdout))
         summary = {
             label: {'median_p50_ms': statistics.median(r['p50_ms'] for r in rows),
@@ -93,10 +118,10 @@ def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
                                                         summary['baseline']['median_p50_ms']) * 100})
     return {'scope': 'warm offline CPU stages; setup excluded; input generation fixed in bench_core',
             'platform': platform.platform(),
-            'rustc': subprocess.run(['rustc', '--version', '--verbose'], check=True, capture_output=True,
-                                   text=True, timeout=30).stdout,
-            'source_revision': subprocess.run(['git', 'rev-parse', 'HEAD'], check=True, capture_output=True,
-                                             text=True, timeout=30).stdout.strip(),
+            'rustc': _run_benchmark_process(['rustc', '--version', '--verbose'], check=True,
+                                             capture_output=True, text=True, timeout=30).stdout,
+            'source_revision': _run_benchmark_process(['git', 'rev-parse', 'HEAD'], check=True,
+                                                      capture_output=True, text=True, timeout=30).stdout.strip(),
             'artifacts': {label: {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
                                   for name in ['athena-core-v2' + suffix, 'bench_html' + suffix,
                                                'bench_core' + suffix, 'Cargo.lock']}

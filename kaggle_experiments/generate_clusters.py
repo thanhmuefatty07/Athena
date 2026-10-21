@@ -8,8 +8,10 @@ from pathlib import Path
 
 if __package__:
     from .protocol import ANALYSIS_POLICY, C1_STAGES, STUDY_REVISION
+    from .runner import MAX_CAPTURED_COMMAND_OUTPUT_BYTES
 else:
     from protocol import ANALYSIS_POLICY, C1_STAGES, STUDY_REVISION
+    from runner import MAX_CAPTURED_COMMAND_OUTPUT_BYTES
 
 ROOT = Path(__file__).resolve().parent
 CLUSTERS = {
@@ -40,6 +42,7 @@ def specifications(screen=False):
     family = sum(len(item["quantiles"]) for cases in (c1, c2, c3) for item in cases)
     return {name: {"run_kind": "screen" if screen else "confirm", "simultaneous_family_size": family,
                    "study_revision": STUDY_REVISION, "analysis_policy": ANALYSIS_POLICY,
+                   "limits": {"command_output_bytes": MAX_CAPTURED_COMMAND_OUTPUT_BYTES},
                    "cases": cases, "drift_threshold": 0.5, "family_alpha": 0.05,
                    "wall_budget_seconds": 5400}
             for name, cases in (("c1", c1), ("c2", c2), ("c3", c3))}
@@ -55,8 +58,10 @@ def main(argv=None):
     metadata = json.loads((ROOT / "snapshots_meta.json").read_text(encoding="utf-8"))
     if metadata.get("protocol") != "athena-research/2":
         parser.error("Prepare v2 snapshots first: python -B -m kaggle_experiments.pack_snapshots")
-    payload = {"metadata": metadata,
-               "probe": base64.b64encode((ROOT / "probe.rs").read_bytes()).decode()}
+    # Normalize source newlines before hashing/embedding so Windows and Linux
+    # produce the same probe bytes and bundle identity.
+    probe = (ROOT / "probe.rs").read_text(encoding="utf-8").encode("utf-8")
+    payload = {"metadata": metadata, "probe": base64.b64encode(probe).decode()}
     for arm in ("baseline", "candidate"):
         encoded = (ROOT / (arm + ".b64")).read_text(encoding="ascii").strip()
         raw = base64.b64decode(encoded, validate=True)

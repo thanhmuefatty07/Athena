@@ -6,7 +6,7 @@ The current implementation is a Rust reference library and offline CLI: pinned H
 
 ## Verification
 
-Rust 1.99.0, Windows x86_64: local Rust/Python tests, Clippy and release builds are recorded in the engineering review. The committed lockfile is used; rustls was patched to 0.23.46 after four advisory matches. No dependency was added. Remote Linux CI, production networking, fuzz/Loom/Miri, ARM64 and peak RSS remain unverified.
+Rust 1.99.1 is pinned. GitHub Actions run `39537516157` verified the locked Linux fmt/test/Clippy/release gates and the 77-test Linux research harness with zero skips. The current lockfile keeps `rustls 0.23.46` and updates transitive `rustls-webpki` to `0.103.16` and `webpki-root-certs` to `1.0.10` after the local RustSec preflight identified the older versions. The post-patch `cargo deny` advisories/bans/sources check passes. Windows full native testing remains toolchain-limited by `aws-lc-sys`/NASM; production networking, fresh external advisory provenance, license policy, fuzz/Loom/Miri, ARM64 and peak RSS remain unverified.
 
 ```bash
 cargo fmt --all -- --check

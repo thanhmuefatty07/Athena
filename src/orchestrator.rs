@@ -3,9 +3,10 @@
 //! while overlapping, without accidentally sharing wrong query-specific highlights.
 //! An upstream enforcement service MUST authorize permissions/robots/rate BEFORE call.
 use crate::{
-    aae,
+    aae::{self, PreparedExport},
     network::{FetchError, FetchPolicy, fetch_https_with_admission, validate_request},
     projection::{self, Projection},
+    rank::PreparedRank,
     singleflight::{FlightError, SingleFlight},
 };
 use std::{
@@ -81,9 +82,16 @@ pub struct Retrieval {
 }
 struct SourceContent {
     page: Projection,
+    prepared: Option<PreparedRank>,
+    source_revision: String,
     status: u16,
     bytes_downloaded: usize,
     observed_at_ms: u64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LexicalMode {
+    OneShot,
+    Prepared,
 }
 pub struct Engine {
     source_flights: SingleFlight<SourceKey, SourceContent, PipelineError>,
@@ -92,6 +100,7 @@ pub struct Engine {
     cpu_permits: Arc<Semaphore>,
     pending_permits: Semaphore,
     max_html_nodes: usize,
+    lexical_mode: LexicalMode,
 }
 impl Engine {
     pub fn new(max_origin_inflight: usize, max_html_nodes: usize) -> Self {
@@ -99,7 +108,12 @@ impl Engine {
             .max(1)
             .saturating_mul(32)
             .min(Semaphore::MAX_PERMITS);
-        Self::with_pending_limit(max_origin_inflight, max_html_nodes, pending)
+        Self::with_pending_limit_and_lexical_mode(
+            max_origin_inflight,
+            max_html_nodes,
+            pending,
+            LexicalMode::OneShot,
+        )
     }
     /// max_pending includes coalesced followers; zero denies all admission.
     pub fn with_pending_limit(
@@ -107,13 +121,49 @@ impl Engine {
         max_html_nodes: usize,
         max_pending: usize,
     ) -> Self {
+        Self::with_pending_limit_and_lexical_mode(
+            max_origin_inflight,
+            max_html_nodes,
+            max_pending,
+            LexicalMode::OneShot,
+        )
+    }
+
+    pub fn with_lexical_mode(
+        max_origin_inflight: usize,
+        max_html_nodes: usize,
+        lexical_mode: LexicalMode,
+    ) -> Self {
+        let pending = max_origin_inflight
+            .max(1)
+            .saturating_mul(32)
+            .min(Semaphore::MAX_PERMITS);
+        Self::with_pending_limit_and_lexical_mode(
+            max_origin_inflight,
+            max_html_nodes,
+            pending,
+            lexical_mode,
+        )
+    }
+
+    pub fn with_pending_limit_and_lexical_mode(
+        max_origin_inflight: usize,
+        max_html_nodes: usize,
+        max_pending: usize,
+        lexical_mode: LexicalMode,
+    ) -> Self {
         Self {
             source_flights: SingleFlight::new(),
             representation_flights: SingleFlight::new(),
-            network_permits: Arc::new(Semaphore::new(max_origin_inflight.max(1))),
-            cpu_permits: Arc::new(Semaphore::new(max_origin_inflight.max(1))),
-            pending_permits: Semaphore::new(max_pending),
+            network_permits: Arc::new(Semaphore::new(
+                max_origin_inflight.clamp(1, Semaphore::MAX_PERMITS),
+            )),
+            cpu_permits: Arc::new(Semaphore::new(
+                max_origin_inflight.clamp(1, Semaphore::MAX_PERMITS),
+            )),
+            pending_permits: Semaphore::new(max_pending.min(Semaphore::MAX_PERMITS)),
             max_html_nodes: max_html_nodes.max(1),
+            lexical_mode,
         }
     }
 
@@ -166,6 +216,7 @@ impl Engine {
         };
         let permits = Arc::clone(&self.network_permits);
         let max_nodes = self.max_html_nodes;
+        let lexical_mode = self.lexical_mode;
         let original = key.clone();
         let rep_key = RepresentationKey {
             request: key,
@@ -213,6 +264,7 @@ impl Engine {
                                 max_html_bytes: policy.max_body_bytes,
                                 max_text_bytes: policy.max_body_bytes,
                                 max_nodes,
+                                max_parser_nodes: max_nodes,
                                 max_words_per_chunk: 1000,
                                 max_link_bytes: policy.max_body_bytes,
                                 ..projection::ParseLimits::default()
@@ -223,8 +275,12 @@ impl Engine {
                                 .as_millis()
                                 .min(u64::MAX as u128)
                                 as u64;
+                            let source_revision =
+                                format!("{}@{}", raw_url.as_str(), observed_at_ms);
+                            let prepared_revision = source_revision.clone();
+                            let max_tokens = parse_limits.max_text_bytes.max(1);
                             let page_url = raw_url;
-                            let page = self
+                            let (page, prepared) = self
                                 .run_blocking(move || {
                                     let _permit = permit;
                                     let html = std::str::from_utf8(&response.payload)
@@ -235,10 +291,29 @@ impl Engine {
                                         parse_limits,
                                     )
                                     .map_err(PipelineError::Parse)
+                                    .and_then(|page| {
+                                        let prepared = if lexical_mode == LexicalMode::Prepared {
+                                            Some(PreparedRank::new(
+                                                &page.chunks,
+                                                prepared_revision.clone(),
+                                                max_tokens,
+                                            )
+                                            .map_err(|_| {
+                                                PipelineError::Parse(
+                                                    "prepared lexical state exceeded token budget",
+                                                )
+                                            })?)
+                                        } else {
+                                            None
+                                        };
+                                        Ok((page, prepared))
+                                    })
                                 })
                                 .await??;
                             Ok(SourceContent {
                                 page,
+                                prepared,
+                                source_revision,
                                 status: response.status,
                                 bytes_downloaded,
                                 observed_at_ms,
@@ -255,14 +330,28 @@ impl Engine {
                     let page_source = Arc::clone(&source);
                     let output = self
                         .run_blocking(move || {
-                            aae::export_jsonl(
-                                &page_source.page,
-                                &url,
-                                page_source.observed_at_ms,
-                                Some(&query),
-                                6,
-                            )
-                            .map_err(|e| {
+                            let result = match page_source.prepared.as_ref() {
+                                Some(prepared) => aae::export_jsonl_with_prepared(
+                                    &page_source.page,
+                                    &url,
+                                    page_source.observed_at_ms,
+                                    Some(&query),
+                                    6,
+                                    PreparedExport {
+                                        prepared,
+                                        source_revision: &page_source.source_revision,
+                                        max_output_bytes: 16 * 1024 * 1024,
+                                    },
+                                ),
+                                None => aae::export_jsonl(
+                                    &page_source.page,
+                                    &url,
+                                    page_source.observed_at_ms,
+                                    Some(&query),
+                                    6,
+                                ),
+                            };
+                            result.map_err(|e| {
                                 if e.is_io() {
                                     PipelineError::OutputTooLarge
                                 } else {
@@ -373,6 +462,37 @@ mod tests {
         b.allowed_hosts.clear();
         assert_ne!(PolicyKey::from(&a), PolicyKey::from(&b));
     }
+
+    #[test]
+    fn prepared_lexical_mode_is_explicit_and_default_is_one_shot() {
+        assert_eq!(Engine::new(1, 100).lexical_mode, LexicalMode::OneShot);
+        assert_eq!(
+            Engine::with_lexical_mode(1, 100, LexicalMode::Prepared).lexical_mode,
+            LexicalMode::Prepared
+        );
+    }
+
+    #[test]
+    fn custom_permit_limits_are_clamped_before_semaphore_construction() {
+        let engine = Engine::with_pending_limit(
+            Semaphore::MAX_PERMITS.saturating_add(1),
+            100,
+            Semaphore::MAX_PERMITS.saturating_add(1),
+        );
+        assert_eq!(
+            engine.network_permits.available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+        assert_eq!(
+            engine.cpu_permits.available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+        assert_eq!(
+            engine.pending_permits.available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+    }
+
     #[tokio::test]
     async fn cancelled_blocking_job_keeps_cpu_admission_until_exit() {
         let engine = Arc::new(Engine::new(1, 100));

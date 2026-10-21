@@ -1,5 +1,5 @@
 {
-  "bundle_id": "968c02f335cacfb997ed4866d78de84e2e92e221bf96c30ba84167ed2675fe45",
+  "bundle_id": "87f8201bbdcaa56ed0d2e726343c447643b89b39758405dcc7f8fb2544eddc4a",
   "metadata": {
     "protocol": "athena-research/2",
     "baseline_commit": "8de5709e6c47fd57713ca821131579b2e8c25a36",
@@ -76,6 +76,9 @@
       "simultaneous_family_size": 57,
       "study_revision": "2.1",
       "analysis_policy": "paired-rounds/2.1",
+      "limits": {
+        "command_output_bytes": 8388608
+      },
       "cases": [
         {
           "id": "rank",
@@ -178,6 +181,9 @@
       "simultaneous_family_size": 57,
       "study_revision": "2.1",
       "analysis_policy": "paired-rounds/2.1",
+      "limits": {
+        "command_output_bytes": 8388608
+      },
       "cases": [
         {
           "id": "links-100",
@@ -357,6 +363,9 @@
       "simultaneous_family_size": 57,
       "study_revision": "2.1",
       "analysis_policy": "paired-rounds/2.1",
+      "limits": {
+        "command_output_bytes": 8388608
+      },
       "cases": [
         {
           "id": "rng-1-1",
@@ -468,7 +477,7 @@
       "wall_budget_seconds": 5400
     }
   },
-  "protocol_sha256": "6921c75af77712f4bfccc5ecb1a97d900864e8f030c639accbf8474a43db6151",
-  "runner_sha256": "8dfda7cae84c514905c818ffbfd814120a002688b784d45deb1797a99b0fa8e8",
+  "protocol_sha256": "9e6c429dbe25b1c030c54e5b53e37e04bbba60c54577151222ed3acbb471648c",
+  "runner_sha256": "7dfa0facd27322970d2fa030be46b3624a61d115255a0231d8d8c213db6ac974",
   "probe_sha256": "09c4afa8476fad7687e2ec8f319320533329354c7cafb85068852e75770ac967"
 }

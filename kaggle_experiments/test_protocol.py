@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,199 @@ def dependency_fixture(root):
                 {"name": packages[dep]["name"], "pkg": dep,
                  "dep_kinds": [{"kind": None, "target": None}]} for dep in deps]}
                       for key, deps in edges.items()]}
+
+
+class BoundedProcessControls(unittest.TestCase):
+    def test_implicit_child_environment_excludes_provider_cloud_and_proxy_credentials(self):
+        with patch.dict(os.environ, {
+            "NVIDIA_API_KEY": "synthetic-nim-key",
+            "OPENROUTER_API_KEY": "synthetic-router-key",
+            "GOOGLE_APPLICATION_CREDENTIALS": "synthetic-gcp-path",
+            "KAGGLE_KEY": "synthetic-kaggle-key",
+            "HTTPS_PROXY": "http://synthetic-proxy.invalid",
+            "PATH": os.environ.get("PATH", ""),
+        }, clear=False):
+            code = "import json,os; print(json.dumps({k:os.environ.get(k) for k in (\"NVIDIA_API_KEY\", \"OPENROUTER_API_KEY\", \"GOOGLE_APPLICATION_CREDENTIALS\", \"KAGGLE_KEY\", \"HTTPS_PROXY\", \"PATH\")}))"
+            result = runner.run_bounded_process([sys.executable, "-B", "-c", code], timeout=2, output_limit=4096)
+            self.assertEqual(result.status, "EXITED")
+            observed = json.loads(result.stdout)
+        for key in ("NVIDIA_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "KAGGLE_KEY", "HTTPS_PROXY"):
+            self.assertIsNone(observed[key])
+        self.assertTrue(observed["PATH"])
+
+    def test_experiment_spec_cannot_raise_the_combined_output_hard_cap(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-hard-cap-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 8 * 1024 * 1024 + 1}})
+            marker = root / "child-ran.txt"
+            script = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')"
+            try:
+                with self.assertRaisesRegex(ValueError, "output limit"):
+                    run.run([sys.executable, "-B", "-c", script, str(marker)], timeout=2)
+                self.assertFalse(marker.exists(), "invalid budget must be rejected before child creation")
+                self.assertEqual(run.manifest["commands"], [])
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled output-budget test cleanup")
+
+    def test_command_output_limit_stops_both_streams_and_reaps_the_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-bound-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 4096}})
+            pid_file = root / "child.pid"
+            script = (
+                "import os,sys,time; "
+                "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                "sys.stdout.buffer.write(b'o'*2048); sys.stdout.flush(); "
+                "sys.stderr.buffer.write(b'e'*2049); sys.stderr.flush(); "
+                "time.sleep(30)"
+            )
+            try:
+                error = None
+                try:
+                    run.run([sys.executable, "-B", "-c", script, str(pid_file)], timeout=2,
+                            log_output=False)
+                except Exception as caught:
+                    error = caught
+                self.assertIsInstance(error, RuntimeError, f"Expected output-limit rejection, got {error!r}")
+                self.assertIn("OUTPUT_LIMIT", str(error))
+                record = run.manifest["commands"][-1]
+                self.assertEqual(record["status"], "OUTPUT_LIMIT")
+                self.assertEqual(record["captured_output_bytes"], 4096)
+                pid = int(pid_file.read_text(encoding="ascii"))
+                if os.name == "nt":
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                    open_process = kernel32.OpenProcess
+                    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+                    open_process.restype = wintypes.HANDLE
+                    wait = kernel32.WaitForSingleObject
+                    wait.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+                    wait.restype = wintypes.DWORD
+                    close = kernel32.CloseHandle
+                    close.argtypes = (wintypes.HANDLE,)
+                    handle = open_process(0x00100000 | 0x1000, False, pid)
+                    if handle:
+                        try:
+                            self.assertNotEqual(wait(handle, 0), 0x00000102,
+                                                "child remained live after output-limit termination")
+                        finally:
+                            close(handle)
+                    else:
+                        self.assertEqual(ctypes.get_last_error(), 87,
+                                         "could not establish that the child process had exited")
+                else:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled process-output test cleanup")
+
+    def test_bounded_process_timeout_reaps_a_real_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-process-timeout-") as directory:
+            result = runner.run_bounded_process(
+                [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+                cwd=directory, timeout=0.2, output_limit=1024)
+            self.assertEqual(result.status, "TIMEOUT")
+            self.assertIsInstance(result.returncode, int)
+            self.assertLessEqual(result.captured_output_bytes, 1024)
+
+
+class MeasurementResourceControls(unittest.TestCase):
+    def test_measurement_artifact_byte_limit_is_checked_before_parse(self):
+        with tempfile.TemporaryDirectory(prefix="athena-measurement-limit-") as directory:
+            path = Path(directory) / "samples.jsonl"
+            path.write_text("{}\n", encoding="utf-8")
+            with patch.object(protocol, "MAX_MEASUREMENT_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "byte limit"):
+                    protocol.load_measurements(path)
+
+    def test_measurement_line_limit_is_checked_before_json_parse(self):
+        with tempfile.TemporaryDirectory(prefix="athena-measurement-line-limit-") as directory:
+            path = Path(directory) / "samples.jsonl"
+            path.write_bytes(b"{" + b"x" * 32 + b"}\n")
+            with patch.object(protocol, "MAX_MEASUREMENT_LINE_BYTES", 4):
+                with patch.object(protocol.json, "loads", side_effect=AssertionError("parse reached")):
+                    with self.assertRaisesRegex(ValueError, "line limit"):
+                        protocol.load_measurements(path)
+
+    def test_bootstrap_draw_limit_rejects_unbounded_work(self):
+        cases = {"case": {"rounds": [{"baseline": [1.0], "candidate": [1.0]}] * 20,
+                           "quantiles": [0.5], "family_size": 1,
+                           "analysis_policy": protocol.LEGACY_ANALYSIS_POLICY,
+                           "spec": {}}}
+        with self.assertRaisesRegex(ValueError, "bootstrap draw limit"):
+            protocol.analyze_measurements(cases, draws=protocol.MAX_BOOTSTRAP_DRAWS + 1)
+
+
+class RustupBootstrapControls(unittest.TestCase):
+    def test_toolchain_preparation_rejects_unpinned_bootstrap_before_execution(self):
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        payload = b"synthetic untrusted rustup installer"
+        commands = []
+
+        def controlled_run(command, **kwargs):
+            commands.append(command)
+            if command[0] == "curl":
+                return payload
+            raise AssertionError("unchecked rustup installer reached the execution boundary")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=controlled_run)
+            with patch.dict(os.environ, {"PATH": "", "RUSTUP_TOOLCHAIN": "test"}), \
+                    patch.object(runner.shutil, "which", return_value=None), \
+                    patch.object(runner, "urlopen", return_value=BytesIO(payload), create=True), \
+                    patch.object(runner.platform, "machine", return_value="x86_64"):
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    runner.prepare_toolchain(run)
+            self.assertEqual(commands, [])
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_matching_pin_executes_only_verified_temporary_installer(self):
+        import hashlib
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        target = "x86_64-unknown-linux-gnu"
+        payload = b"synthetic verified rustup installer"
+        digest = hashlib.sha256(payload).hexdigest()
+        expected_url = ("https://static.rust-lang.org/rustup/archive/"
+                        f"{runner.RUSTUP_VERSION}/{target}/rustup-init")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-match-") as folder:
+            def inspect_execution(command, **kwargs):
+                self.assertEqual(Path(command[0]).read_bytes(), payload)
+                self.assertEqual(command[1:], ["-y", "--profile", "minimal", "--default-toolchain",
+                                               runner.RUSTUP_TOOLCHAIN, "--no-modify-path"])
+                self.assertEqual(kwargs, {"timeout": 600, "log_output": False})
+                if os.name == "posix":
+                    self.assertTrue(Path(command[0]).stat().st_mode & 0o111)
+                return b""
+
+            run = SimpleNamespace(directory=Path(folder), run=inspect_execution)
+            with patch.dict(runner.PINNED_RUSTUP_SHA256, {target: digest}), \
+                    patch.object(runner, "urlopen", return_value=BytesIO(payload)) as download:
+                runner.install_pinned_rustup(run, target=target)
+            download.assert_called_once_with(expected_url, timeout=60)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_unsupported_architecture_fails_before_download(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-arch-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=lambda *args, **kwargs: self.fail("unexpected install"))
+            with patch.object(runner, "urlopen") as download:
+                with self.assertRaisesRegex(ValueError, "Unsupported Linux architecture"):
+                    runner.install_pinned_rustup(run, machine="mips64")
+            download.assert_not_called()
+            self.assertEqual(list(Path(folder).iterdir()), [])
 
 
 class StatisticalRegressions(unittest.TestCase):
@@ -300,6 +494,7 @@ class StatisticalRegressions(unittest.TestCase):
             self.assertEqual(spec.get("simultaneous_family_size"), family)
             self.assertEqual(spec.get("study_revision"), "2.1")
             self.assertEqual(spec.get("analysis_policy"), "paired-rounds/2.1")
+            self.assertEqual(spec.get("limits", {}).get("command_output_bytes"), 8 * 1024 * 1024)
 
     def test_manifest_family_cannot_be_reduced_to_reported_subset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -461,6 +656,14 @@ class CorrectnessRegressions(unittest.TestCase):
                                    hashes, destination)
             self.assertEqual((destination / "src/lib.rs").read_bytes(), files["src/lib.rs"])
 
+    def test_snapshot_decode_budget_rejects_oversized_base64_before_archive_open(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, "MAX_SNAPSHOT_ARCHIVE_BYTES", 3):
+            destination = Path(directory) / "source"
+            encoded = base64.b64encode(b"1234").decode()
+            with self.assertRaises(ValueError):
+                runner.unpack_snapshot(encoded, "0" * 64, {}, destination)
+            self.assertFalse(destination.exists())
+
     def test_malformed_timing_packet_cannot_be_recorded(self):
         from types import SimpleNamespace
         packet = {"protocol": protocol.PROTOCOL_VERSION, "stage": "parse", "size": 2,
@@ -494,6 +697,69 @@ class CorrectnessRegressions(unittest.TestCase):
         protocol.validate_aae(self.envelope(), expected)
         with self.assertRaises(ValueError):
             protocol.validate_aae(self.envelope("Wrong but valid JSON"), expected)
+
+    def test_independent_aae_blake3_oracle_checks_content_and_block_ids(self):
+        from blake3 import blake3
+
+        text = "Visible"
+        content_hash = blake3(text.encode("utf-8")).hexdigest()
+        block_id = blake3(b"paragraph\x00" + text.encode("utf-8") + (0).to_bytes(8, "little")).hexdigest()
+        frames = [
+            {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+             "content_hash": content_hash, "total_blocks": 1},
+            {"type": "block", "id": block_id, "role": "paragraph", "text": text, "links": []},
+            {"type": "end", "block_count": 1},
+        ]
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames).encode()
+        protocol.validate_aae(payload, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
+
+        tampered = json.loads(json.dumps(frames))
+        tampered[0]["content_hash"] = "0" * 64
+        bad_payload = "".join(json.dumps(frame) + "\n" for frame in tampered).encode()
+        with self.assertRaisesRegex(ValueError, "Independent BLAKE3"):
+            protocol.validate_aae(bad_payload, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
+
+    def test_independent_aae_oracle_reconstructs_source_order_after_query_reordering(self):
+        from blake3 import blake3
+
+        source_blocks = [
+            {"role": "paragraph", "text": "background", "links": [], "source_index": 0},
+            {"role": "paragraph", "text": "term0", "links": [], "source_index": 1},
+            {"role": "paragraph", "text": "term0 term0 term0 term0 term0", "links": [], "source_index": 2},
+        ]
+        output_blocks = [source_blocks[2], source_blocks[0], source_blocks[1]]
+        content_hash = blake3("\n".join(block["text"] for block in source_blocks).encode("utf-8")).hexdigest()
+        frames = [
+            {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+             "content_hash": content_hash, "total_blocks": 3},
+        ]
+        for block in output_blocks:
+            block_id = blake3(
+                block["role"].encode("utf-8") + b"\x00" + block["text"].encode("utf-8")
+                + block["source_index"].to_bytes(8, "little")
+            ).hexdigest()
+            frames.append({"type": "block", "id": block_id, "role": block["role"],
+                           "text": block["text"], "links": block["links"],
+                           "highlight": block["source_index"] == 2})
+        frames.append({"type": "end", "block_count": 3})
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames).encode("utf-8")
+        expected = {"blocks": output_blocks, "links": []}
+
+        protocol.validate_aae(payload, expected, independent_hash=True)
+
+        tampered = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+        tampered[1]["id"] = blake3(
+            tampered[1]["role"].encode("utf-8") + b"\x00" + tampered[1]["text"].encode("utf-8")
+            + (0).to_bytes(8, "little")
+        ).hexdigest()
+        bad_payload = "".join(json.dumps(frame) + "\n" for frame in tampered).encode("utf-8")
+        with self.assertRaisesRegex(ValueError, "Independent BLAKE3"):
+            protocol.validate_aae(bad_payload, expected, independent_hash=True)
+
+        malformed_expected = json.loads(json.dumps(expected))
+        malformed_expected["blocks"][2]["source_index"] = 0
+        with self.assertRaisesRegex(ValueError, "source indices must be a permutation"):
+            protocol.validate_aae(payload, malformed_expected, independent_hash=True)
 
     def test_parity_divergence_and_missing_end_are_fatal(self):
         with self.assertRaises(ValueError):

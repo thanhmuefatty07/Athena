@@ -2,7 +2,7 @@
 name = "athena-core-v2"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.99.1"
 license = "MIT OR Apache-2.0"
 description = "Audited reference vertical slice for permissioned, freshness-aware agent retrieval"
 
@@ -11,6 +11,7 @@ bytes = "1.10"
 blake3 = "1.8"
 rand = "0.9"
 rand_distr = "0.5"
+html5ever = "=0.39.0"
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "stream"] }
 scraper = "=0.27.0"
 serde = { version = "1", features = ["derive"] }
@@ -20,6 +21,14 @@ url = "2.5"
 futures-util = "0.3"
 
 [dev-dependencies]
+
+[features]
+research-probes = []
+
+[[bin]]
+name = "core_probe"
+path = "cloud_experiments/core_probe.rs"
+required-features = ["research-probes"]
 
 [profile.release]
 lto = "thin"

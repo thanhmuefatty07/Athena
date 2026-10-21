@@ -54,7 +54,7 @@ Không đưa khóa vào source, Notebook, dataset hoặc log. Việc tên tệp 
 
 ## 3. Bạn tự chạy Kaggle
 
-Các metadata tạo **kernel private mới có hậu tố `-v21`**, CPU, internet bật để tải công cụ/crates trước khoảng đo; giữ kernel `-v2` cũ. Rust phải đúng **1.99.0**, không fallback sang stable. c2 chuẩn bị GNU `/usr/bin/time` bằng `apt-get` nếu thiếu, yêu cầu Linux/root; lưu lệnh/exit, version, hash executable và self-check RSS >0. Thiếu quyền, lỗi cài hoặc RSS không hợp lệ đều dừng; không thay bằng số 0 hay polling. CPU/image/quota thực tế được ghi sau khi chạy.
+Các metadata tạo **kernel private mới có hậu tố `-v21`**, CPU, internet bật để tải công cụ/crates trước khoảng đo; giữ kernel `-v2` cũ. Rust phải đúng **1.99.1**, không fallback sang stable. c2 chuẩn bị GNU `/usr/bin/time` bằng `apt-get` nếu thiếu, yêu cầu Linux/root; lưu lệnh/exit, version, hash executable và self-check RSS >0. Thiếu quyền, lỗi cài hoặc RSS không hợp lệ đều dừng; không thay bằng số 0 hay polling. CPU/image/quota thực tế được ghi sau khi chạy.
 
 **Nên chạy screening trước** để kiểm hai lỗi môi trường/guard đã sửa với chi phí đo nhỏ:
 

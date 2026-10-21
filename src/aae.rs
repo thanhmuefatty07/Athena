@@ -1,7 +1,10 @@
 //! Athena Agentic Envelope v1: versioned JSON Lines, explicit provenance.
 //! Page text is ALWAYS serialized through serde_json rather than interpolated
 //! into control directives, preserving framing against content injection.
-use crate::{projection::Projection, rank::highlight_indices};
+use crate::{
+    projection::Projection,
+    rank::{PreparedRank, highlight_indices, highlight_indices_prepared},
+};
 use serde::Serialize;
 use std::io::{self, BufWriter, Write};
 use url::Url;
@@ -36,6 +39,12 @@ struct Output {
     bytes: Vec<u8>,
     limit: usize,
 }
+
+pub struct PreparedExport<'a> {
+    pub prepared: &'a PreparedRank,
+    pub source_revision: &'a str,
+    pub max_output_bytes: usize,
+}
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
@@ -48,6 +57,7 @@ impl Write for Output {
         Ok(())
     }
 }
+
 fn json_line(frame: &Frame<'_>, out: &mut impl Write) -> Result<(), serde_json::Error> {
     serde_json::to_writer(&mut *out, frame)?;
     out.write_all(b"\n").map_err(serde_json::Error::io)?;
@@ -79,6 +89,55 @@ pub fn export_jsonl_with_limit(
     query: Option<&str>,
     highlight_limit: usize,
     max_output_bytes: usize,
+) -> Result<String, serde_json::Error> {
+    export_jsonl_inner(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        max_output_bytes,
+        None,
+    )
+}
+
+/// Export using prepared lexical state built for the same immutable projection.
+/// The revision and document count are checked before any query-specific frame
+/// is emitted, so stale state cannot silently change highlights.
+pub fn export_jsonl_with_prepared(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    export: PreparedExport<'_>,
+) -> Result<String, serde_json::Error> {
+    if !export.prepared.matches_revision(export.source_revision)
+        || export.prepared.document_count() != page.chunks.len()
+    {
+        return Err(serde_json::Error::io(io::Error::other(
+            "prepared lexical state does not match projection",
+        )));
+    }
+    export_jsonl_inner(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        export.max_output_bytes,
+        Some(export.prepared),
+    )
+}
+
+fn export_jsonl_inner(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+    prepared: Option<&PreparedRank>,
 ) -> Result<String, serde_json::Error> {
     let mut out = BufWriter::with_capacity(
         8192,
@@ -115,37 +174,62 @@ pub fn export_jsonl_with_limit(
         },
         &mut out,
     )?;
-    let highlights = query
-        .map(|q| highlight_indices(&page.chunks, q, highlight_limit))
-        .unwrap_or_default();
-    let mut highlighted = vec![false; page.chunks.len()];
-    for &i in &highlights {
-        highlighted[i] = true;
+
+    if let Some(q) = query {
+        let highlights = prepared.map_or_else(
+            || highlight_indices(&page.chunks, q, highlight_limit),
+            |state| highlight_indices_prepared(state, &page.chunks, q, highlight_limit),
+        );
+        let mut highlighted = vec![false; page.chunks.len()];
+        for &i in &highlights {
+            highlighted[i] = true;
+        }
+        let ordering = highlights
+            .iter()
+            .copied()
+            .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
+        for i in ordering {
+            let chunk = &page.chunks[i];
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(chunk.role.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(chunk.text.as_bytes());
+            // Disambiguate repeated identical strings within the same snapshot.
+            hasher.update(&(i as u64).to_le_bytes());
+            let hash = hasher.finalize().to_hex().to_string();
+            json_line(
+                &Frame::Block {
+                    id: hash,
+                    role: chunk.role,
+                    text: &chunk.text,
+                    links: &chunk.links,
+                    highlight: highlighted[i],
+                },
+                &mut out,
+            )?;
+        }
+    } else {
+        for (i, chunk) in page.chunks.iter().enumerate() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(chunk.role.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(chunk.text.as_bytes());
+            // Disambiguate repeated identical strings within the same snapshot.
+            hasher.update(&(i as u64).to_le_bytes());
+            let hash = hasher.finalize().to_hex().to_string();
+            json_line(
+                &Frame::Block {
+                    id: hash,
+                    role: chunk.role,
+                    text: &chunk.text,
+                    links: &chunk.links,
+                    highlight: false,
+                },
+                &mut out,
+            )?;
+        }
     }
-    let ordering = highlights
-        .iter()
-        .copied()
-        .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
-    for i in ordering {
-        let chunk = &page.chunks[i];
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(chunk.role.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(chunk.text.as_bytes());
-        // Disambiguate repeated identical strings within the same snapshot.
-        hasher.update(&(i as u64).to_le_bytes());
-        let hash = hasher.finalize().to_hex().to_string();
-        json_line(
-            &Frame::Block {
-                id: hash,
-                role: chunk.role,
-                text: &chunk.text,
-                links: &chunk.links,
-                highlight: highlighted[i],
-            },
-            &mut out,
-        )?;
-    }
+
     for (i, target) in page.links.iter().enumerate() {
         json_line(
             &Frame::Link {
@@ -163,14 +247,14 @@ pub fn export_jsonl_with_limit(
     )?;
     let out = out
         .into_inner()
-        .map_err(|e| serde_json::Error::io(e.into_error()))?;
-    String::from_utf8(out.bytes).map_err(|e| serde_json::Error::io(io::Error::other(e)))
+        .map_err(|error| serde_json::Error::io(error.into_error()))?;
+    String::from_utf8(out.bytes).map_err(|error| serde_json::Error::io(io::Error::other(error)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::projection::parse_html;
+    use crate::{projection::parse_html, rank::PreparedRank};
     #[test]
     fn output_cap_counts_escaped_bytes_and_end_frame() {
         let base = Url::parse("https://example.org/").unwrap();
@@ -190,6 +274,7 @@ mod tests {
             assert!(export_jsonl_with_limit(&page, &base, 17, None, 0, 0).is_err());
         }
     }
+
     #[test]
     fn incremental_content_hash_preserves_joined_text_contract() {
         let base = Url::parse("https://example.org/").unwrap();
@@ -229,5 +314,50 @@ mod tests {
                 .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
         );
         assert_eq!(out.lines().count(), 3);
+    }
+
+    #[test]
+    fn prepared_export_is_byte_identical_and_rejects_stale_state() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let page = parse_html(
+            "<p>Rust rust</p><p>tokio runtime</p><p>TÀI liệu 内容</p>",
+            &base,
+            100,
+            100,
+        )
+        .unwrap();
+        let prepared = PreparedRank::new(&page.chunks, "revision-1", 100).unwrap();
+        let baseline =
+            export_jsonl_with_limit(&page, &base, 17, Some("RUST tokio"), 2, 16 * 1024 * 1024)
+                .unwrap();
+        let prepared_output = export_jsonl_with_prepared(
+            &page,
+            &base,
+            17,
+            Some("RUST tokio"),
+            2,
+            PreparedExport {
+                prepared: &prepared,
+                source_revision: "revision-1",
+                max_output_bytes: 16 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared_output, baseline);
+        assert!(
+            export_jsonl_with_prepared(
+                &page,
+                &base,
+                17,
+                Some("RUST tokio"),
+                2,
+                PreparedExport {
+                    prepared: &prepared,
+                    source_revision: "revision-2",
+                    max_output_bytes: 16 * 1024 * 1024,
+                },
+            )
+            .is_err()
+        );
     }
 }

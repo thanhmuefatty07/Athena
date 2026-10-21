@@ -1,0 +1,54 @@
+[advisories]
+unmaintained = "workspace"
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "LGPL-2.1-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+]
+
+[[licenses.clarify]]
+crate = "fnv"
+expression = "Apache-2.0 OR MIT"
+license-files = [
+    { path = "LICENSE-APACHE", hash = 0xc44abbfd },
+    { path = "LICENSE-MIT", hash = 0x03adda17 },
+]
+
+[[licenses.clarify]]
+crate = "same-file"
+expression = "Unlicense OR MIT"
+license-files = [
+    { path = "UNLICENSE", hash = 0x687ac3b9 },
+    { path = "LICENSE-MIT", hash = 0x0aa05f99 },
+]
+
+[[licenses.clarify]]
+crate = "walkdir"
+expression = "Unlicense OR MIT"
+license-files = [
+    { path = "UNLICENSE", hash = 0x687ac3b9 },
+    { path = "LICENSE-MIT", hash = 0xa67e7255 },
+]

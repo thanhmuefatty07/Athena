@@ -54,6 +54,12 @@ pub fn public_ipv6(ip: Ipv6Addr) -> bool {
     if !in_prefix(0x20000000000000000000000000000000, 3) {
         return false;
     }
+    // Well-known NAT64 prefixes encode arbitrary IPv4 destinations in IPv6.
+    if in_prefix(0x0064ff9b000000000000000000000000, 96)
+        || in_prefix(0x0064ff9b000100000000000000000000, 48)
+    {
+        return false;
+    }
     if in_prefix(0x20010db8000000000000000000000000, 32) {
         return false;
     }
@@ -67,11 +73,7 @@ pub fn public_ipv6(ip: Ipv6Addr) -> bool {
         // IANA protocol-assignment space is non-global except its listed allocations.
         return [1, 2, 3]
             .into_iter()
-            .any(|last| value == 0x20010001000000000000000000000000 + last)
-            || in_prefix(0x20010003000000000000000000000000, 32)
-            || in_prefix(0x20010004011200000000000000000000, 48)
-            || in_prefix(0x20010020000000000000000000000000, 28)
-            || in_prefix(0x20010030000000000000000000000000, 28);
+            .any(|last| value == 0x20010001000000000000000000000000 + last);
     }
     true
 }
@@ -104,7 +106,13 @@ mod tests {
             "fe80::1",
             "2001:db8::1",
             "::ffff:127.0.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b:1::a9fe:a9fe",
             "2002::1",
+            "2001:3::1",
+            "2001:4:112::1",
+            "2001:20::1",
+            "2001:30::1",
         ] {
             assert!(!is_public_candidate(ip.parse().unwrap()), "{ip}");
         }
@@ -121,12 +129,7 @@ mod tests {
         ] {
             assert!(!is_public_candidate(ip.parse().unwrap()), "{ip}");
         }
-        for ip in [
-            "2001:3::1",
-            "2001:4:112::1",
-            "2001:4860:4860::8888",
-            "3ffe::1",
-        ] {
+        for ip in ["2001:4860:4860::8888", "3ffe::1"] {
             assert!(is_public_candidate(ip.parse().unwrap()), "{ip}");
         }
     }
