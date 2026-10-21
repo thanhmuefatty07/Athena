@@ -1,15 +1,118 @@
 name: rust-reference-ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: '1.99.0'
+          toolchain: '1.99.1'
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo test --all-targets
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo build --release
+      - run: cargo test --locked --all-targets
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo build --locked --release
+
+  linux-platform-gates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Install numerical test dependency
+        run: timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir numpy
+      - name: Check Linux entrypoint syntax
+        run: bash -n cloud_experiments/bootstrap.sh cloud_experiments/finish.sh
+      - name: Run Linux-only process and service boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --kill-after=15s 300s python - <<'PY'
+          import sys
+          import unittest
+
+          names = [
+              "cloud_experiments.test_campaign.HttpDeadlineControls.test_killed_parent_cannot_leave_an_active_credential_worker",
+              "cloud_experiments.test_lifecycle.LifecycleControls.test_linux_timeout_reaps_descendant_group_and_reports_its_memory",
+              "cloud_experiments.service_lab.OracleTests.test_probe_output_cap_is_enforced_and_failed_fixture_is_removed",
+          ]
+          suite = unittest.defaultTestLoader.loadTestsFromNames(names)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print("Linux platform gate skipped a required test", file=sys.stderr)
+              raise SystemExit(2)
+          if not result.wasSuccessful():
+              raise SystemExit(1)
+          PY
+      - name: Run bounded lifecycle and protocol suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --kill-after=30s 900s python -B -m unittest \
+            cloud_experiments.test_lifecycle \
+            cloud_experiments.service_lab \
+            kaggle_experiments.test_protocol \
+            model.test_models -v 2>&1 | tee linux-harness.log
+      - name: Verify no platform skips in the Linux harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eq '^OK \(skipped=[1-9][0-9]*\)' linux-harness.log; then
+            echo 'A Linux harness test was skipped; this is not a platform closure.' >&2
+            exit 1
+          fi
+      - name: Prepare a bounded native study manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf linux-prepared
+          timeout --kill-after=15s 300s python -B -m cloud_experiments.research prepare linux-prepared --wall-seconds 1500
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          folder = Path("linux-prepared")
+          spec = json.loads((folder / "spec.json").read_text(encoding="utf-8"))
+          archive = folder / "source.tgz"
+          assert spec["protocol"] == "athena-core-research/2"
+          assert spec["study_id"] and spec["limits"]["wall_seconds"] == 1500
+          assert archive.is_file() and archive.stat().st_size <= 16 * 1024 ** 2
+          print({"study_id": spec["study_id"], "archive_bytes": archive.stat().st_size,
+                 "variant_count": len(spec["variants"])})
+          PY
+      - name: Collect bounded diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --kill-after=10s 120s python -B -m cloud_experiments.campaign audit-decisions > linux-audit.json
+          timeout --kill-after=10s 120s python -B -m cloud_experiments.research inventory > linux-inventory.json
+          timeout --kill-after=10s 30s rustc +1.99.1 -Vv > rust-version.txt
+          timeout --kill-after=10s 120s cargo +1.99.1 metadata --locked --format-version 1 > cargo-metadata.json
+      - name: Upload Linux gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: athena-linux-gates-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            linux-harness.log
+            linux-prepared/spec.json
+            linux-prepared/source.tgz
+            linux-audit.json
+            linux-inventory.json
+            rust-version.txt
+            cargo-metadata.json

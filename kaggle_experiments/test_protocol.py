@@ -3,6 +3,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,154 @@ def dependency_fixture(root):
                 {"name": packages[dep]["name"], "pkg": dep,
                  "dep_kinds": [{"kind": None, "target": None}]} for dep in deps]}
                       for key, deps in edges.items()]}
+
+
+class BoundedProcessControls(unittest.TestCase):
+    def test_experiment_spec_cannot_raise_the_combined_output_hard_cap(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-hard-cap-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 8 * 1024 * 1024 + 1}})
+            marker = root / "child-ran.txt"
+            script = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')"
+            try:
+                with self.assertRaisesRegex(ValueError, "output limit"):
+                    run.run([sys.executable, "-B", "-c", script, str(marker)], timeout=2)
+                self.assertFalse(marker.exists(), "invalid budget must be rejected before child creation")
+                self.assertEqual(run.manifest["commands"], [])
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled output-budget test cleanup")
+
+    def test_command_output_limit_stops_both_streams_and_reaps_the_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-bound-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 4096}})
+            pid_file = root / "child.pid"
+            script = (
+                "import os,sys,time; "
+                "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                "sys.stdout.buffer.write(b'o'*2048); sys.stdout.flush(); "
+                "sys.stderr.buffer.write(b'e'*2049); sys.stderr.flush(); "
+                "time.sleep(30)"
+            )
+            try:
+                error = None
+                try:
+                    run.run([sys.executable, "-B", "-c", script, str(pid_file)], timeout=2,
+                            log_output=False)
+                except Exception as caught:
+                    error = caught
+                self.assertIsInstance(error, RuntimeError, f"Expected output-limit rejection, got {error!r}")
+                self.assertIn("OUTPUT_LIMIT", str(error))
+                record = run.manifest["commands"][-1]
+                self.assertEqual(record["status"], "OUTPUT_LIMIT")
+                self.assertEqual(record["captured_output_bytes"], 4096)
+                pid = int(pid_file.read_text(encoding="ascii"))
+                if os.name == "nt":
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                    open_process = kernel32.OpenProcess
+                    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+                    open_process.restype = wintypes.HANDLE
+                    wait = kernel32.WaitForSingleObject
+                    wait.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+                    wait.restype = wintypes.DWORD
+                    close = kernel32.CloseHandle
+                    close.argtypes = (wintypes.HANDLE,)
+                    handle = open_process(0x00100000 | 0x1000, False, pid)
+                    if handle:
+                        try:
+                            self.assertNotEqual(wait(handle, 0), 0x00000102,
+                                                "child remained live after output-limit termination")
+                        finally:
+                            close(handle)
+                    else:
+                        self.assertEqual(ctypes.get_last_error(), 87,
+                                         "could not establish that the child process had exited")
+                else:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled process-output test cleanup")
+
+    def test_bounded_process_timeout_reaps_a_real_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-process-timeout-") as directory:
+            result = runner.run_bounded_process(
+                [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+                cwd=directory, timeout=0.2, output_limit=1024)
+            self.assertEqual(result.status, "TIMEOUT")
+            self.assertIsInstance(result.returncode, int)
+            self.assertLessEqual(result.captured_output_bytes, 1024)
+
+
+class RustupBootstrapControls(unittest.TestCase):
+    def test_toolchain_preparation_rejects_unpinned_bootstrap_before_execution(self):
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        payload = b"synthetic untrusted rustup installer"
+        commands = []
+
+        def controlled_run(command, **kwargs):
+            commands.append(command)
+            if command[0] == "curl":
+                return payload
+            raise AssertionError("unchecked rustup installer reached the execution boundary")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=controlled_run)
+            with patch.dict(os.environ, {"PATH": "", "RUSTUP_TOOLCHAIN": "test"}), \
+                    patch.object(runner.shutil, "which", return_value=None), \
+                    patch.object(runner, "urlopen", return_value=BytesIO(payload), create=True), \
+                    patch.object(runner.platform, "machine", return_value="x86_64"):
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    runner.prepare_toolchain(run)
+            self.assertEqual(commands, [])
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_matching_pin_executes_only_verified_temporary_installer(self):
+        import hashlib
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        target = "x86_64-unknown-linux-gnu"
+        payload = b"synthetic verified rustup installer"
+        digest = hashlib.sha256(payload).hexdigest()
+        expected_url = ("https://static.rust-lang.org/rustup/archive/"
+                        f"{runner.RUSTUP_VERSION}/{target}/rustup-init")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-match-") as folder:
+            def inspect_execution(command, **kwargs):
+                self.assertEqual(Path(command[0]).read_bytes(), payload)
+                self.assertEqual(command[1:], ["-y", "--profile", "minimal", "--default-toolchain",
+                                               runner.RUSTUP_TOOLCHAIN, "--no-modify-path"])
+                self.assertEqual(kwargs, {"timeout": 600, "log_output": False})
+                if os.name == "posix":
+                    self.assertTrue(Path(command[0]).stat().st_mode & 0o111)
+                return b""
+
+            run = SimpleNamespace(directory=Path(folder), run=inspect_execution)
+            with patch.dict(runner.PINNED_RUSTUP_SHA256, {target: digest}), \
+                    patch.object(runner, "urlopen", return_value=BytesIO(payload)) as download:
+                runner.install_pinned_rustup(run, target=target)
+            download.assert_called_once_with(expected_url, timeout=60)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_unsupported_architecture_fails_before_download(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-arch-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=lambda *args, **kwargs: self.fail("unexpected install"))
+            with patch.object(runner, "urlopen") as download:
+                with self.assertRaisesRegex(ValueError, "Unsupported Linux architecture"):
+                    runner.install_pinned_rustup(run, machine="mips64")
+            download.assert_not_called()
+            self.assertEqual(list(Path(folder).iterdir()), [])
 
 
 class StatisticalRegressions(unittest.TestCase):
@@ -300,6 +449,7 @@ class StatisticalRegressions(unittest.TestCase):
             self.assertEqual(spec.get("simultaneous_family_size"), family)
             self.assertEqual(spec.get("study_revision"), "2.1")
             self.assertEqual(spec.get("analysis_policy"), "paired-rounds/2.1")
+            self.assertEqual(spec.get("limits", {}).get("command_output_bytes"), 8 * 1024 * 1024)
 
     def test_manifest_family_cannot_be_reduced_to_reported_subset(self):
         with tempfile.TemporaryDirectory() as directory:

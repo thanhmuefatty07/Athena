@@ -1,0 +1,714 @@
+{
+  "schema": "athena-core-decisions/1",
+  "decisions": [
+    {
+      "id": "H01",
+      "owners": [
+        "src/aae.rs"
+      ],
+      "dependencies": [
+        "blake3",
+        "serde",
+        "serde_json"
+      ],
+      "question": "Which serialization, capacity and hashing tuple reduces whole-path cost while preserving AAE/1 and bounded failure behavior?",
+      "alternatives": [
+        "Current frame String plus joined hash",
+        "Bounded direct writer",
+        "Bounded buffered or reusable frame writer",
+        "Incremental or bounded batched hashing"
+      ],
+      "oracle": "Literal frames and parsed fields; exact output/order/hash parity; exact escaped-byte cap including final newline/end frame; oversized public Projection must return the required error.",
+      "closure": "Direct allocation and CPU attribution, complete valid-cell interaction panel, uninstrumented independent export and pipeline confirmation for query/no-query and adverse inputs; every protected metric and required resource gate passes before adoption.",
+      "gaps": [
+        "Protocol2 writer/hash/reserve source comparators and success/rejection cohorts exist; complete cell confirmation is NOT RUN",
+        "Direct allocation attribution and representative independent-domain evidence remain missing"
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/core_probe.rs",
+        "cloud_experiments/research.py"
+      ]
+    },
+    {
+      "id": "H02",
+      "owners": [
+        "src/rank.rs"
+      ],
+      "dependencies": [],
+      "question": "Which token lookup and exact selection algorithm is best for one-shot query workloads?",
+      "alternatives": [
+        "Current HashMap and full sort",
+        "Binary or small-query linear lookup",
+        "Exact partial selection with novelty recovery"
+      ],
+      "oracle": "Independent BM25 numerical examples and corpus calculations; exact document/tie order, Unicode case mapping, repeated-query dedup, zero-score and novelty selection; include positive input and malformed/over-budget contract where introduced.",
+      "closure": "Compare query-length/hit-density/novelty partitions and full query export/pipeline, including all work and cleanup; retain arithmetic/order contract and every protected performance metric.",
+      "gaps": [
+        "Protocol2 lookup/exact-selection comparators and independent query partitions exist; broad release screening/confirmation is NOT RUN",
+        "Local correctness of a composed variant does not settle tail latency or representative relevance",
+        "PLANNED L05: optional CPU-model ranking is a separately versioned quality track requiring an observed defect, independent relevance gold and frozen licensed model; it cannot replace exact-BM25 parity or be inferred from backend microbenchmarks."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/core_probe.rs"
+      ]
+    },
+    {
+      "id": "H03",
+      "owners": [
+        "src/rank.rs",
+        "src/orchestrator.rs"
+      ],
+      "dependencies": [
+        "tokio"
+      ],
+      "question": "When does prepared lexical state repay its construction and retained-memory cost?",
+      "alternatives": [
+        "Independent one-shot ranking",
+        "Bounded prepared state with explicit invalidation"
+      ],
+      "oracle": "Same independent ranking result for every query; a source/tokenizer/policy revision change cannot reuse stale state; eviction/drop returns owned resources.",
+      "closure": "Measure complete build plus 1/2/8/32-query lifetimes and invalidation/drop at the same boundary; report a measured break-even surface and memory bound rather than a universal reuse winner.",
+      "gaps": [
+        "Owned prepared-state prototype and source/policy invalidation exist in the probe only; production consumer integration is missing",
+        "Full measured amortization, retained allocator overhead and eviction behavior remain unverified"
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/core_probe.rs",
+        "cloud_experiments/contenders.py"
+      ]
+    },
+    {
+      "id": "H04",
+      "owners": [
+        "src/projection.rs",
+        "src/arena.rs"
+      ],
+      "dependencies": [
+        "scraper",
+        "html5ever",
+        "bytes",
+        "url"
+      ],
+      "question": "Can a different HTML5 sink or projection pass remove work without changing extracted semantics?",
+      "alternatives": [
+        "Current scraper DOM to arena/chunks",
+        "Same HTML5 tree builder with a specialized sink",
+        "Pass/ownership fusion preserving the current contract",
+        "Streaming extraction in a separately versioned semantic track",
+        "PLANNED L01: Lexbor C through a coarse ABI or isolated worker, compared with the best feasible Rust HTML5 sink at equivalent semantics"
+      ],
+      "oracle": "Reviewed HTML5 repair/entity/reparenting cases and independent expected chunks/links/roles; source order, skipped subtrees, preformatted text and byte/node/link boundaries; compare semantic tracks separately.",
+      "closure": "Profile parser and projection directly; validate each sink operation affecting real HTML5 construction; compare full pipeline and hostile shape/resource behavior on held-out lineage before adopting a semantics-equivalent rival.",
+      "gaps": [
+        "BoundedTreeSink currently wraps scraper::HtmlTreeSink and caps logical DOM nodes; direct-to-arena sink and alternate parser rivals remain unimplemented",
+        "Internal parser allocation attribution and representative cross-domain corpus remain missing",
+        "The current H04/H05/H10 attribute-heavy grid is 1,024/2,048/4,096/8,192 unique attributes per start tag in both native splits, with a literal output oracle. Each fixture is bounded to 4 MiB HTML and 8 MiB JSON, with a 16 MiB aggregate JSON cap enforced by forecast and pre-write admission. One Windows feasibility run at 8,192 attributes completed 250 samples plus 10 warmups in 49.9 seconds without a paired comparison; 16,384/32,768 at that sample shape and a 252,602-attribute single parse exceeded the 180-second timeout. These adversarial results do not establish Linux physical peak memory or a production capacity threshold.",
+        "Pinned html5ever 0.39.0 scans the accumulated tag attributes when checking each new attribute for a duplicate; unique-attribute input therefore has a derived quadratic comparison path. The safe main workload grid stops at 8,192; larger counts require a separate parser/containment comparison and remain outside the main confirmation grid.",
+        "HTML5 parity/rejection has local focused fixtures only; Linux RSS, tokenizer/attribute peak memory, representative conformance/gold adjudication, foreign ownership/failure controls and complete caller-to-output/drop measurement remain unverified",
+        "PLANNED L01 parser adapters and cross-language comparisons are NOT_IMPLEMENTED."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/core_probe.rs"
+      ]
+    },
+    {
+      "id": "H05",
+      "owners": [
+        "src/arena.rs",
+        "src/projection.rs"
+      ],
+      "dependencies": [
+        "bytes",
+        "url"
+      ],
+      "question": "Which arena, text ownership and link data layout fits the observed workload while retaining checked ownership?",
+      "alternatives": [
+        "Current 32-byte Node and decoded-text storage",
+        "Capacity/lifetime reuse with explicit reset",
+        "Alternative layout or link representation justified by profiles"
+      ],
+      "oracle": "Checked parent/child/sibling/offset/range/depth invariants; reset eliminates all prior state; exact ordered unique links and per-owner membership; no cross-request retained content.",
+      "closure": "Bounded state/integer reasoning plus behavioral boundary checks, allocation lifetime and full-path measurement; prove declared layout facts separately from total-process RSS and retain forbid(unsafe_code).",
+      "gaps": [
+        "Fusion and ordered-link lookup rivals exist; full release confirmation is NOT RUN",
+        "Arena/text layout rivals require profile evidence; locality and allocator measurements remain unverified",
+        "PLANNED L01/L04: cross-language buffer/arena ownership, aliasing, release/reset and aggregate retained-memory controls are NOT_IMPLEMENTED; parser input chunking does not enforce DOM peak memory."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/core_probe.rs"
+      ]
+    },
+    {
+      "id": "H06",
+      "owners": [
+        "src/table.rs",
+        "src/projection.rs"
+      ],
+      "dependencies": [],
+      "question": "Which table representation preserves source cells and bounded spans, and what HTML/header integration is still required?",
+      "alternatives": [
+        "Current bounded logical grid",
+        "Alternative sparse intermediate with identical grid output",
+        "Versioned HTML-to-cell/header extraction capability",
+        "PLANNED L04: typed columnar handoff only for an admitted real batch consumer, preserving materialized table output"
+      ],
+      "oracle": "Hand-derived logical cell slots, rowspan=0/group limits, overlap rejection and row/column budget boundaries; literal HTML tables with header/unit/source-locator expectations for the new capability.",
+      "closure": "Keep logical-grid and HTML extraction decisions separate; confirm changed storage end-to-end, including construction and materialization; no HTML extraction claim from Row/Cell-only tests.",
+      "gaps": [
+    "Stage-only DOM-traversal versus CSS-selector HTML table comparator and two literal fixture families are in the research harness; semantic header association/inference and a representative licensed corpus remain NOT_IMPLEMENTED",
+        "F04 cell literals alone cannot establish table task completion or units/locator integration",
+        "PLANNED L04: native/JSON/Arrow comparators and independent schema/null/order/unit/locator/lifecycle controls are NOT_IMPLEMENTED; Arrow C Data is in-process, not a substitute for IPC or HTML extraction."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/core_probe.rs",
+        "cloud_experiments/agent_tasks.json"
+      ]
+    },
+    {
+      "id": "H07",
+      "owners": [
+        "src/network.rs",
+        "src/ip_policy.rs",
+        "src/orchestrator.rs"
+      ],
+      "dependencies": [
+        "reqwest",
+        "url",
+        "bytes",
+        "futures-util"
+      ],
+      "question": "Which validated connection reuse and revalidation design lowers access cost without weakening authorization, peer or freshness boundaries?",
+      "alternatives": [
+        "Current per-fetch client and active source sharing",
+        "Bounded policy-aware client reuse",
+        "Body cache plus actual validator/304 integration",
+        "PLANNED L02: Rust or Node/TypeScript browser controller with equivalent engine, actions, egress and access policy"
+      ],
+      "oracle": "Allowed and denied HTTPS operations with actual peer/origin counters; all resolved addresses checked and pinned; redirects/proxy/internal destinations denied; valid stored body required for 304; revocation and policy changes prevent stale unauthorized reuse.",
+      "closure": "Complete controlled real TLS/DNS/socket/cold-warm-revoked-error paths and service load; account for handshake/origin attempts/bytes, body and cache memory, deadlines and cancellation/drain; all security and protected cost metrics hold.",
+      "gaps": [
+        "Controlled real TLS pool/cache/revalidation contracts exist; production permitted-public DNS/Engine success remains NOT VERIFIED",
+        "Policy-aware pool lifetime and cache controls do not establish deployed HTTP2/3/TTL performance",
+        "PLANNED L02: actual browser controller comparators and redirect/subresource/service-worker/peer egress enforcement are NOT_IMPLEMENTED; controller-stack changes cannot be reported as isolated language speedups."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/service_probe.rs",
+        "cloud_experiments/service_lab.py"
+      ]
+    },
+    {
+      "id": "H08",
+      "owners": [
+        "src/orchestrator.rs",
+        "src/singleflight.rs",
+        "src/network.rs"
+      ],
+      "dependencies": [
+        "tokio"
+      ],
+      "question": "Which admission, worker and flight policy sustains load while preserving bounded queues, sharing identity and worker-drain ownership?",
+      "alternatives": [
+        "Current pending/origin/CPU admission and two active-flight layers",
+        "Bounded scheduler/worker alternatives with identical contracts",
+        "PLANNED L06: Go/JVM broker or worker only after a profile/dependency-backed remaining scheduler cost owner is identified"
+      ],
+      "oracle": "Real synchronized concurrent operations: one active fetch for valid joiners, separate policy/tenant/query identities, cancelled leader/follower recovery, late blocking work retains permits, overload and deadline outcomes observed.",
+      "closure": "Model state transitions and exercise actual runtime/network boundary; measure independent offered arrivals, completions, errors, queue/service/drain latency and retained memory through burst/steady/soak; do not infer capacity from a closed-loop success-only benchmark.",
+      "gaps": [
+        "Finite independent-load and deterministic cancellation/recovery controls exist; soak/deployment SLOs remain NOT VERIFIED",
+        "Linux snapshot003 exposed a leader-cancel schedule defect; snapshot004 revised pending/join controls and17service scenarios passed, but broad offered-load/soak/production success remains NOT VERIFIED",
+        "PLANNED I-LANG-SCHED: bounded cross-runtime IPC/backpressure, total CPU/thread budgets, fairness, worker exit/cancellation and restart controls are NOT_IMPLEMENTED; a worker future timeout does not establish process termination."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/service_probe.rs",
+        "cloud_experiments/service_lab.py"
+      ]
+    },
+    {
+      "id": "H09",
+      "owners": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml"
+      ],
+      "dependencies": [
+        "bytes",
+        "blake3",
+        "rand",
+        "rand_distr",
+        "html5ever",
+        "reqwest",
+        "scraper",
+        "serde",
+        "serde_json",
+        "tokio",
+        "url",
+        "futures-util"
+      ],
+      "question": "For each actual consumer closure, should Athena keep, upgrade, replace or specialize the dependency?",
+      "alternatives": [
+        "Current locked version/features",
+        "Verified compatible upstream candidate tuple",
+        "Thin alternate adapter",
+        "Specialized primitive with a trusted semantic reference",
+        "PLANNED L01-L06: admit exact foreign library/runtime/SDK tuples per actual consumer, with source, ABI, license and target packaging review"
+      ],
+      "oracle": "Version-matched upstream/registry/API identity plus actual consumer tests and negative runtime integration; transitive/features/MSRV/license/advisory changes reviewed; locked build and behavior on the target.",
+      "closure": "Record keep/change/hold per consumer and credible rival with evidence; benchmark hot closures and justify cold-path retention by scope; a metadata/advisory query is neither an implementation comparison nor zero-vulnerability proof.",
+      "gaps": [
+        "Exact baseline/Sonic/Scraper-lean/Sonic+lean lock profiles and feature comparators are implemented; Linux runtime/performance gates for current source remain pending",
+        "The 12-direct-edge dossier and 17 added-package registry/source-manifest/advisory checks are not source-security or production-compatibility proof",
+        "Pinned Cargo metadata has 215 registry packages with nonempty license strings; 45 omit rust_version metadata and three use slash-separated license strings not audited against their license texts. Full transitive MSRV/advisory review, representative licensed domain holdout, alternative HTML5 sink/client adapters and frozen protected performance remain unverified",
+        "PLANNED polyglot candidates have no approved version/lock/ABI or built Athena adapter; upstream documentation blobs are not dependency approval and no hypothetical package is added to the current direct Cargo inventory."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/libraries.py",
+        "cloud_experiments/library_decisions.json",
+        "cloud_experiments/library_candidates.json",
+        "cloud_experiments/locks",
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/research.py"
+      ]
+    },
+    {
+      "id": "H10",
+      "owners": [
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "src/lib.rs"
+      ],
+      "dependencies": [],
+      "question": "Which build/runtime configuration improves the chosen platform without violating portability or defined behavior?",
+      "alternatives": [
+        "Current portable release profile",
+        "Verified LTO/codegen/runtime settings",
+        "Profile-guided build trained on screening only",
+        "Target-specific contender with verified deployment/fallback contract",
+        "PLANNED L05/L06: conditional native/model/runtime thread-budget contenders with the same deployment CPU/RAM quota"
+      ],
+      "oracle": "Same semantic fixtures and target feature checks through actual compiler/runtime; independent holdout for PGO; startup, binary size, peak memory and full-path outcomes included.",
+      "closure": "Keep source/lock fixed while changing one registered build factor, then confirm combined contenders on the declared CPU/service targets; no unsafe policy change or unsupported CPU assumption.",
+      "gaps": [
+        "LTO/codegen/native-CPU comparator definitions exist; all profile tuples have not been built and confirmed",
+        "Allocator/PGO/runtime/hardware rivals and portable deployment validation remain unverified",
+        "PLANNED cross-runtime CPU affinity/quota, native intra/inter-op pools, spinning, JIT/GC startup and held-out contention measurements are NOT_IMPLEMENTED; GPU/training remains DEFERRED."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/contenders.py",
+        "cloud_experiments/research.py"
+      ]
+    },
+    {
+      "id": "H11",
+      "owners": [
+        "src/bandit.rs",
+        "src/orchestrator.rs"
+      ],
+      "dependencies": [
+        "rand",
+        "rand_distr"
+      ],
+      "question": "Which task routing and stopping policy uses only the search/read/render/access actions actually needed?",
+      "alternatives": [
+        "Explainable fixed rules",
+        "Hand-written bounded batched routine",
+        "Model tool loop",
+        "Model-generated bounded workflow"
+      ],
+      "oracle": "Independent task facts/cells/citations and permitted action traces for F01-F08; measure false stop, missing evidence, unnecessary escalation, abstention and all failures under one root budget.",
+      "closure": "Separate routing policy from execution form and primitive versions; validate action eligibility outside the model; independent task/domain confirmation and total task quality/cost required before choosing a policy.",
+      "gaps": [
+        "W0/W2 and explicit W1 adapter exist on synthetic replay cards; live-model attempts returned503/429 without usable quality evidence",
+        "W3 general generated-workflow execution and representative live routing confirmation remain missing",
+        "PLANNED L02/L03: separate routing-policy selection from browser/gateway execution language; preserve stop/escalation decisions, root budgets and independent F01-F08 outcomes across admitted execution forms."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/agent_lab.py",
+        "cloud_experiments/agent_tasks.json"
+      ]
+    },
+    {
+      "id": "H12",
+      "owners": [
+        "src/aae.rs",
+        "src/lib.rs",
+        "src/main.rs"
+      ],
+      "dependencies": [
+        "serde",
+        "serde_json"
+      ],
+      "question": "Which evidence representation and tool/SDK transport minimizes total agent cost while retaining required evidence and ownership?",
+      "alternatives": [
+        "Current complete AAE/1 String",
+        "Versioned compact evidence with bounded expand",
+        "Actual structured tool or MCP consumer",
+        "Direct SDK consumer with equivalent primitives",
+        "PLANNED L03: official Rust and TypeScript MCP SDK gateways over identical Rust primitives, comparing each transport separately",
+        "PLANNED L04: typed-batch handoff when the actual consumer accepts it, accounting for any final JSON conversion"
+      ],
+      "oracle": "Consumer-visible facts, locators, source revision, units/headers, freshness/completeness/errors and allowed expansion; wrong tenant/revision handle denied; actual request/response and usage capture.",
+      "closure": "Count full schema/instruction/wrapper/payload/expansion/final-answer costs, real turns and lifecycle; version new semantics before comparison; full String output is not a streaming latency experiment.",
+      "gaps": [
+        "Native AAE full/compact/expand and scoped-state controls exist; deployed MCP/direct-SDK transport comparison is missing",
+        "True provider token usage/cost and production streaming/RTT remain NOT VERIFIED",
+        "PLANNED L03/L04 adapters are NOT_IMPLEMENTED; negotiated protocol/schema/auth/session/transport, real consumer oracles, complete encode/decode/expansion/token costs and buffer-release controls must precede timing."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/agent_lab.py",
+        "cloud_experiments/core_probe.rs"
+      ]
+    },
+    {
+      "id": "H13",
+      "owners": [
+        "src/main.rs",
+        "src/orchestrator.rs"
+      ],
+      "dependencies": [],
+      "question": "Which eligible real free model and generated-workflow execution form improves Athena tasks within actual quota and sandbox limits?",
+      "alternatives": [
+        "Fixed replay execution as a limited control",
+        "Real model with individual tools",
+        "Real model with generated code and bounded brokered primitives"
+      ],
+      "oracle": "Exact independent task/evidence outcomes and real tool traces; sandbox denies filesystem/credential/metadata/network escapes and drains cancelled work; provider/model/settings/quota/failures captured.",
+      "closure": "Authenticated tool capability is only preflight; select model on screening then freeze independent task trials, count all calls/tokens/retries and require real OS isolation before executing generated code; no paid fallback or self-judged quality.",
+      "gaps": [
+        "Explicit free-provider adapter and denied/failure controls exist; live-model quality remains NOT VERIFIED after503/429",
+        "W3 general generated-code sandbox is NOT_IMPLEMENTED; no untrusted model code is executed",
+        "PLANNED L02/L03 browser/gateway failure, denied tenant/egress and real-model task controls remain unimplemented; local CPU inference L05 is separate from the free-model API quality requirement and does not authorize generated-code execution or training."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/agent_lab.py",
+        "cloud_experiments/agent_tasks.json"
+      ]
+    },
+    {
+      "id": "H14",
+      "owners": [
+        "src/lib.rs",
+        "src/main.rs",
+        "src/orchestrator.rs"
+      ],
+      "dependencies": [],
+      "question": "Which combined core/service architecture is feasible on the declared task, load and deployment envelope?",
+      "alternatives": [
+        "Current native library and bounded single-node path",
+        "Confirmed native tuple in a measured service",
+        "Different topology only when a measured boundary requires it",
+        "PLANNED 19.15: measured Rust plus admitted coarse native kernel, gateway or isolated worker, selected only by complete task and deployment evidence"
+      ],
+      "oracle": "Whole-path task result, permission/freshness/resource invariants, compatibility/recovery and offered-load outcomes; actual cost counters include every attempt and retained state.",
+      "closure": "Confirm actual combined source/lock/build/runtime identity on the deployment envelope with all protected metrics; report conditional breakpoints/Pareto alternatives rather than inventing one architecture for unknown load or trading quality for price.",
+      "gaps": [
+        "Predeclared compatible combined-finalist/native/service gate exists; broad native/system confirmation is NOT RUN",
+        "Deployed topology, successful agent-task cost and end-to-end SLO evidence remain missing",
+        "PLANNED L01-L06 and six I-LANG interactions are design inventory only; adapters, valid-cell executors, non-native collectors/statistics, Linux recovery pilot and a remaining-credit/time forecast are required before a new campaign."
+      ],
+      "implementation_status": "PARTIAL_RESEARCH_HARNESS",
+      "harness": [
+        "cloud_experiments/research.py",
+        "cloud_experiments/service_lab.py"
+      ]
+    }
+  ],
+  "language_panels": [
+    {
+      "id": "L01",
+      "admission": "REQUIRED",
+      "status": "NOT_IMPLEMENTED",
+      "owner_decisions": ["H04", "H05", "H09", "H14"],
+      "interactions": ["I-LANG-PARSE", "I-LANG-SCHED"],
+      "gate": "Pin the Rust HTML path and a feasible C parser adapter; preserve equivalent HTML repair, projection, locator and table behavior; compare complete parse-to-consumer cost and failure ownership against independent gold on Linux.",
+      "evidence_basis": "The repository has a bounded Rust parser path, but no admitted foreign parser adapter, cross-language executor, or Linux peak-memory result."
+    },
+    {
+      "id": "L02",
+      "admission": "REQUIRED",
+      "status": "NOT_IMPLEMENTED",
+      "owner_decisions": ["H07", "H08", "H11", "H13", "H14"],
+      "interactions": ["I-LANG-BROWSER", "I-LANG-SCHED"],
+      "gate": "Run Rust and Node/TypeScript controllers against the same pinned browser, actions, task outcomes, proxy/cache policy and enforced egress boundary; verify denied redirects, subresources and worker traffic.",
+      "evidence_basis": "The current source and research runner have no browser controller comparator or deployed egress broker; a controlled TLS service probe does not exercise browser behavior."
+    },
+    {
+      "id": "L03",
+      "admission": "REQUIRED",
+      "status": "NOT_IMPLEMENTED",
+      "owner_decisions": ["H01", "H08", "H12", "H13", "H14"],
+      "interactions": ["I-LANG-AGENT"],
+      "gate": "Compare Rust and TypeScript MCP gateways on the same negotiated schema, authentication, session/tenant rules, transport, Rust primitives and real consumer tasks; verify ownership, cancellation, replay and complete token/byte costs.",
+      "evidence_basis": "The repository has no implemented MCP gateway SDK adapter or real agent consumer; local replay controls do not establish provider or consumer behavior."
+    },
+    {
+      "id": "L04",
+      "admission": "CONDITIONAL",
+      "status": "NOT_ADMITTED",
+      "owner_decisions": ["H01", "H06", "H12", "H14"],
+      "interactions": ["I-LANG-BATCH"],
+      "gate": "Admit JSON/Arrow typed-batch arms only when a real repeated consumer accepts the typed representation; compare construction, transfer, final conversion, release and interactive latency.",
+      "evidence_basis": "No repeated typed-columnar consumer is present in the current core contract or research runner, so an Arrow conversion benchmark would measure an invented path."
+    },
+    {
+      "id": "L05",
+      "admission": "CONDITIONAL",
+      "status": "NOT_ADMITTED",
+      "owner_decisions": ["H02", "H10", "H11", "H14"],
+      "interactions": ["I-LANG-MODEL"],
+      "gate": "Admit CPU inference only after independent task gold shows a ranking/routing defect, and a frozen model, tokenizer, backend, precision and license fit the declared CPU/RAM envelope.",
+      "evidence_basis": "The repository has no retrieval model or independent relevance gold demonstrating a defect that warrants inference; its exact BM25 track remains the current baseline."
+    },
+    {
+      "id": "L06",
+      "admission": "CONDITIONAL",
+      "status": "NOT_ADMITTED",
+      "owner_decisions": ["H08", "H10", "H14"],
+      "interactions": ["I-LANG-SCHED"],
+      "gate": "Admit a Go/JVM broker or worker only after profiling identifies scheduler/runtime cost as a material remaining task bottleneck; then include process, GC/JIT, thread-budget, cancellation and recovery costs.",
+      "evidence_basis": "No profile currently attributes a material end-to-end cost to Tokio scheduling, and no equivalent Go/JVM service candidate is implemented."
+    }
+  ],
+  "interactions": [
+    {
+      "id": "I-AAE",
+      "decisions": [
+        "H01",
+        "H02",
+        "H12"
+      ],
+      "mechanism": "Serialization, selection, text copies and evidence representation share pipeline work and memory.",
+      "design": "Small valid writer/capacity/hash groups use full factorial; representation is a separate semantic track; freeze whole-path combinations before confirmation."
+    },
+    {
+      "id": "I-RANK",
+      "decisions": [
+        "H02",
+        "H03",
+        "H11"
+      ],
+      "mechanism": "Lookup/selection cost and prepared-state amortization depend on query distribution and routing reuse.",
+      "design": "Cross query length/hit/novelty partitions with one-shot/reuse; include construction/invalidation; no post-hoc dispatch threshold chosen on confirmation."
+    },
+    {
+      "id": "I-PROJECT",
+      "decisions": [
+        "H04",
+        "H05",
+        "H06"
+      ],
+      "mechanism": "HTML5 tree repair, ownership/layout and table extraction can change the same pass and source locators.",
+      "design": "Separate semantics-equivalent and new-capability panels; retain malformed/deep/link/table cases; alias structure and missing cells explicit."
+    },
+    {
+      "id": "I-ACCESS",
+      "decisions": [
+        "H07",
+        "H08",
+        "H11"
+      ],
+      "mechanism": "Pool/cache/flight keys and admission couple origin attempts, freshness, cancellation and contention.",
+      "design": "Real controlled TLS/origin and offered-load panel with cold/warm/revoked/failure paths; all tenant/effective-policy partitions remain protected."
+    },
+    {
+      "id": "I-AGENT",
+      "decisions": [
+        "H11",
+        "H12",
+        "H13"
+      ],
+      "mechanism": "Policy, batching, compact evidence and model capability jointly determine task quality, turns and cost.",
+      "design": "W0/W2 and W1/W3 controls with same primitives/tasks/root budgets; model and task heldout split; generation, tool use and final answer all counted."
+    },
+    {
+      "id": "I-SYSTEM",
+      "decisions": [
+        "H01",
+        "H04",
+        "H07",
+        "H08",
+        "H10",
+        "H14"
+      ],
+      "mechanism": "Native improvements and compiler/runtime settings may move service contention and memory pressure.",
+      "design": "Explore mechanisms and missing higher-order cells before freeze; independently confirm whole combined contenders at declared loads/hosts; do not multiply component speedups."
+    },
+    {
+      "id": "I-HASH-LIBRARY",
+      "decisions": [
+        "H01",
+        "H09"
+      ],
+      "mechanism": "Hash-update batching and BLAKE3 backend selection can change crossover points",
+      "design": "Full 3 backend x 4 update cells; shared macroblocks, exact digest/AAE controls, protected whole export/pipeline confirmation"
+    },
+    {
+      "id": "I-PARSER-LIBRARY",
+      "decisions": [
+        "H04",
+        "H05",
+        "H09"
+      ],
+      "mechanism": "Tendril reference counting and CLI feature closure interact with projection traversal and link lookup",
+      "design": "Full 3 library configurations x 2 projection x 2 link lookup cells; errors retained, canonical tree/AAE and literal limits"
+    },
+    {
+      "id": "I-JSON-LIBRARY",
+      "decisions": [
+        "H01",
+        "H09"
+      ],
+      "mechanism": "JSON library, capacity strategy and hash update pattern share output/allocation costs",
+      "design": "Full 2 serializer x 3 reserve x 4 hash cells for the framed writer only; reject unsupported Sonic streaming composition"
+    },
+    {
+      "id": "I-LIBRARY-SYSTEM",
+      "decisions": [
+        "H01",
+        "H04",
+        "H05",
+        "H09"
+      ],
+      "mechanism": "Individually correct dependency choices can interact in the complete Rust path",
+      "design": "Full 3 BLAKE3 x 3 Scraper x 2 JSON-library cells, then held-out combined architecture with protected metrics; no multiplied speedups"
+    },
+    {
+      "id": "I-JSON-CPU",
+      "decisions": [
+        "H01",
+        "H09",
+        "H10"
+      ],
+      "mechanism": "SIMD serializer performance depends on CPU target settings and requires a same-target baseline",
+      "design": "Full portable/native x serde/Sonic cells, source/lock frozen; host-native scope does not establish deployment portability"
+    },
+    {
+      "id": "I-JSON-PROJECT",
+      "decisions": [
+        "H01",
+        "H04",
+        "H05",
+        "H09"
+      ],
+      "mechanism": "Projection fusion and JSON serialization change shared pipeline allocation and traversal costs; isolated gains need not combine",
+      "design": "Full baseline/fusion/Sonic/fusion+Sonic panel on the declared common parse, serialization, export and pipeline cohorts; exact output/error oracles before timing, then frozen held-out whole-path CPU/RSS confirmation including adverse cohorts"
+    },
+    {
+      "id": "I-QUERY-PROJECT",
+      "decisions": ["H02", "H04", "H05"],
+      "mechanism": "Projection work and layout change cache and allocation state consumed by token lookup and exact selection in the full path.",
+      "design": "Full 3 lookup x 2 exact-selection x 2 projection cells on shared predeclared cohorts; source/oracles before timing, then protected whole-path confirmation."
+    },
+    {
+      "id": "I-COMPILER",
+      "decisions": ["H09", "H10", "H14"],
+      "mechanism": "LTO, codegen units and CPU targets interact through whole-program optimization and code layout; the same source comparator can behave differently.",
+      "design": "Full 3 LTO x 2 codegen-unit x 2 CPU-target cells; capture actual flags, dependency/build/cache cost and deployment portability, with shared semantic and adverse workloads."
+    },
+    {
+      "id": "I-JSON-HASH-CPU",
+      "decisions": ["H01", "H09", "H10"],
+      "mechanism": "Serializer and hash-update costs share memory traffic and native backend/code-generation conditions.",
+      "design": "Full 2 framed serializer x 4 hash-update x 2 CPU-target cells with fixed remaining factors and common macroblocks; retain independent output/cap/error controls."
+    },
+    {
+      "id": "I-NATIVE-CROSS-COVERAGE",
+      "decisions": ["H01", "H02", "H04", "H05", "H09", "H10", "H14"],
+      "mechanism": "Compatible choices across serialization, ranking, projection and compiler/dependency settings can complement or interfere with one another outside isolated owner panels.",
+      "design": "Bounded deterministic mixed-strength covering design: every feasible pair across 13 whole-path axes, eight mechanism triples and one writer/hash/lookup/projection quadruple; explicit incompatible cells and exact coverage validation. A covering array supplies candidate diversity, not unconfounded interaction estimates, global optimality or execution evidence."
+    },
+    {
+      "id": "I-LANG-PARSE",
+      "decisions": [
+        "H04",
+        "H05",
+        "H09",
+        "H14"
+      ],
+      "mechanism": "Parser/backend and ownership/layout change copies, projection/drop cost and pre-quota peak memory.",
+      "design": "PLANNED 19.15: two-factor valid cells with one semantic contract; pinned HTML5/gold outcomes and whole-path confirmation. No native/2 executor yet."
+    },
+    {
+      "id": "I-LANG-BROWSER",
+      "decisions": [
+        "H07",
+        "H08",
+        "H11",
+        "H13",
+        "H14"
+      ],
+      "mechanism": "Controller stack, context reuse and eligible access route share startup, cache/auth state, origin attempts and egress.",
+      "design": "PLANNED 19.15: controller x reuse, then reuse x eligible route on controlled equivalent pages; cache/SW/policy held fixed, crash/cancel/denied-egress controls. No browser executor yet."
+    },
+    {
+      "id": "I-LANG-AGENT",
+      "decisions": [
+        "H01",
+        "H08",
+        "H12",
+        "H13",
+        "H14"
+      ],
+      "mechanism": "Gateway runtime and full/compact evidence jointly determine transport cost, expansion, model turns and task success.",
+      "design": "PLANNED 19.15: Rust/TS x representation within each separately frozen stdio or HTTP panel; same Rust primitives, protocol/schema/auth/session and independent real consumer/task outcomes. No MCP executor yet."
+    },
+    {
+      "id": "I-LANG-BATCH",
+      "decisions": [
+        "H01",
+        "H06",
+        "H12",
+        "H14"
+      ],
+      "mechanism": "Handoff format, batch and retained-buffer lifetime couple conversion, copies, materialization, queue delay and memory.",
+      "design": "PLANNED 19.15: admitted real typed consumer only; valid format x batch/lifetime cells, exact values/schema/units/locators, full conversion and release; C Data in-process and Arrow IPC cross-process are distinct arms. No handoff executor yet."
+    },
+    {
+      "id": "I-LANG-SCHED",
+      "decisions": [
+        "H04",
+        "H07",
+        "H08",
+        "H10",
+        "H14"
+      ],
+      "mechanism": "Foreign worker/native pools compete with Rust admission and can oversubscribe CPU or violate cancellation/fairness ownership.",
+      "design": "PLANNED 19.15: worker/thread budget x independent Rust offered load with equal total resources, actual process-exit/drain and failure controls; L06 runtime only after admission. No cross-runtime executor yet."
+    },
+    {
+      "id": "I-LANG-MODEL",
+      "decisions": [
+        "H02",
+        "H10",
+        "H11",
+        "H14"
+      ],
+      "mechanism": "Conditional CPU-model batching and concurrent task load couple relevance, throughput, batch wait and total runtime memory.",
+      "design": "PLANNED 19.15: admit L05 only with defect/gold/model/CPU-fit evidence, then batch x task-load cells using the same frozen backend/model/tokenizer/precision; preserve BM25 track and count all costs. No CPU-model executor yet."
+    },
+    {
+      "id": "I-HTML-TABLE",
+      "decisions": ["H06", "H09"],
+      "mechanism": "Table and row discovery strategies may change HTML-to-grid cost while nested-table ownership and public span semantics must remain identical.",
+      "design": "One-factor full comparison: current explicit DOM traversal versus precompiled Scraper CSS selectors on the same HTML5 parser, exact literal table/cell/group/span/unit/header-attribute/locator/grid oracle, nested-table ownership and resource caps. This is a stage-only research comparator; no inferred header associations, production integration or whole-path gain is claimed."
+    }
+  ]
+}

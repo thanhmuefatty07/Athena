@@ -213,6 +213,7 @@ impl Engine {
                                 max_html_bytes: policy.max_body_bytes,
                                 max_text_bytes: policy.max_body_bytes,
                                 max_nodes,
+                                max_parser_nodes: max_nodes,
                                 max_words_per_chunk: 1000,
                                 max_link_bytes: policy.max_body_bytes,
                                 ..projection::ParseLimits::default()

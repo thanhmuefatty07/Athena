@@ -15,6 +15,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures-util",
+ "html5ever",
  "rand 0.9.5",
  "rand_distr",
  "reqwest",
