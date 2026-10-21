@@ -74,11 +74,14 @@ class BoundedProcessControls(unittest.TestCase):
             "HTTPS_PROXY": "http://synthetic-proxy.invalid",
             "PATH": os.environ.get("PATH", ""),
         }, clear=False):
-            observed = runner.child_environment()
+            code = "import json,os; print(json.dumps({k:os.environ.get(k) for k in (\"NVIDIA_API_KEY\", \"OPENROUTER_API_KEY\", \"GOOGLE_APPLICATION_CREDENTIALS\", \"KAGGLE_KEY\", \"HTTPS_PROXY\", \"PATH\")}))"
+            result = runner.run_bounded_process([sys.executable, "-B", "-c", code], timeout=2, output_limit=4096)
+            self.assertEqual(result.status, "EXITED")
+            observed = json.loads(result.stdout)
         for key in ("NVIDIA_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
                     "KAGGLE_KEY", "HTTPS_PROXY"):
-            self.assertNotIn(key, observed)
-        self.assertIn("PATH", observed)
+            self.assertIsNone(observed[key])
+        self.assertTrue(observed["PATH"])
 
     def test_experiment_spec_cannot_raise_the_combined_output_hard_cap(self):
         with tempfile.TemporaryDirectory(prefix="athena-output-hard-cap-") as directory:
