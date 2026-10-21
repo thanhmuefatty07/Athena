@@ -3330,10 +3330,21 @@ hay chất lượng xếp hạng; các kết luận ngữ nghĩa ấy vẫn ch�
 nhỏ và các phép kiểm rank riêng.
 
 Kiểm chứng local trên Python 3.11.9: protocol 50/50 pass; năm query/oracle và
-contender-freeze regressions pass; `cargo fmt --all -- --check` pass trên Rust
-1.99.1. Full campaign suite
-đã chạy 79 test nhưng lần chạy đó bị 10 lỗi source-freeze do test Rust tạm thời
-làm đổi byte `src/aae.rs`; byte nguồn đã được khôi phục từ HEAD và ba regression
-liên quan pass lại. Toàn suite trên đúng trạng thái cuối còn chờ exact-head CI.
-Không chạy cloud; target VM, provider, collector độc lập, physical RSS và các
-nghĩa vụ H/I/L còn thiếu vẫn `NOT VERIFIED`.
+contender-freeze regressions pass; full campaign 81 test pass, 4 test được skip
+theo điều kiện Windows; `cargo fmt --all -- --check` pass trên Rust 1.99.1.
+`src/aae.rs` khớp HEAD, không còn chỉnh sửa tạm. GitHub Actions exact-head
+`c01b2f123d91e53e76ed9f0f6602b63b0cfdf17c` chạy thành công: `audit` và
+`linux-platform-gates` đều xanh, gồm cargo-deny, fmt, tests, clippy, release
+build, Linux lifecycle/protocol và xác minh notebook sinh. Workflow đầu tiên
+bắt lỗi notebook Kaggle cũ; đã sinh lại ba notebook và `bundle.json` bằng
+`python -B -m kaggle_experiments.generate_clusters --owner vnthanhphm`. Bundle
+mới: `87f8201bbdcaa56ed0d2e726343c447643b89b39758405dcc7f8fb2544eddc4a`.
+
+Diff security scan `141fe42c-0edc-4e97-9fe2-fe8d83640392` hoàn tất với 0 phát
+hiện trên năm tệp mã/test trong snapshot ban đầu; bản cập nhật tài liệu được
+ghi rõ là ngoài snapshot. Ba notebook được sinh lại từ protocol đã rà soát và
+được cổng drift của CI xác minh. Đây là rà soát diff, không phải audit toàn kho.
+Không chạy Google Cloud/Kaggle benchmark. VM đích, provider thật, collector độc
+lập, physical RSS, xác thực độc lập kết quả và các nghĩa vụ H/I/L còn thiếu vẫn
+`NOT VERIFIED`; dữ liệu hiện tại chưa đủ để tuyên bố đã đạt giới hạn tối ưu của
+core.
