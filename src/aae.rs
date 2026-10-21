@@ -1,7 +1,10 @@
 //! Athena Agentic Envelope v1: versioned JSON Lines, explicit provenance.
 //! Page text is ALWAYS serialized through serde_json rather than interpolated
 //! into control directives, preserving framing against content injection.
-use crate::{projection::Projection, rank::highlight_indices};
+use crate::{
+    projection::Projection,
+    rank::{PreparedRank, highlight_indices, highlight_indices_prepared},
+};
 use serde::Serialize;
 use std::io::{self, BufWriter, Write};
 use url::Url;
@@ -35,6 +38,12 @@ enum Frame<'a> {
 struct Output {
     bytes: Vec<u8>,
     limit: usize,
+}
+
+pub struct PreparedExport<'a> {
+    pub prepared: &'a PreparedRank,
+    pub source_revision: &'a str,
+    pub max_output_bytes: usize,
 }
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -81,6 +90,55 @@ pub fn export_jsonl_with_limit(
     highlight_limit: usize,
     max_output_bytes: usize,
 ) -> Result<String, serde_json::Error> {
+    export_jsonl_inner(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        max_output_bytes,
+        None,
+    )
+}
+
+/// Export using prepared lexical state built for the same immutable projection.
+/// The revision and document count are checked before any query-specific frame
+/// is emitted, so stale state cannot silently change highlights.
+pub fn export_jsonl_with_prepared(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    export: PreparedExport<'_>,
+) -> Result<String, serde_json::Error> {
+    if !export.prepared.matches_revision(export.source_revision)
+        || export.prepared.document_count() != page.chunks.len()
+    {
+        return Err(serde_json::Error::io(io::Error::other(
+            "prepared lexical state does not match projection",
+        )));
+    }
+    export_jsonl_inner(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        export.max_output_bytes,
+        Some(export.prepared),
+    )
+}
+
+fn export_jsonl_inner(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+    prepared: Option<&PreparedRank>,
+) -> Result<String, serde_json::Error> {
     let mut out = BufWriter::with_capacity(
         8192,
         Output {
@@ -118,7 +176,10 @@ pub fn export_jsonl_with_limit(
     )?;
 
     if let Some(q) = query {
-        let highlights = highlight_indices(&page.chunks, q, highlight_limit);
+        let highlights = prepared.map_or_else(
+            || highlight_indices(&page.chunks, q, highlight_limit),
+            |state| highlight_indices_prepared(state, &page.chunks, q, highlight_limit),
+        );
         let mut highlighted = vec![false; page.chunks.len()];
         for &i in &highlights {
             highlighted[i] = true;
@@ -193,7 +254,7 @@ pub fn export_jsonl_with_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::projection::parse_html;
+    use crate::{projection::parse_html, rank::PreparedRank};
     #[test]
     fn output_cap_counts_escaped_bytes_and_end_frame() {
         let base = Url::parse("https://example.org/").unwrap();
@@ -253,5 +314,50 @@ mod tests {
                 .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
         );
         assert_eq!(out.lines().count(), 3);
+    }
+
+    #[test]
+    fn prepared_export_is_byte_identical_and_rejects_stale_state() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let page = parse_html(
+            "<p>Rust rust</p><p>tokio runtime</p><p>TÀI liệu 内容</p>",
+            &base,
+            100,
+            100,
+        )
+        .unwrap();
+        let prepared = PreparedRank::new(&page.chunks, "revision-1", 100).unwrap();
+        let baseline =
+            export_jsonl_with_limit(&page, &base, 17, Some("RUST tokio"), 2, 16 * 1024 * 1024)
+                .unwrap();
+        let prepared_output = export_jsonl_with_prepared(
+            &page,
+            &base,
+            17,
+            Some("RUST tokio"),
+            2,
+            PreparedExport {
+                prepared: &prepared,
+                source_revision: "revision-1",
+                max_output_bytes: 16 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        assert_eq!(prepared_output, baseline);
+        assert!(
+            export_jsonl_with_prepared(
+                &page,
+                &base,
+                17,
+                Some("RUST tokio"),
+                2,
+                PreparedExport {
+                    prepared: &prepared,
+                    source_revision: "revision-2",
+                    max_output_bytes: 16 * 1024 * 1024,
+                },
+            )
+            .is_err()
+        );
     }
 }

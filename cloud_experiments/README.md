@@ -219,6 +219,14 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   novelty, parser/links/Unicode/HTML repair, prepared build/query/invalidation,
   logical grid và output-budget rejection 64 KiB/512 KiB/4 MiB. Seed holdout
   tạo byte mới; chưa có corpus web/domain holdout đại diện production.
+- H03 hiện có `PreparedRank` trong Rust core với token-budget admission, revision
+  check và AAE export byte-parity. `Engine::new` và
+  `with_pending_limit` vẫn giữ đường one-shot; research arm phải chọn rõ
+  `LexicalMode::Prepared`, khi đó state được xây một lần trong source flight
+  rồi dùng lại cho các representation query đang cùng flight. Đây là closure
+  integration/correctness cục bộ, không phải quyết định hiệu năng. Chi phí build,
+  retained allocator overhead, eviction và break-even trên các lượt query tuần
+  tự vẫn phải đo bằng campaign.
 - 33 cohort bổ sung có vai trò cụ thể: giới hạn byte/nodes/link đúng ngưỡng và
   vượt ngưỡng, hash 63/64/65 và 1023/1024/1025 byte, nội dung giả framing,
   Unicode không tự chuẩn hóa, subtree phải bỏ, nearest-owner, query bất lợi

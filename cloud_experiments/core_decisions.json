@@ -73,8 +73,8 @@
       "oracle": "Same independent ranking result for every query; a source/tokenizer/policy revision change cannot reuse stale state; eviction/drop returns owned resources.",
       "closure": "Measure complete build plus 1/2/8/32-query lifetimes and invalidation/drop at the same boundary; report a measured break-even surface and memory bound rather than a universal reuse winner.",
       "gaps": [
-        "Owned prepared-state prototype and source/policy invalidation exist in the probe only; production consumer integration is missing",
-        "Full measured amortization, retained allocator overhead and eviction behavior remain unverified"
+        "Rust rank now has a bounded PreparedRank with explicit revision checks, and Engine source flights feed the prepared state into AAE export; this is locally verified integration, not a performance decision",
+        "Full measured amortization, retained allocator overhead, eviction behavior and sequential consumer break-even remain unverified"
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",
       "harness": [
