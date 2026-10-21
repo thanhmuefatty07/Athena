@@ -201,6 +201,10 @@ def validate_aae(data, source_url, max_bytes=262144):
     if (len(blocks) + len(links) != len(frames) - 2
             or meta.get("total_blocks") != len(blocks) or end.get("block_count") != len(blocks)):
         raise LabError("INVALID_AAE_COUNTS")
+    frame_types = [frame.get("type") for frame in frames[1:-1]]
+    first_link = next((index for index, kind in enumerate(frame_types) if kind == "link"), len(frame_types))
+    if any(kind == "block" for kind in frame_types[first_link:]):
+        raise LabError("INVALID_AAE_ORDER")
     ids = set()
     for block in blocks:
         if (not isinstance(block.get("id"), str) or not _HEX.fullmatch(block["id"])
@@ -214,6 +218,8 @@ def validate_aae(data, source_url, max_bytes=262144):
                 or _url(link.get("url")) != link["url"]):
             raise LabError("INVALID_AAE_LINK")
         link_ids.add(link["id"])
+    if [link["id"] for link in links] != list(range(len(links))):
+        raise LabError("INVALID_AAE_LINK_ORDER")
     if any(type(identity) is not int or identity not in link_ids for block in blocks for identity in block["links"]):
         raise LabError("INVALID_AAE_LINK_OWNER")
     return {"meta": meta, "blocks": blocks, "links": links,

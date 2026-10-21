@@ -283,7 +283,8 @@ stdout+stderr gộp ở 64 KiB mỗi lệnh; thời hạn lần lượt là 5 gi
 actual native AAE producer, full/compact+expand, scope/revision/expiry của handle
 và oracle facts/units/citations độc lập. Native producer timeout và early-leader-exit
 được cô lập trong process-group POSIX; hành vi descendant trên Windows và sandbox
-cross-runtime vẫn chưa được xác minh. W1 chỉ gọi model sau khi chọn rõ model,
+cross-runtime vẫn chưa được xác minh. Consumer AAE cũng từ chối frame xen kẽ và
+link ID không liên tục; content hash BLAKE3 vẫn cần oracle độc lập. W1 chỉ gọi model sau khi chọn rõ model,
 đặt request/token/byte/time cap và truyền cờ `--confirm-provider-no-charge`.
 Cờ này xác nhận operator đã kiểm tra riêng giá của đúng model và tài khoản; runner
 không kiểm chứng được giá NIM. NIM catalog chỉ xác nhận model được liệt kê, nên

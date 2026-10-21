@@ -366,8 +366,8 @@
       "oracle": "Consumer-visible facts, locators, source revision, units/headers, freshness/completeness/errors and allowed expansion; wrong tenant/revision handle denied; actual request/response and usage capture.",
       "closure": "Count full schema/instruction/wrapper/payload/expansion/final-answer costs, real turns and lifecycle; version new semantics before comparison; full String output is not a streaming latency experiment.",
       "gaps": [
-        "Native AAE full/compact/expand and scoped-state controls exist; deployed MCP/direct-SDK transport comparison is missing",
-        "True provider token usage/cost and production streaming/RTT remain NOT VERIFIED",
+        "Native AAE full/compact/expand and scoped-state controls exist; the consumer oracle rejects interleaved frames and non-contiguous link IDs; deployed MCP/direct-SDK transport comparison is missing",
+        "True provider token usage/cost and production streaming/RTT remain NOT VERIFIED; Python does not independently recompute the BLAKE3 content hash",
         "PLANNED L03/L04 adapters are NOT_IMPLEMENTED; negotiated protocol/schema/auth/session/transport, real consumer oracles, complete encode/decode/expansion/token costs and buffer-release controls must precede timing."
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",

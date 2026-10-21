@@ -292,6 +292,26 @@ class DecisionMapControls(unittest.TestCase):
 
 
 class AgentBoundaryControls(unittest.TestCase):
+    def test_aae_consumer_rejects_interleaved_frames(self):
+        valid_meta = {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+                      "content_hash": "0" * 64, "total_blocks": 1}
+        block = {"type": "block", "id": "1" * 64, "role": "paragraph", "text": "fact", "links": [0]}
+        link = {"type": "link", "id": 0, "url": "https://example.org/source"}
+        end = {"type": "end", "block_count": 1}
+        frames = [valid_meta, link, block, end]
+        payload = b"\n".join(json.dumps(frame).encode() for frame in frames) + b"\n"
+        with self.assertRaisesRegex(agent_lab.LabError, "INVALID_AAE_ORDER"):
+            agent_lab.validate_aae(payload, "https://example.org/")
+
+    def test_aae_consumer_rejects_non_contiguous_link_ids(self):
+        valid_meta = {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+                      "content_hash": "0" * 64, "total_blocks": 0}
+        link = {"type": "link", "id": 1, "url": "https://example.org/source"}
+        end = {"type": "end", "block_count": 0}
+        payload = b"\n".join(json.dumps(frame).encode() for frame in (valid_meta, link, end)) + b"\n"
+        with self.assertRaisesRegex(agent_lab.LabError, "INVALID_AAE_LINK_ORDER"):
+            agent_lab.validate_aae(payload, "https://example.org/")
+
     @unittest.skipUnless(os.name == "posix" and Path("/proc").is_dir(),
                          "POSIX producer process-group boundary")
     def test_native_producer_timeout_reaps_descendant_process_group(self):
