@@ -128,7 +128,6 @@ impl PreparedRank {
         std::mem::size_of_val(self)
             + self.source_revision.capacity()
             + self.lengths.capacity() * std::mem::size_of::<usize>()
-            + std::mem::size_of_val(&self.avg_len)
             + self
                 .postings
                 .iter()
@@ -325,5 +324,15 @@ mod tests {
     fn prepared_state_rejects_unbounded_token_budget() {
         let docs = vec![chunk("one two three")];
         assert!(PreparedRank::new(&docs, "source-1", 2).is_err());
+    }
+
+    #[test]
+    fn prepared_retained_bytes_counts_static_fields_once() {
+        let docs = vec![chunk(""), chunk("")];
+        let prepared = PreparedRank::new(&docs, "source-1", 1).unwrap();
+        let expected = std::mem::size_of_val(&prepared)
+            + prepared.source_revision.capacity()
+            + prepared.lengths.capacity() * std::mem::size_of::<usize>();
+        assert_eq!(prepared.retained_bytes(), expected);
     }
 }
