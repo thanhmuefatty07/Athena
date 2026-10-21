@@ -38,7 +38,8 @@ jobs:
           toolchain: '1.99.1'
           components: rustfmt, clippy
       - name: Install numerical test dependency
-        run: timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir --require-hashes --only-binary=:all: -r cloud_experiments/requirements-ci.txt
+        run: |
+          timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir --require-hashes --only-binary=:all: -r cloud_experiments/requirements-ci.txt
       - name: Verify generated Kaggle kernels are current
         shell: bash
         run: |
