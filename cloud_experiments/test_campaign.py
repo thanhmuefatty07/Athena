@@ -1661,6 +1661,15 @@ class ExpandedResearchControls(unittest.TestCase):
             research.campaign.write_json(receipt, payload)
             checked = research.validate_launch_receipt(receipt, spec, budget, requested)
             self.assertEqual(checked["study_id"], design["study_id"])
+            self.assertEqual(checked["spec"]["study_id"], design["study_id"])
+            self.assertEqual(checked["budget"]["deadline_seconds"], 7200)
+            frozen_spec, frozen_budget = spec.read_bytes(), budget.read_bytes()
+            spec.write_bytes(b'{"protocol":"changed"}')
+            budget.write_bytes(b'{"deadline_seconds":1}')
+            self.assertEqual(checked["spec"]["study_id"], design["study_id"])
+            self.assertEqual(checked["budget"]["deadline_seconds"], 7200)
+            spec.write_bytes(frozen_spec)
+            budget.write_bytes(frozen_budget)
             payload["operator_confirmed"] = False
             research.campaign.write_json(receipt, payload)
             with self.assertRaisesRegex(ValueError, "operator confirmation"):

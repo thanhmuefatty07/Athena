@@ -540,6 +540,17 @@ def verify_snapshot(source, design):
     return {name: campaign.canonical_source_bytes((source / name).read_bytes()) for name in design["files"]}
 
 
+def _read_bound_json(path, limit):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Missing or linked launch input")
+    with path.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("Launch input exceeds byte bound")
+    return json.loads(data), hashlib.sha256(data).hexdigest()
+
+
 def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
     """Validate the operator-approved launch intent before creating a run.
 
@@ -558,9 +569,9 @@ def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
                                  or any(not isinstance(value, str) or not value for value in variants)
                                  or len(set(variants)) != len(variants)):
         raise ValueError("Invalid launch request variants")
-    receipt = lifecycle.read_json(receipt_path, 256 * 1024)
-    spec = lifecycle.read_json(spec_path, 16 * 1024 ** 2)
-    budget = lifecycle.read_json(budget_path, 256 * 1024)
+    receipt, receipt_sha256 = _read_bound_json(receipt_path, 256 * 1024)
+    spec, spec_sha256 = _read_bound_json(spec_path, 16 * 1024 ** 2)
+    budget, budget_sha256 = _read_bound_json(budget_path, 256 * 1024)
     if not isinstance(receipt, dict) or not isinstance(spec, dict) or not isinstance(budget, dict):
         raise ValueError("Launch receipt, spec and budget must be JSON objects")
     spec_document = {key: value for key, value in spec.items() if key != "study_id"}
@@ -582,9 +593,9 @@ def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
         raise ValueError("Launch receipt confirmation time is invalid")
     if receipt["study_id"] != spec.get("study_id") or not protocol.is_digest(receipt["study_id"]):
         raise ValueError("Launch receipt study identity mismatch")
-    if protocol.sha256_file(spec_path) != receipt["spec_sha256"] or not protocol.is_digest(receipt["spec_sha256"]):
+    if spec_sha256 != receipt["spec_sha256"] or not protocol.is_digest(receipt["spec_sha256"]):
         raise ValueError("Launch receipt spec hash mismatch")
-    if protocol.sha256_file(budget_path) != receipt["budget_sha256"] or not protocol.is_digest(receipt["budget_sha256"]):
+    if budget_sha256 != receipt["budget_sha256"] or not protocol.is_digest(receipt["budget_sha256"]):
         raise ValueError("Launch receipt budget hash mismatch")
     if receipt["request"] != request:
         raise ValueError("Launch receipt request mismatch")
@@ -610,7 +621,9 @@ def validate_launch_receipt(receipt_path, spec_path, budget_path, request):
     if any(any(secret in item.lower() for secret in ("api_key", "api-key", "token=", "password", "secret="))
            for item in command):
         raise ValueError("Launch receipt command must not contain credentials")
-    return receipt
+    return {**receipt, "receipt": receipt, "spec": spec, "budget": budget,
+            "receipt_sha256": receipt_sha256, "spec_sha256": spec_sha256,
+            "budget_sha256": budget_sha256}
 
 
 def readiness(design, records):
@@ -1702,7 +1715,11 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, launc
     """Run real native comparators; incomplete service/model scopes remain explicit."""
     from cloud_experiments import contenders
     source, output = Path(source).resolve(strict=True), Path(output).resolve()
-    design = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    if budget_path is None:
+        raise ValueError("Pilot and expanded execution require reviewed price/credit/supervisor admission facts")
+    request = {"pilot_only": pilot_only, "variants": variants}
+    binding = validate_launch_receipt(launch_receipt, spec_path, budget_path, request)
+    design = binding["spec"]
     files = verify_snapshot(source, design)
     if ROOT.resolve() != source:
         raise RuntimeError("Execute the delivered frozen harness from its own source root")
@@ -1710,12 +1727,8 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, launc
         raise RuntimeError("Native cloud execution requires Linux/Python3.13; preparation supports3.11+")
     if shutil.disk_usage(output.parent).free < design["limits"]["minimum_free_bytes"]:
         raise RuntimeError("Insufficient free capacity for declared source/cache/evidence")
-    if budget_path is None:
-        raise ValueError("Pilot and expanded execution require reviewed price/credit/supervisor admission facts")
-    request = {"pilot_only": pilot_only, "variants": variants}
-    receipt = validate_launch_receipt(launch_receipt, spec_path, budget_path, request)
-    receipt_sha256 = protocol.sha256_file(launch_receipt)
-    budget = lifecycle.read_json(budget_path)
+    receipt_sha256 = binding["receipt_sha256"]
+    budget = binding["budget"]
     limits = design["limits"]
     physical_memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     enforced_memory = lifecycle.memory_limit_bytes()
@@ -1748,7 +1761,7 @@ def _execute_native_locked(source, spec_path, output, *, budget_path=None, launc
     if work_deadline < 1:
         raise RuntimeError("No supervised time remains after export and shutdown reserves")
     run.bind_deadline(min(limits["wall_seconds"], work_deadline))
-    requested = {**request, "budget_sha256": protocol.sha256_file(budget_path),
+    requested = {**request, "budget_sha256": binding["budget_sha256"],
                  "launch_receipt_sha256": receipt_sha256}
     if run.manifest.get("execution_request", requested) != requested:
         raise ValueError("Resume cannot change planned variants, pilot mode or budget facts")

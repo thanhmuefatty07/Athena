@@ -729,12 +729,12 @@ def supervise(job_path):
     state = read_json(state_path) if state_path.exists() else {"job_digest": digest(job), "attempts": 0}
     if state.get("job_digest") != digest(job):
         raise ValueError("Supervisor job identity changed")
-    design = read_json(job["spec"])
-    research.verify_snapshot(job["source"], design)
     request = {"pilot_only": job.get("pilot_only", False), "variants": job.get("variants")}
-    research.validate_launch_receipt(job["launch_receipt"], job["spec"], job["budget"], request)
-    requested = {**request, "budget_sha256": protocol.sha256_file(job["budget"]),
-                 "launch_receipt_sha256": protocol.sha256_file(job["launch_receipt"])}
+    binding = research.validate_launch_receipt(job["launch_receipt"], job["spec"], job["budget"], request)
+    design = binding["spec"]
+    research.verify_snapshot(job["source"], design)
+    requested = {**request, "budget_sha256": binding["budget_sha256"],
+                 "launch_receipt_sha256": binding["receipt_sha256"]}
     if (output / "manifest.json").exists():
         manifest = read_json(output / "manifest.json", 16 * 1024 ** 2)
         if (manifest.get("bundle_id") != design["study_id"] or manifest.get("spec") != design
