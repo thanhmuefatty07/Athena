@@ -318,9 +318,10 @@ không được xác minh chữ ký GPG tại runtime. Installer chạy qua boun
 runner với timeout 30 phút và tổng stdout/stderr tối đa 2 MiB; timeout hoặc tràn
 đầu ra sẽ dừng tiến trình và không đánh dấu cài thành công. Hai lệnh `apt-get`
 đầu script nay dùng timeout cố định 30 phút và kill-after 30 giây. Sau đó
-bootstrap chọn `python3.13` (hoặc `python3` nếu nó thực sự báo 3.13), kiểm tra
-được `numpy` import trước khi cài Rust, rồi dùng đúng interpreter đó cho toàn bộ
-script; image khác Python 3.13 dừng ngay với mã lỗi riêng. Các bước
+bootstrap chọn `python3.13` hoặc `python3` từ các đường dẫn hệ thống tuyệt đối
+(chỉ khi nó thực sự báo 3.13), kiểm tra được `numpy` import trước khi cài Rust,
+rồi dùng đúng interpreter đó cho toàn bộ script; image khác Python 3.13 dừng
+ngay với mã lỗi riêng. Các bước
 `rustup component add` và kiểm tra compiler sau đó cũng dùng wrapper cùng giới
 hạn. Output của apt chưa có hard cap trước khi Python được cài. Bootstrap Linux
 thật chưa được chạy trên VM.

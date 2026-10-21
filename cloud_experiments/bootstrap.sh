@@ -19,9 +19,9 @@ run_bounded_apt env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-insta
 # with a different `python3` default fails immediately instead of producing a
 # partially prepared VM that can never execute the frozen study.
 PYTHON_BIN=""
-for candidate in python3.13 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)' >/dev/null 2>&1; then
-        PYTHON_BIN="$(command -v "$candidate")"
+for candidate in /usr/bin/python3.13 /usr/local/bin/python3.13 /usr/bin/python3 /usr/local/bin/python3; do
+    if [ -x "$candidate" ] && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 13) else 1)' >/dev/null 2>&1; then
+        PYTHON_BIN="$candidate"
         break
     fi
 done
