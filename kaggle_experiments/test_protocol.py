@@ -65,6 +65,21 @@ def dependency_fixture(root):
 
 
 class BoundedProcessControls(unittest.TestCase):
+    def test_implicit_child_environment_excludes_provider_cloud_and_proxy_credentials(self):
+        with patch.dict(os.environ, {
+            "NVIDIA_API_KEY": "synthetic-nim-key",
+            "OPENROUTER_API_KEY": "synthetic-router-key",
+            "GOOGLE_APPLICATION_CREDENTIALS": "synthetic-gcp-path",
+            "KAGGLE_KEY": "synthetic-kaggle-key",
+            "HTTPS_PROXY": "http://synthetic-proxy.invalid",
+            "PATH": os.environ.get("PATH", ""),
+        }, clear=False):
+            observed = runner.child_environment()
+        for key in ("NVIDIA_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "KAGGLE_KEY", "HTTPS_PROXY"):
+            self.assertNotIn(key, observed)
+        self.assertIn("PATH", observed)
+
     def test_experiment_spec_cannot_raise_the_combined_output_hard_cap(self):
         with tempfile.TemporaryDirectory(prefix="athena-output-hard-cap-") as directory:
             root = Path(directory)

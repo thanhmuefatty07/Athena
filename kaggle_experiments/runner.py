@@ -46,6 +46,26 @@ RUSTUP_TARGETS_BY_MACHINE = {
     "aarch64": "aarch64-unknown-linux-gnu",
 }
 
+# A benchmark child executes repository-controlled build scripts and binaries.
+# Keep toolchain/runtime controls that the runner deliberately owns, but do not
+# pass provider, cloud, notebook or proxy credentials through an implicit
+# ``env=None`` subprocess boundary.
+_CHILD_ENV_KEYS = frozenset({
+    "CARGO_ENCODED_RUSTFLAGS", "CARGO_HOME", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+    "CARGO_PROFILE_RELEASE_LTO", "CARGO_TARGET_DIR", "COMSPEC", "HOME", "LANG",
+    "LC_ALL", "LOGNAME", "PATH", "PATHEXT", "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8",
+    "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "TZ",
+    "USER", "USERNAME", "WINDIR",
+})
+
+
+def child_environment(environment=None):
+    """Return a bounded child environment; explicit environments are preserved."""
+    if environment is not None:
+        return environment
+    return {key: value for key, value in os.environ.items()
+            if key.upper() in _CHILD_ENV_KEYS}
+
 
 class BoundedProcessResult:
     def __init__(self, returncode, stdout, stderr, status, elapsed_ns, output_limit_bytes):
@@ -70,7 +90,7 @@ def run_bounded_process(command, *, timeout, output_limit, cwd=None, input_bytes
     command = [str(value) for value in command]
     process = subprocess.Popen(command, cwd=cwd,
                                stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_environment(env),
                                start_new_session=(os.name == "posix"))
     buffers, captured = [bytearray(), bytearray()], [0]
     lock = threading.Lock()
