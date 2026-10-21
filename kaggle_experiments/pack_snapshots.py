@@ -18,6 +18,7 @@ GIT_COMMAND_TIMEOUT_SECONDS = 30.0
 GIT_ARCHIVE_OUTPUT_BYTES = 16 * 1024 ** 2
 GIT_SOURCE_OUTPUT_BYTES = 8 * 1024 ** 2
 GIT_METADATA_OUTPUT_BYTES = 4096
+_PREPARATION_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "SystemRoot", "SYSTEMROOT", "WINDIR")
 
 
 def digest(value):
@@ -31,7 +32,11 @@ def bounded_command_output(command, *, cwd, timeout_s=GIT_COMMAND_TIMEOUT_SECOND
         raise ValueError("Preparation command timeout is outside its bound")
     if type(max_bytes) is not int or not 0 < max_bytes <= GIT_ARCHIVE_OUTPUT_BYTES:
         raise ValueError("Preparation command output bound is outside its limit")
-    process_kwargs = {"cwd": cwd, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    environment = {key: os.environ[key] for key in _PREPARATION_ENV_KEYS if key in os.environ}
+    environment.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+                        "GIT_OPTIONAL_LOCKS": "0"})
+    process_kwargs = {"cwd": cwd, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+                      "env": environment}
     if os.name == "posix":
         process_kwargs["start_new_session"] = True
     process = subprocess.Popen(command, **process_kwargs)

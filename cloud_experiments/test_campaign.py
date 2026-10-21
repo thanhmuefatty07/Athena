@@ -69,6 +69,19 @@ class CampaignControls(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError, "time bound"):
             pack_snapshots.bounded_command_output(stalled, cwd=Path.cwd(), timeout_s=1, max_bytes=4096)
 
+    def test_source_preparation_command_scrubs_parent_credentials(self):
+        from unittest.mock import patch
+        from kaggle_experiments import pack_snapshots
+        command = [sys.executable, "-c",
+                   "import json, os; print(json.dumps({k: os.environ.get(k) for k in "
+                   "('NVIDIA_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'HTTP_PROXY')}))"]
+        with patch.dict("os.environ", {"NVIDIA_API_KEY": "synthetic", "GOOGLE_APPLICATION_CREDENTIALS": "synthetic",
+                                       "HTTP_PROXY": "synthetic"}):
+            observed = json.loads(pack_snapshots.bounded_command_output(
+                command, cwd=Path.cwd(), max_bytes=4096).decode("utf-8"))
+        self.assertEqual(observed, {"NVIDIA_API_KEY": None, "GOOGLE_APPLICATION_CREDENTIALS": None,
+                                    "HTTP_PROXY": None})
+
     def test_json_commit_preserves_other_staging_and_failed_write_keeps_old_state(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory(prefix="athena-commit-") as folder:
