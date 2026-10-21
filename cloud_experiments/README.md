@@ -541,9 +541,12 @@ trusted-runner assumption; same-OS result authenticity remains NOT VERIFIED.
 
 These controls have local Windows/Python 3.11 coverage, including a killed real
 child, a fresh-process restart and ManagedRun descendant cleanup through a
-Windows Job Object. A Linux descendant-memory/reaping check now exists in the
-lifecycle suite. POSIX lock behavior and the modified native entry point still
-require Linux/Python 3.13 target verification before a large job.
+Windows Job Object. The Windows-specific checks live in
+`test_windows_lifecycle.py` so the Linux no-skip suite does not turn a
+platform-specific check into false platform evidence. A Linux
+descendant-memory/reaping check now exists in the lifecycle suite. POSIX lock
+behavior and the modified native entry point still require Linux/Python 3.13
+target verification before a large job.
 Incomplete timing collection is rejected, not automatically resumed or mixed
 across sessions. Compute windows may be longer or split by phase only after
 actual capacity, credit and supervisor/VM lifetime admission; the global study
