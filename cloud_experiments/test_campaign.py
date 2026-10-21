@@ -1262,6 +1262,8 @@ class ExpandedResearchControls(unittest.TestCase):
                                    spec["source_sha256"], spec["files"], root / "source")
             frozen_files = research.verify_snapshot(root / "source", spec)
             self.assertEqual(spec["holdout_kind"], "independent_seed")
+            self.assertIn("deny.toml", spec["files"])
+            self.assertIn("[licenses]", frozen_files["deny.toml"].decode("utf-8"))
             for split, text in (("screen", "Alpha"), ("confirm", "Beta")):
                 cases = research.study_cases(frozen_files, split)
                 case = next(c for c in cases if c["id"] == "corpus-" + split)

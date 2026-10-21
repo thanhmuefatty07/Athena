@@ -36,6 +36,11 @@ không thay điều kiện xét duyệt kết quả hay cho phép push/merge.
 
 `core_decisions.json` map H01–H14 vào source/direct dependencies, alternatives,
 oracles, closure và gaps; mục 16 của kế hoạch quy định khi nào evidence đủ dùng.
+`deny.toml` là policy dependency duy nhất cho graph Cargo hiện tại; nó ghim
+cargo-deny 0.20.2 qua CI và kiểm tra advisories, bans, licenses và sources.
+Ba biểu thức license cũ dùng dấu `/` được bind bằng các file license đã chuẩn
+hóa và hash xxHash32; kết quả policy không thay thế source-license review hoặc
+MSRV/transitive compatibility review.
 Registry `language_panels` theo dõi riêng L01–L06: L01–L03 hiện là bắt buộc nhưng
 chưa triển khai; L04–L06 đang không được admit có điều kiện và kèm lý do/gate.
 Đây là trạng thái chuẩn bị có máy kiểm tra, không phải executor hay kết quả đo.

@@ -576,7 +576,7 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None):
     from cloud_experiments import contenders, libraries, workloads
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=False)
-    files = campaign.source_files(ROOT, ["src", "tests", "fixtures", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+    files = campaign.source_files(ROOT, ["src", "tests", "fixtures", "Cargo.toml", "Cargo.lock", "deny.toml", "rust-toolchain.toml",
                                        "engineering-constitution.md", "CORE_RESEARCH_PLAN.md", "cloud_experiments",
                                        "kaggle_experiments/protocol.py", "kaggle_experiments/runner.py",
                                        "kaggle_experiments/probe.rs", "kaggle_experiments/test_protocol.py",

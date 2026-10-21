@@ -270,8 +270,8 @@
       "closure": "Record keep/change/hold per consumer and credible rival with evidence; benchmark hot closures and justify cold-path retention by scope; a metadata/advisory query is neither an implementation comparison nor zero-vulnerability proof.",
       "gaps": [
         "Exact baseline/Sonic/Scraper-lean/Sonic+lean lock profiles and feature comparators are implemented; Linux runtime/performance gates for current source remain pending",
-        "The 12-direct-edge dossier and 17 added-package registry/source-manifest/advisory checks are not source-security or production-compatibility proof",
-        "Pinned Cargo metadata has 215 registry packages with nonempty license strings; 45 omit rust_version metadata and three use slash-separated license strings not audited against their license texts. Full transitive MSRV/advisory review, representative licensed domain holdout, alternative HTML5 sink/client adapters and frozen protected performance remain unverified",
+        "The 12-direct-edge dossier and 17 added-package registry/source-manifest checks are not source-security or production-compatibility proof",
+        "A pinned cargo-deny 0.20.2 policy now checks the locked graph's advisories, bans, licenses and sources; the local run passed with three non-SPDX slash expressions bound to exact normalized license-file hashes. The policy is metadata/license-file evidence, not a full source-license audit. Forty-five transitive packages still omit rust_version metadata, so full transitive MSRV closure, representative licensed-domain holdout, alternative HTML5 sink/client adapters and frozen protected performance remain unverified",
         "PLANNED polyglot candidates have no approved version/lock/ABI or built Athena adapter; upstream documentation blobs are not dependency approval and no hypothetical package is added to the current direct Cargo inventory."
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",
