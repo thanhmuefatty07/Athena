@@ -629,6 +629,14 @@ class CorrectnessRegressions(unittest.TestCase):
                                    hashes, destination)
             self.assertEqual((destination / "src/lib.rs").read_bytes(), files["src/lib.rs"])
 
+    def test_snapshot_decode_budget_rejects_oversized_base64_before_archive_open(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, "MAX_SNAPSHOT_ARCHIVE_BYTES", 3):
+            destination = Path(directory) / "source"
+            encoded = base64.b64encode(b"1234").decode()
+            with self.assertRaises(ValueError):
+                runner.unpack_snapshot(encoded, "0" * 64, {}, destination)
+            self.assertFalse(destination.exists())
+
     def test_malformed_timing_packet_cannot_be_recorded(self):
         from types import SimpleNamespace
         packet = {"protocol": protocol.PROTOCOL_VERSION, "stage": "parse", "size": 2,

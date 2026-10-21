@@ -37,6 +37,8 @@ RUSTUP_TOOLCHAIN = "1.99.1"
 MAX_CAPTURED_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_RUSTUP_INSTALLER_BYTES = 64 * 1024 ** 2
 RUSTUP_INSTALLER_CHUNK_BYTES = 64 * 1024
+MAX_SNAPSHOT_ARCHIVE_BYTES = 64 * 1024 ** 2
+MAX_INJECTED_PROBE_BYTES = 8 * 1024 ** 2
 PINNED_RUSTUP_SHA256 = {
     "x86_64-unknown-linux-gnu": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71",
     "aarch64-unknown-linux-gnu": "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433",
@@ -65,6 +67,19 @@ def child_environment(environment=None):
         return environment
     return {key: value for key, value in os.environ.items()
             if key.upper() in _CHILD_ENV_KEYS}
+
+
+def decode_base64_bounded(encoded, maximum, label):
+    """Reject oversized base64 before decoding, and cap the decoded bytes."""
+    if not isinstance(encoded, str):
+        raise ValueError(label + " must be base64 text")
+    maximum_encoded = ((maximum + 2) // 3) * 4
+    if len(encoded) > maximum_encoded:
+        raise ValueError(label + " exceeds the decode budget")
+    raw = base64.b64decode(encoded, validate=True)
+    if len(raw) > maximum:
+        raise ValueError(label + " exceeds the decoded-byte budget")
+    return raw
 
 
 class BoundedProcessResult:
@@ -191,7 +206,7 @@ def run_bounded_process(command, *, timeout, output_limit, cwd=None, input_bytes
 
 def unpack_snapshot(encoded, expected_digest, hashes, destination):
     destination = Path(destination)
-    raw = base64.b64decode(encoded, validate=True)
+    raw = decode_base64_bounded(encoded, MAX_SNAPSHOT_ARCHIVE_BYTES, "Snapshot archive")
     if hashlib.sha256(raw).hexdigest() != expected_digest:
         raise ValueError("Snapshot archive checksum mismatch")
     if destination.exists():
@@ -401,7 +416,8 @@ def materialize(run, payload, temporary):
         unpack_snapshot(payload[arm], payload["metadata"][arm + "_tar_sha256"],
                         payload["metadata"][arm + "_files"], source)
         probe = source / "src" / "bin" / "research_probe.rs"
-        probe.write_bytes(base64.b64decode(payload["probe"]))
+        probe.write_bytes(decode_base64_bounded(payload["probe"], MAX_INJECTED_PROBE_BYTES,
+                                                "Injected probe"))
         snapshots[arm] = str(source)
         run.manifest["snapshots"][arm] = {
             "archive_sha256": payload["metadata"][arm + "_tar_sha256"],
