@@ -133,6 +133,16 @@ class CampaignControls(unittest.TestCase):
                 campaign.write_bytes(target, b"too large", max_bytes=3)
             self.assertEqual(target.read_bytes(), b"old archive")
 
+    def test_research_source_bundle_publication_is_atomic(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory(prefix="athena-research-bundle-") as folder:
+            target = Path(folder) / "bundle"
+            with patch("cloud_experiments.campaign.os.replace", side_effect=OSError("commit interrupted")):
+                with self.assertRaisesRegex(OSError, "commit interrupted"):
+                    research.prepare(target)
+            self.assertFalse((target / "source.tgz").exists())
+            self.assertEqual(list(target.glob(".source.tgz.*.tmp")), [])
+
     def test_source_collector_rejects_oversize_before_allocating_whole_file(self):
         import tracemalloc
         with tempfile.TemporaryDirectory(prefix="athena-source-cap-") as folder:

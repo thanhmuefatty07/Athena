@@ -592,7 +592,8 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None):
     archive = campaign.pack_snapshots.archive_files(files)
     if len(archive) > 16 * 1024 ** 2 or sum(map(len, files.values())) > 16 * 1024 ** 2:
         raise ValueError("Source and corpus exceed bundle admission")
-    (destination / "source.tgz").write_bytes(archive)
+    campaign.write_bytes(destination / "source.tgz", archive,
+                         max_bytes=campaign.pack_snapshots.GIT_ARCHIVE_OUTPUT_BYTES)
     design = manifest_design()
     if wall_seconds is not None:
         if type(wall_seconds) is not int or not 1 <= wall_seconds <= 120 * 86400:
