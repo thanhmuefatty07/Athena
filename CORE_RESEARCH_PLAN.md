@@ -3290,3 +3290,26 @@ chứng đã build hoặc đo toàn bộ variants. `campaign audit-decisions` v�
 `INCOMPLETE` với 40 nghĩa vụ H/I/L. Full security scan, independent collector,
 deployed cloud controls, live provider behavior và L01–L06 vẫn giữ trạng thái
 `NOT VERIFIED`/`NOT_IMPLEMENTED`/`NOT_ADMITTED` tương ứng. Chưa launch cloud.
+
+### 19.35 Khóa oracle độc lập AAE và bootstrap — 21/10/2026
+
+`validate_aae(..., independent_hash=True)` hiện tính lại content hash và từng
+block ID bằng Python `blake3` độc lập với Rust; khi có fixture nguồn, oracle còn
+đối chiếu role/text/link theo đúng thứ tự. Các đường `content_oracles`, deep DOM,
+variant identity và pipeline/export có fixture literal đều đã gọi oracle này.
+Query cases không có `expected_blocks` chỉ được kiểm tra cấu trúc và hash tự
+nhất quán, vì runner chưa có nguồn thứ tự độc lập sau query reorder; boundary đó
+vẫn ghi `NOT VERIFIED`.
+
+CI ghim `blake3==1.0.8` bằng hash. Bootstrap Linux tải wheel `cp313` cho
+`x86_64` hoặc `aarch64` từ đúng `files.pythonhosted.org`, giới hạn 8 MiB/60 giây,
+kiểm SHA-256 trước khi cài offline vào `/opt/athena/python-site`, rồi chạy import
+vector bằng `PYTHONPATH` chỉ tới thư mục vừa cài. Sai kiến trúc, redirect, digest,
+pip, import hoặc giới hạn tiến trình đều dừng bootstrap; wheel không tham gia
+vào vùng đo timing.
+
+Kiểm chứng cục bộ sau thay đổi: protocol 49/49, lifecycle 19/19 (2 skip do
+Windows), campaign 78/78 (4 skip do Windows), `py_compile` và `git diff --check`
+đều pass. Đây là bằng chứng oracle/harness và source identity; Linux bootstrap,
+provider thật, independent collector, physical RSS và quyết định tối ưu toàn cục
+vẫn chưa được xác nhận cho tới khi có receipt cloud riêng.

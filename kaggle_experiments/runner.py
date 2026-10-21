@@ -529,7 +529,7 @@ def content_oracles(run, binary, fixture_dir, include_pre=False):
         path = fixture_dir / (name + ".html")
         path.write_text(html, encoding="utf-8")
         payload = run.run([binary / "athena-core-v2", path, "https://example.org/"], log_output=False)
-        frames = validate_aae(payload, {"blocks": blocks, "links": links})
+        frames = validate_aae(payload, {"blocks": blocks, "links": links}, independent_hash=True)
         expected_hash = probe_json(run, binary, "hash", [block[1] for block in blocks])["hash"]
         if frames[0]["content_hash"] != expected_hash:
             raise ValueError("Joined-text hash oracle failed")
@@ -556,11 +556,12 @@ def verify_variant_identity(run, binaries, fixture_dir):
     path.write_text("<pre>if ready:\n    run()\n    stop()</pre>", encoding="utf-8")
     outputs = [run.run([binaries[arm] / "athena-core-v2", path, "https://example.org/"],
                        log_output=False) for arm in ("baseline", "candidate")]
-    for output in outputs:
-        validate_aae(output)
-    validate_aae(outputs[1], {"blocks": [("preformatted", "if ready:\n    run()\n    stop()", [])]})
     if outputs[0] == outputs[1]:
         raise ValueError("Known source-variant control did not distinguish baseline and candidate")
+    for output in outputs:
+        validate_aae(output)
+    validate_aae(outputs[1], {"blocks": [("preformatted", "if ready:\n    run()\n    stop()", [])]},
+                 independent_hash=True)
     return {arm: hashlib.sha256(output).hexdigest()
             for arm, output in zip(("baseline", "candidate"), outputs)}
 
@@ -670,7 +671,7 @@ def execute_c2(run, snapshots):
         path.write_text("<div>" * depth + f"<p>{text}</p>" + "</div>" * depth, encoding="utf-8")
         output = run.run([binaries["candidate"] / "athena-core-v2", path, "https://example.org/"],
                          log_output=False)
-        validate_aae(output, {"blocks": [("paragraph", text, [])]})
+        validate_aae(output, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
         deep_receipts[str(depth)] = hashlib.sha256(output).hexdigest()
     run.manifest["checks"]["deep_dom"] = {"status": "PASS", "evidence": deep_receipts}
 

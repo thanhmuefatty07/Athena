@@ -112,6 +112,64 @@ class RustupBootstrapControls(unittest.TestCase):
             download.assert_not_called()
 
 
+class AaeOracleBootstrapControls(unittest.TestCase):
+    def test_unsupported_host_architecture_fails_before_download(self):
+        from cloud_experiments import aae_oracle_bootstrap
+
+        with tempfile.TemporaryDirectory(prefix="athena-blake3-arch-") as folder:
+            with patch.object(aae_oracle_bootstrap, "urlopen") as download:
+                with self.assertRaisesRegex(ValueError, "Unsupported Linux architecture"):
+                    aae_oracle_bootstrap.install_oracle(sys.executable, folder, folder, machine="mips64")
+            download.assert_not_called()
+
+    def test_checksum_mismatch_never_reaches_pip(self):
+        import hashlib
+        from io import BytesIO
+        from cloud_experiments import aae_oracle_bootstrap
+
+        wheel = aae_oracle_bootstrap.PINNED_WHEELS["x86_64"]
+        payload = b"untrusted wheel bytes"
+        with tempfile.TemporaryDirectory(prefix="athena-blake3-mismatch-") as folder, \
+                patch.dict(aae_oracle_bootstrap.PINNED_WHEELS,
+                           {"x86_64": {**wheel, "sha256": hashlib.sha256(b"different").hexdigest()}}), \
+                patch.object(aae_oracle_bootstrap, "urlopen", return_value=BytesIO(payload)), \
+                patch.object(aae_oracle_bootstrap, "run_bounded_process") as bounded:
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                aae_oracle_bootstrap.install_oracle(sys.executable, folder, folder, machine="x86_64")
+            bounded.assert_not_called()
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_verified_wheel_uses_bounded_offline_pip_and_verifies_import(self):
+        import hashlib
+        from io import BytesIO
+        from types import SimpleNamespace
+        from cloud_experiments import aae_oracle_bootstrap
+
+        wheel = aae_oracle_bootstrap.PINNED_WHEELS["x86_64"]
+        payload = b"verified wheel bytes"
+        trusted = {**wheel, "sha256": hashlib.sha256(payload).hexdigest()}
+        calls = []
+
+        def bounded(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return SimpleNamespace(status="EXITED", returncode=0, stdout=b"", stderr=b"")
+
+        with tempfile.TemporaryDirectory(prefix="athena-blake3-match-") as folder, \
+                patch.dict(aae_oracle_bootstrap.PINNED_WHEELS, {"x86_64": trusted}), \
+                patch.object(aae_oracle_bootstrap, "urlopen", return_value=BytesIO(payload)), \
+                patch.object(aae_oracle_bootstrap, "run_bounded_process", side_effect=bounded):
+            receipt = aae_oracle_bootstrap.install_oracle(sys.executable, folder, folder, machine="x86_64")
+        self.assertEqual(receipt["sha256"], trusted["sha256"])
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--no-index", calls[0][0])
+        self.assertIn("--target", calls[0][0])
+        self.assertLessEqual(calls[0][1]["timeout"], 300)
+        self.assertLessEqual(calls[0][1]["output_limit"], 2 * 1024 ** 2)
+        self.assertLessEqual(calls[1][1]["timeout"], 30)
+        self.assertEqual(calls[1][1]["env"],
+                         {"PYTHONPATH": folder, "PYTHONDONTWRITEBYTECODE": "1"})
+
+
 class LifecycleControls(unittest.TestCase):
     def test_collection_freezes_nested_caller_binding_before_reuse(self):
         with tempfile.TemporaryDirectory(prefix="athena-binding-owner-") as folder:

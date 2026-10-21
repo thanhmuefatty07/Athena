@@ -12,7 +12,7 @@ run_bounded_command() {
     timeout --kill-after=30s "$COMMAND_TIMEOUT_SECONDS" "$@"
 }
 run_bounded_apt apt-get update
-run_bounded_apt env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential ca-certificates curl git openssl pkg-config python3 python3-numpy time util-linux
+run_bounded_apt env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential ca-certificates curl git openssl pkg-config python3 python3-numpy python3-pip time util-linux
 
 # The native runner deliberately binds scientific evidence to Python 3.13.
 # Select the exact interpreter before installing Rust so a Debian/Ubuntu image
@@ -36,6 +36,9 @@ if ! id athena-research >/dev/null 2>&1; then
 fi
 install -d -m 700 -o athena-research -g athena-research /opt/athena/runs
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+install -d -m 755 /opt/athena/python-site
+"$PYTHON_BIN" "$SCRIPT_DIR/aae_oracle_bootstrap.py"
+PYTHONPATH=/opt/athena/python-site "$PYTHON_BIN" -c 'from blake3 import blake3; assert blake3(b"").hexdigest() == "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"'
 "$PYTHON_BIN" "$SCRIPT_DIR/rustup_bootstrap.py"
 run_bounded_command runuser -u athena-research -- /home/athena-research/.cargo/bin/rustup component add --toolchain 1.99.1 rustfmt clippy
 "$PYTHON_BIN" --version

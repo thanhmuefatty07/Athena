@@ -1,5 +1,5 @@
 {
-  "bundle_id": "eee3cba79f27108f8d332e27c182d03651b957854911b3a3e9a74622c201f211",
+  "bundle_id": "8465ce4d3f9769e9ddfb6874ad58c31c5fcffd328b186e877d7a948facb1c04a",
   "metadata": {
     "protocol": "athena-research/2",
     "baseline_commit": "8de5709e6c47fd57713ca821131579b2e8c25a36",
@@ -477,7 +477,7 @@
       "wall_budget_seconds": 5400
     }
   },
-  "protocol_sha256": "1e0f720b45c3a9d7c599a84824b2c14730c4d41d43926c5d02f043c415c86fb4",
-  "runner_sha256": "f06b4a4df160d90fa4543a2c19a5c27dc093a8ce162eb642f13b1c75c3fd9911",
+  "protocol_sha256": "ffbda863de9957d0fc0744fdf8f8956f086b5b55733299c91b8ab7bb44f1f810",
+  "runner_sha256": "7dfa0facd27322970d2fa030be46b3624a61d115255a0231d8d8c213db6ac974",
   "probe_sha256": "09c4afa8476fad7687e2ec8f319320533329354c7cafb85068852e75770ac967"
 }

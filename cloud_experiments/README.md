@@ -601,3 +601,10 @@ eligibility and the combined campaign executor. Native/service/agent commands
 are separate subset entry points. An installed unit, mapped decision or passing
 subset is not whole-core research evidence. No broad launch is authorized until
 the user approves the exact reviewed launch receipt.
+
+`blake3` Python 1.0.8 cũng được tải theo URL, ABI, kiến trúc và SHA-256 đã
+ghim, cài offline vào `/opt/athena/python-site`, rồi kiểm tra vector rỗng bằng
+đúng Python 3.13. Đây là oracle độc lập cho content hash và block ID của AAE;
+thiếu wheel, sai digest, pip lỗi hoặc import không đúng đều dừng bootstrap.
+Systemd đặt `PYTHONPATH` cố định tới thư mục này; thời gian oracle không đi vào
+vùng đo.

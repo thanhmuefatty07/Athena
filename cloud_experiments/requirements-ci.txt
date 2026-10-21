@@ -1,3 +1,7 @@
 # Python 3.11 on the pinned ubuntu-24.04 x86_64 runner.
 numpy==2.3.3 \
     --hash=sha256:bc92a5dedcc53857249ca51ef29f5e5f2f8c513e22cfb90faeb20343b8c6f7a6
+blake3==1.0.8 \
+    --hash=sha256:c7780666dc6be809b49442d6d5ce06fdbe33024a87560b58471103ec17644682 \
+    --hash=sha256:8f2ef8527a7a8afd99b16997d015851ccc0fe2a409082cebb980af2554e5c74c \
+    --hash=sha256:9a8946cb6b1d2b2096daaaa89856f39887bce2b78503fa31b78173e3a86fa281

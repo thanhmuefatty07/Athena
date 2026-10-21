@@ -1199,7 +1199,14 @@ def _oracles(run, binary, baseline, cases, paths, *, header_mode="explicit"):
         if errors:
             raise ValueError("Independent contract oracle failed: " + case["id"] + ": " + "; ".join(errors))
         if case["stage"] in ("export", "pipeline") and "expected_error" not in case["fixture"]:
-            protocol.validate_aae(actual)
+            expected = None
+            fixture = case["fixture"]
+            if isinstance(fixture, dict) and isinstance(fixture.get("expected_blocks"), list):
+                expected = {"blocks": [(item["role"], item["text"], item.get("links", []))
+                                      for item in fixture["expected_blocks"]],
+                            "links": fixture.get("expected_links", [])}
+            protocol.validate_aae(actual, expected,
+                                  independent_hash=(expected is not None or fixture.get("query") is None))
     # Independent literal/content/math/denial oracles are distinct from baseline parity.
     control_case = {"id": "controls", "stage": "controls"}
     control = json.loads(_invoke(run, binary, control_case, next(iter(paths.values())), 0, None))

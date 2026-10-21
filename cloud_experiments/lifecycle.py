@@ -674,6 +674,7 @@ User=athena-research
 Group=athena-research
 WorkingDirectory={source_path}
 Environment=PATH=/home/athena-research/.cargo/bin:/usr/bin:/bin
+Environment=PYTHONPATH=/opt/athena/python-site
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/usr/bin/python3 -B -m cloud_experiments.lifecycle supervise /opt/athena/active-job.json
 ExecStopPost=/bin/bash {source_path}/cloud_experiments/finish.sh

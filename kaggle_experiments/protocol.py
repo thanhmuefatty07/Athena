@@ -370,7 +370,58 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
     return report
 
 
-def validate_aae(payload, expected=None):
+def _independent_blake3(data):
+    """Hash AAE contract bytes with a separately maintained Python implementation."""
+    try:
+        from blake3 import blake3
+    except ImportError as error:
+        raise ValueError("Independent BLAKE3 oracle is unavailable") from error
+    return blake3(data).hexdigest()
+
+
+def _expected_aae_blocks(expected):
+    if not isinstance(expected, dict) or not isinstance(expected.get("blocks"), list):
+        return None
+    records = []
+    for item in expected["blocks"]:
+        if isinstance(item, (tuple, list)) and len(item) == 3:
+            role, text, links = item
+        elif isinstance(item, dict):
+            role, text, links = item.get("role"), item.get("text"), item.get("links", [])
+        else:
+            raise ValueError("Independent BLAKE3 oracle received malformed expected block")
+        if not isinstance(role, str) or not isinstance(text, str) or not isinstance(links, list):
+            raise ValueError("Independent BLAKE3 oracle received malformed expected block")
+        records.append((role, text, links))
+    return records
+
+
+def _verify_independent_aae_hashes(frames, blocks, expected):
+    expected_blocks = _expected_aae_blocks(expected)
+    if expected_blocks is None:
+        if any(block.get("highlight") for block in blocks):
+            raise ValueError("Independent BLAKE3 oracle needs source-order expected blocks")
+        expected_blocks = [(block["role"], block["text"], block["links"]) for block in blocks]
+    if len(expected_blocks) != len(blocks):
+        raise ValueError("Independent BLAKE3 block oracle mismatch")
+
+    joined = "\n".join(text for _, text, _ in expected_blocks)
+    content_hash = _independent_blake3(joined.encode("utf-8"))
+    if frames[0].get("content_hash") != content_hash:
+        raise ValueError("Independent BLAKE3 content hash oracle mismatch")
+
+    expected_by_id = {}
+    for index, (role, text, links) in enumerate(expected_blocks):
+        block_bytes = role.encode("utf-8") + b"\x00" + text.encode("utf-8") + index.to_bytes(8, "little")
+        expected_by_id[_independent_blake3(block_bytes)] = (role, text, links)
+    if set(expected_by_id) != {block["id"] for block in blocks}:
+        raise ValueError("Independent BLAKE3 block oracle mismatch")
+    for block in blocks:
+        if expected_by_id[block["id"]] != (block["role"], block["text"], block["links"]):
+            raise ValueError("Independent BLAKE3 block oracle mismatch")
+
+
+def validate_aae(payload, expected=None, *, independent_hash=False):
     if not payload.endswith(b"\n"):
         raise ValueError("Missing final JSONL newline")
     frames = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
@@ -408,6 +459,8 @@ def validate_aae(payload, expected=None):
         actual = [(block.get("role"), block["text"], block["links"]) for block in blocks]
         if actual != expected["blocks"] or links != expected.get("links", []):
             raise ValueError("Independent content oracle mismatch")
+    if independent_hash:
+        _verify_independent_aae_hashes(frames, blocks, expected)
     return frames
 
 

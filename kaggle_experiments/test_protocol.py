@@ -698,6 +698,27 @@ class CorrectnessRegressions(unittest.TestCase):
         with self.assertRaises(ValueError):
             protocol.validate_aae(self.envelope("Wrong but valid JSON"), expected)
 
+    def test_independent_aae_blake3_oracle_checks_content_and_block_ids(self):
+        from blake3 import blake3
+
+        text = "Visible"
+        content_hash = blake3(text.encode("utf-8")).hexdigest()
+        block_id = blake3(b"paragraph\x00" + text.encode("utf-8") + (0).to_bytes(8, "little")).hexdigest()
+        frames = [
+            {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+             "content_hash": content_hash, "total_blocks": 1},
+            {"type": "block", "id": block_id, "role": "paragraph", "text": text, "links": []},
+            {"type": "end", "block_count": 1},
+        ]
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames).encode()
+        protocol.validate_aae(payload, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
+
+        tampered = json.loads(json.dumps(frames))
+        tampered[0]["content_hash"] = "0" * 64
+        bad_payload = "".join(json.dumps(frame) + "\n" for frame in tampered).encode()
+        with self.assertRaisesRegex(ValueError, "Independent BLAKE3"):
+            protocol.validate_aae(bad_payload, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
+
     def test_parity_divergence_and_missing_end_are_fatal(self):
         with self.assertRaises(ValueError):
             protocol.require_parity(self.envelope(), self.envelope("Different"))
