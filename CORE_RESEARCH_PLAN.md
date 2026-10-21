@@ -3216,3 +3216,28 @@ pd-balanced, có external NAT và route `0.0.0.0/0`; scheduling hiện có
 `terminationTime` đã quá khứ. Đây là facts để receipt xử lý, không phải bằng
 chứng deadline/egress/billing enforcement. Không có cloud mutation trong lần
 recheck này.
+
+### 19.33 Linux gate đã chạy và khóa lại source identity — 21/10/2026
+
+Các câu trong mục 19.31 nói workflow chưa được chạy đã được thay thế bởi kết
+quả thực tế. Nhánh review `codex/core-research-gate-20261021`, commit
+`8436eedf66ef2a545198bc9b0eaee8f439bafc13`, đã chạy GitHub Actions run
+`39527366080`: cả `audit` và `linux-platform-gates` đều `success`. Ba boundary
+POSIX trước đây bị skip trên Windows đều chạy thật và pass; harness Linux có
+74 test, `OK`, không skip; bước `research prepare` trên Ubuntu cũng pass với
+protocol `athena-core-research/2` và wall bound 1.500 giây. Artifact được giữ
+14 ngày để đối chiếu.
+
+Run đầu tiên (`39526615389`) phát hiện archive local Windows và archive Ubuntu
+khác byte vì CRLF/LF ở sáu tệp văn bản. Không chấp nhận run đó làm source
+identity. `campaign.source_files()` và `research.verify_snapshot()` hiện
+chuẩn hóa UTF-8 text về LF trước khi băm/đóng gói; regression kiểm tra CRLF và
+LF cho cùng digest. Run sau xác nhận archive local và Ubuntu khớp hoàn toàn;
+receipt/hash chính xác nằm trong checkpoint riêng và PR. Đây là sửa tính tái
+lập bằng chứng, không phải tối ưu hiệu suất runtime.
+
+Kết quả này đóng Linux process/lifecycle gate và cross-platform source identity
+gate cho source đã review. Nó không đóng các nghĩa vụ H/I/L của inventory, không
+chứng minh RSS/throughput production, browser/MCP/provider thật, billing/egress
+enforcement, independent collector hay NIM. Các phần đó chỉ được admission sau
+receipt cloud riêng; không được suy ra từ màu xanh của Actions.
