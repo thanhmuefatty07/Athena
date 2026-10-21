@@ -2,7 +2,7 @@
 
 Ngày: 18/10/2026. Trạng thái: **kế hoạch nghiên cứu; chưa chốt triển khai**.
 
-**Cập nhật thực thi 20/10/2026 — mục 19.19:** matrix hiện sinh 203 biến thể,
+**Cập nhật thực thi 21/10/2026 — mục 19.19:** matrix hiện sinh 204 biến thể,
 12 panel factorial whole-path cộng một panel H06 stage-only; mixed-strength
 coverage vẫn là 823 tuple trên 13 axis. Source composition và correctness có
 bằng chứng theo phạm vi đã chạy, chưa phải build/benchmark toàn matrix.
@@ -2415,7 +2415,7 @@ Mỗi factorial giữ đủ các **valid cells**, kể cả cell không có gain
 có lý do trước timing. Chọn batch/concurrency từ workload và capacity pilot,
 freeze trước confirmation; không ép batch lớn để giấu độ trễ. Screening có thể
 loại arm sai hoặc futility theo rule đã khóa, nhưng không bỏ cell cần để suy
-interaction. Không nhân 104 native variants hiện có với mọi runtime/model.
+interaction. Không nhân 204 native variants hiện có với mọi runtime/model.
 Sau screening, chọn compatible finalists theo owner rồi **đo lại tổ hợp thật**
 trong H14; không cộng phần trăm cải thiện của những kernel độc lập.
 
@@ -2475,8 +2475,9 @@ Cargo inventory. Giữ `forbid(unsafe_code)` ở core; foreign boundary cần ow
 review riêng. Current SDK documentation chỉ là nguồn thiết kế, chưa là approved
 package version cho Athena.
 
-**Readiness hiện tại:** native/2 vẫn có 104 variants và 9 native interaction
-panels; L01–L06 chưa có adapters/executors được triển khai bởi cập nhật này.
+**Readiness hiện tại:** native/2 hiện có 204 variants và 13 native interaction
+panels (12 whole-path và một H06 stage-only); L01–L06 chưa có
+adapters/executors được triển khai bởi cập nhật này.
 `audit-decisions` chỉ kiểm inventory/graph; `MAPPED` không xác nhận coverage ngữ
 nghĩa, execution hoặc đủ evidence. Không đổi native variant IDs/manifest để làm
 những nhánh chưa có code trông như runnable. Campaign mới cần manifest/executor/
@@ -2577,7 +2578,7 @@ thực tế cho thấy thiếu.
 
 Mục tiêu vẫn là toàn core theo 19.13–19.15. **Chưa có executable toàn core**:
 `run-native` chỉ chạy native panel; service và agent có entry point riêng. Không
-dùng một native job, 104 tên variant, số test PASS hoặc inventory MAPPED để tuyên
+dùng một native job, 204 tên variant, số test PASS hoặc inventory MAPPED để tuyên
 bố đã đo đủ H01–H14, L01–L06 hay sẵn sàng chốt toàn bộ core. Các mục chưa có
 adapter/oracle là blocker chuẩn bị, không phải kết quả benchmark HOLD của một
 ứng viên đã được chạy.
@@ -2687,7 +2688,7 @@ chỉ ra phạm vi được đo, phương án đã loại và câu hỏi còn m�
 
 **Thiết kế native đã có code:** `experimental_design.py` giữ 12 panel factorial
 whole-path, một panel H06 stage-only, và sinh covering design hỗn hợp theo
-registry source hiện có. Có 203 variant; mixed-strength gồm 96 cell phủ 823
+registry source hiện có. Có 204 variant; mixed-strength gồm 96 cell phủ 823
 tuple hợp lệ: mọi cặp giữa 13 axis, tám nhóm ba yếu tố và một nhóm writer × hash
 × lookup × projection bốn yếu tố. Ba tuple
 serializer Sonic với writer direct/buffered/reuse bị loại có lý do adapter;
@@ -2795,13 +2796,14 @@ với inference/alpha allocation phù hợp. Dừng khi mỗi obligation trong s
 bằng chứng chấp nhận/bác bỏ đủ nhạy, hoặc không còn probe cụ thể có khả năng đổi
 quyết định trong budget. Chưa đạt điều đó không được ghi SATURATED/DECIDED.
 
-**Trạng thái tại preflight:** source composition của 202 variant đã được kiểm. Snapshot
+**Trạng thái tại preflight:** source composition của 203 variant trước khi thêm
+H06 selector đã được kiểm. Snapshot
 preflight `6d7c2d363fdb` chạy 113 test Linux không skip, 3 composer checks,
 43 Rust tests baseline, format/Clippy/release và shell syntax; tất cả exit 0.
 Local Windows có 113 test, 3 platform skips. Đã quan sát và sửa lỗi spawn budget
 qua regression có assertion RED; giữ ghi nhận lượt local thất bại trước sửa.
 Một catalog GET NIM HTTP 200, không inference hoặc benchmark mới. Linux pass
-này chỉ xác nhận harness/current baseline; build/oracle/performance của cả 203
+này chỉ xác nhận harness/current baseline; build/oracle/performance của cả 204
 variant chưa chạy. VM đã dừng, source/cache/evidence giữ lại. Cập nhật kết quả bằng
 văn bản này xảy ra sau freeze preflight; campaign thật cần source/spec mới.
 Các executor/oracle/corpus/model/system obligation trong
@@ -2812,7 +2814,7 @@ H06 và hai fixture HTML table. Local Rust all-targets tests (51 cases), Clippy,
 materialization gate và Python campaign suite (53 tests, 2 platform skips) pass
 trên checkout hiện tại. Cả release baseline lẫn selector-factor build đều pass;
 hai fixture H06 cho output byte-identical và cùng pass literal gold. Đây là
-local harness/correctness evidence; Linux target, full 203-variant execution,
+local harness/correctness evidence; Linux target, full 204-variant execution,
 representative corpus, C/browser/MCP/model/service integration và performance
 benchmark chưa được xác nhận. Full campaign tiếp tục HOLD, VM đang dừng; chỉ
 chuẩn bị launch receipt sau khi closure thực tế được hoàn tất.
@@ -2837,7 +2839,7 @@ The AAE writer contender transformations now remove unused `BufWriter` imports
 for direct/reuse writers and remove the unused baseline `Output` type for reuse.
 Four direct/reuse × hash/reserve representative transformed crates pass local
 Rust 1.99.1 Clippy with warnings denied. This repairs the reproduced lint gate;
-it does not establish all 203 contender builds or Linux-target build behavior.
+it does not establish all 204 contender builds or Linux-target build behavior.
 No provider request or cloud/Kaggle benchmark ran for this update. Whole-core
 readiness remains HOLD until the non-admitted executors, independent oracles,
 representative corpus, target-host recovery/resource/cost evidence, and complete
@@ -3241,3 +3243,24 @@ gate cho source đã review. Nó không đóng các nghĩa vụ H/I/L của inve
 chứng minh RSS/throughput production, browser/MCP/provider thật, billing/egress
 enforcement, independent collector hay NIM. Các phần đó chỉ được admission sau
 receipt cloud riêng; không được suy ra từ màu xanh của Actions.
+
+### 19.34 Cập nhật prelaunch hiện hành — bounded decode và matrix identity — 21/10/2026
+
+Sau 19.33, runner Kaggle đóng thêm hai ranh giới tài nguyên có thể thực thi
+trước khi chạy cloud: child process không kế thừa credential/provider/cloud/proxy
+environment ngoài allowlist, và snapshot/probe base64 bị chặn trước lẫn sau giải
+mã. Regression local hiện có 45 test; Actions run `39532749778` trên commit
+`04c6e2d8dcf7a205700f801f7e94cce012681a55` đạt `audit=success` và
+`linux-platform-gates=success`, Linux harness 76/76 `OK`, không skip. Archive
+Ubuntu trùng byte với bản prepare cùng commit, 472.887 bytes, SHA-256
+`e67786e43e88f812eabca2cf50a22b18ef16e059fcc4487d8862f0e4e5becbe8`.
+
+Việc rederive `experimental_design.native_design()` hiện cho **204 variants**,
+12 whole-path panels và một panel H06 stage-only, 823/823 tuple hợp lệ; các số
+104/202/203 trong những đoạn lịch sử trước là snapshot cũ và không phải matrix
+hiện hành. Đây chỉ là identity/coverage của thiết kế hữu hạn, không phải bằng
+chứng đã build hoặc đo toàn bộ variants. `campaign audit-decisions` vẫn trả
+`MAPPED` với `decision_sufficiency=NOT_EVALUATED`; `research inventory` vẫn
+`INCOMPLETE` với 40 nghĩa vụ H/I/L. Full security scan, independent collector,
+deployed cloud controls, live provider behavior và L01–L06 vẫn giữ trạng thái
+`NOT VERIFIED`/`NOT_IMPLEMENTED`/`NOT_ADMITTED` tương ứng. Chưa launch cloud.

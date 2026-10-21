@@ -10,18 +10,19 @@ Phần bổ sung **CPU-first / phối hợp ngôn ngữ** nằm ở
 L01 parser C/Rust, L02 browser controller, L03 Rust/TypeScript MCP/SDK;
 L04 typed-batch handoff, L05 model inference CPU và L06 service runtime chỉ
 admit khi có consumer/profile/gold phù hợp. Đây là thiết kế, **chưa có executor
-cho L01–L06**; native/2 hiện sinh 203 variants, 12 whole-path factorial panels,
+cho L01–L06**; native/2 hiện sinh 204 variants, 12 whole-path factorial panels,
 một panel H06 stage-only và mixed-strength coverage trên 13 whole-path factors
 (kế hoạch 19.19). GPU/training/index vẫn
 deferred. Sáu interaction thiết kế `I-LANG-*` trong decision map chưa là cells
 được native runner thực thi. Giữ đầy đủ H01–H14 và các capability còn thiếu.
 Không dùng `MAPPED` làm readiness; phải triển khai adapter/oracle/collector,
-Linux gates và pilot recovery/cost trước campaign mới. Lượt mới nhất chỉ chạy
-bounded Linux preflight trên source đã khóa: 113 tests không skip, 3 composer
-checks, 43 Rust baseline tests và format/Clippy/release/shell gates; một lần
-đọc catalog NIM HTTP 200, không benchmark hay inference. VM đã được
-dừng, disk/evidence/cache được giữ lại. Dự trù 48–96 giờ cũ cần reforecast sau
-pilot cho scope bổ sung.
+Linux gates và pilot recovery/cost trước campaign mới. Gate Linux hiện hành
+chạy 76/76 test không skip; Actions audit đồng thời đạt Rust fmt/test/Clippy/
+release build. Hai resource-bound regressions mới và source archive được
+đối chiếu trên commit reviewed; đây là prelaunch evidence, chưa phải benchmark
+toàn matrix, provider inference hay production readiness. VM đã được dừng,
+disk/evidence/cache được giữ lại. Dự trù 48–96 giờ cũ cần reforecast sau pilot
+cho scope bổ sung.
 
 Đây là runner nghiên cứu riêng, không thay protocol Kaggle 2.1 và không tự sửa
 core production. `CORE_RESEARCH_PLAN.md` mục 9–13 vẫn là hợp đồng tổng thể.
@@ -182,7 +183,7 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
 
 ### Nội dung đã triển khai và giới hạn
 
-- Sinh 203 variants: 202 cấu hình trước đó và một H06 CSS-selector comparator.
+- Sinh 204 variants: 203 cấu hình trước đó và một H06 CSS-selector comparator.
   Gồm I-AAE 48 cell (writer × hash × reserve), I-RANK
   6 cell (lookup × selection), I-PROJECT 4 cell (fusion × link lookup), cùng
   prepared state, logical table và build factors. Thêm I-HASH-LIBRARY 12,
@@ -192,7 +193,7 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   thành số binary. `experimental_design.py` còn chọn 96 cell có bao phủ đầy đủ
   823 tuple hợp lệ: mọi cặp trên 13 axis, tám nhóm ba yếu tố có cơ chế và một
   nhóm writer/hash/lookup/projection bốn yếu tố. Ba tuple Sonic/streaming không
-  tương thích được ghi rõ. 202 cell trước đó đã qua kiểm phép biến đổi source;
+  tương thích được ghi rõ. 203 cell trước đó đã qua kiểm phép biến đổi source;
   H06 selector arm là stage-only trên cùng parser/grid và được nối vào build,
   oracle, fixture và cohort. Parser DOM-node cap nay được kiểm trước mỗi lần
   `HtmlTreeSink` cấp node; sau khi chạm ngưỡng, runner ngừng đưa các chunk HTML
