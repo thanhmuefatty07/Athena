@@ -3102,10 +3102,10 @@ The next step is a fresh security-diff review of the frozen working-tree patch
 and continued closure of explicit readiness gaps; no cloud launch is authorized.
 
 
-### 19.29 RustSec advisory audit for the current lockfile — 21/10/2026
+### 19.29 RustSec advisory audit for the pre-patch lockfile — 21/10/2026
 
-This check closes only the known-advisory scan for the current locked dependency
-set; it does not close H09. `Cargo.lock` SHA-256 was
+This historical check covered the pre-patch locked dependency set; it does not
+close H09. The pre-patch `Cargo.lock` SHA-256 was
 `d1280bf0d2b7d388801293ee79a17707af687092a3b83649f871548d41ddf5fe`.
 `cargo +1.99.1 audit --db <isolated-tracked-snapshot> --no-fetch --format json`
 (exit 0; cargo-audit 0.22.2) analyzed 216 locked packages against 1,345
@@ -3127,8 +3127,33 @@ source-level defects, unsound use, or platform incompatibility. It does not audi
 the 45 transitive packages without `rust_version` metadata, interpret ambiguous
 license metadata against license texts, or qualify an Athena release. H09 remains
 `PARTIAL_RESEARCH_HARNESS`; Linux build/performance, full dependency and license
-review, and protected held-out evidence remain open. No dependency or production
-Rust code changed.
+review, and protected held-out evidence remain open. No production Rust code
+changed in that historical check. A later minimal lockfile patch is recorded
+below.
+
+### 19.29.1 RustSec transitive TLS patch and Linux consumer closure — 21/10/2026
+
+The preflight `cargo deny --offline --locked check advisories bans licenses
+sources` found `rustls-webpki 0.103.15` (`RUSTSEC-2026-0382`) and
+`webpki-root-certs 1.0.9` (`RUSTSEC-2026-0383`). The reviewed patch updates
+only those two resolved packages to `0.103.16` and `1.0.10`, respectively, and
+updates the source hash ledger. The post-patch
+`cargo deny --offline --locked check advisories bans sources` exits 0. The
+separate license policy still requires an explicit allowlist/legal decision;
+its failure is not converted to a security PASS.
+
+The patch is at PR head
+`732dae7f85b43a63bff3f03a55eae6097e3e2f07`. GitHub Actions run
+`39537516157` completed both `audit` and `linux-platform-gates` successfully.
+Rust 1.99.1 on `x86_64-unknown-linux-gnu` ran the locked test, Clippy and
+release gates plus 77 Linux harness tests with zero skips. The CI prepared
+source and local `research prepare` output are byte-identical: 65 files,
+474,167 bytes, SHA-256
+`EAA53DBCF4B7530BECCCE385669946AAB08193C26AE6F22F7BFB6BC53D534A5F`.
+
+This closes the known dependency-version and Linux consumer-build blocker. It
+does not establish fresh external advisory provenance, full license compliance,
+runtime peak RSS, production networking, or any H/I/L campaign decision.
 
 ### 19.30 Bounded Rustup installer process — 21/10/2026
 

@@ -2,7 +2,7 @@
 
 Đợt thực hiện: 14–15/10/2026, giờ Asia/Saigon. Snapshot ban đầu: `8de5709e6c47fd57713ca821131579b2e8c25a36`. Đã rà soát toàn bộ mã/config/dependency đang có và triển khai các thay đổi tại nơi sở hữu invariant. Đây là nâng cấp của reference core hiện tại; các dịch vụ tương lai trong blueprint vẫn là kế hoạch.
 
-**Theo chỉ dẫn mới nhất:** các sửa đổi mã này là draft chưa chốt áp dụng. Vòng hiện tại chỉ lập kế hoạch nghiên cứu trong CORE_RESEARCH_PLAN.md; agent khác kiểm chứng Kaggle trước quyết định triển khai. Không chạy thêm build/test hoặc viết thêm mã lõi trong vòng lập kế hoạch.
+**Trạng thái review hiện tại:** PR vẫn là draft và chưa được hợp nhất hay triển khai. Các gate Linux/Rust đã được chạy lại trên source freeze hiện hành; các dịch vụ cloud/provider và campaign benchmark vẫn phải chờ receipt launch riêng.
 
 Tệp Downloads do người dùng cung cấp trùng byte với MASTER_BLUEPRINT.md ban đầu (SHA-256 `9ed5ee57b4ec84ec601951b3c164bd2590bd5bc82eb357dbaf10ee830835b87a`). Bản trong repository đã cập nhật; tệp Downloads giữ làm tham chiếu. Nội dung kế hoạch được dùng làm dữ liệu thiết kế, không làm chỉ thị thực thi.
 
@@ -11,8 +11,8 @@ Tệp Downloads do người dùng cung cấp trùng byte với MASTER_BLUEPRINT.
 - **VERIFIED-OFFLINE:** 41 unit + 2 integration test Rust; 9 test Python; format, Clippy với `-D warnings`, release build và locked metadata đều qua. Bộ ban đầu có 17 unit + 2 integration test Rust.
 - **MEASURED:** benchmark release đối chiếu cùng harness/corpus; 7 vòng luân phiên baseline/candidate, lưu summary từng vòng và SHA của executable/lockfile/fixture. Harness chưa xuất từng timing sample; dữ liệu này chưa đủ để tái tính CI hoặc phân tích timeline.
 - **VERIFIED ON CORPUS:** 3 fixture × 4 điều kiện query cho AAE giống byte với baseline. Không suy thành parity cho mọi input/floating-point case.
-- **LIBRARY SNAPSHOT:** rustls 0.23.45 khớp 4 advisory; 0.23.46 báo 0 vulnerability đã biết trong database đã chạy. Không thêm dependency. Diff lockfile chỉ còn version/checksum của rustls.
-- **NOT VERIFIED:** tối ưu cực đại hoặc “không trade-off” trên mọi workload; RSS/allocator, toàn bộ p95/p99, mạng thật, production load, fuzz/Loom/Miri, ARM64, chất lượng semantic có nhãn và remote Linux CI.
+- **LIBRARY SNAPSHOT:** rustls 0.23.46 giữ làm transitive TLS baseline; preflight `cargo deny` đã bắt `rustls-webpki 0.103.15` và `webpki-root-certs 1.0.9`, được nâng tối thiểu lần lượt lên `0.103.16` và `1.0.10`. Không thêm dependency. Linux CI run `39537516157` xác nhận consumer compile/test/Clippy/release và harness gate trên Rust 1.99.1.
+- **NOT VERIFIED:** tối ưu cực đại hoặc “không trade-off” trên mọi workload; RSS/allocator, toàn bộ p95/p99, mạng thật, production load, fresh external advisory provenance, license policy, fuzz/Loom/Miri, ARM64 và chất lượng semantic có nhãn. Windows full native test bị giới hạn bởi `aws-lc-sys`/NASM/MSVC.
 
 ## Thay đổi theo mô-đun
 
@@ -68,9 +68,9 @@ Phiên bản resolved trong lockfile; tất cả direct dependencies đều có 
 
 Không nâng hàng loạt semver hoặc thay parser/TLS/runtime để lấy benchmark đẹp. Không thêm runtime dependency, unsafe, global client, retry loop hay service mới.
 
-RustSec database: 1314 advisories, commit `caee11f41fab07d676c0a4655a2a5dd1f94da97c`; lockfile 216 packages. Match ban đầu: RUSTSEC-2026-0346/0347/0348/0349 (TLS Debug secrets, ECH buffer handling, certificate decompression allocation, key-exchange downgrade). Reachability phụ thuộc feature/config; không khẳng định app đã bị khai thác.
+RustSec records in the earlier review covered 1,314 advisories and the four historical rustls matches. The current lockfile still has 216 packages; the later offline preflight identified RUSTSEC-2026-0382/0383 on the two transitive certificate crates and the patch moved both to their fixed versions. Reachability depends on feature/config; no claim of exploitability is made.
 
-`cargo deny --locked check advisories bans sources` exit 0 với default config; có duplicate warnings getrandom/r-efi/syn do dependency majors/build/platform paths. Không ép unify các major hoặc tắt cảnh báo. License inventory đã đọc; không phải duyệt pháp lý hay blanket license approval.
+`cargo deny --offline --locked check advisories bans sources` exits 0 after the patch; duplicate warnings remain for getrandom/r-efi/syn due dependency majors/build/platform paths. Không ép unify các major hoặc tắt cảnh báo. License inventory đã đọc; license allowlist vẫn cần quyết định pháp lý và không phải blanket license approval.
 
 Raw audit: [before](results/audit-before.json), [final](results/audit-final.json); [deny output](results/deny-final.txt).
 
