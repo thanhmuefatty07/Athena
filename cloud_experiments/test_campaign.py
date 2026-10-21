@@ -419,6 +419,80 @@ class AgentBoundaryControls(unittest.TestCase):
                              if line.startswith("State:"))
                 self.assertIn("Z", state, "descendant must not remain runnable")
 
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object boundary")
+    def test_native_producer_parent_exit_reaps_descendant_job(self):
+        """A Windows producer job must own descendants after leader exit."""
+        with tempfile.TemporaryDirectory(prefix="athena-producer-job-") as folder:
+            root = Path(folder)
+            marker = root / "descendant.pid"
+            descendant = (
+                "import os,sys,time;from pathlib import Path;"
+                "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
+                "time.sleep(.3)"
+            )
+            self.assertEqual(
+                agent_lab._bounded_process(
+                    [sys.executable, "-B", "-c", parent, descendant, str(marker)],
+                    timeout_s=2,
+                    max_bytes=4096,
+                    cwd=root,
+                ),
+                b"",
+            )
+            self.assertTrue(marker.exists(), "child must reach the leader-exit boundary")
+            deadline = time.monotonic() + 3
+            child_pid = int(marker.read_text())
+            while time.monotonic() < deadline:
+                probe = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, check=False,
+                )
+                if f'"{child_pid}"' not in probe.stdout:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("descendant must not remain running after producer leader exit")
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object boundary")
+    def test_native_producer_timeout_reaps_descendant_job(self):
+        """A Windows producer timeout must terminate the complete job tree."""
+        with tempfile.TemporaryDirectory(prefix="athena-producer-job-timeout-") as folder:
+            root = Path(folder)
+            marker = root / "descendant.pid"
+            descendant = (
+                "import os,sys,time;from pathlib import Path;"
+                "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
+            )
+            parent = (
+                "import subprocess,sys,time;"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
+                "time.sleep(30)"
+            )
+            with self.assertRaisesRegex(agent_lab.LabError, "PRODUCER_TIMEOUT"):
+                agent_lab._bounded_process(
+                    [sys.executable, "-B", "-c", parent, descendant, str(marker)],
+                    timeout_s=1,
+                    max_bytes=4096,
+                    cwd=root,
+                )
+            self.assertTrue(marker.exists(), "child must reach the timeout boundary")
+            child_pid = int(marker.read_text())
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                probe = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {child_pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, check=False,
+                )
+                if f'"{child_pid}"' not in probe.stdout:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("descendant must not remain running after producer timeout")
+
     def test_provider_boundary_requires_the_unmodified_default_transport(self):
         from datetime import datetime, timezone
         from cloud_experiments.nim import NimClient, NimConfig

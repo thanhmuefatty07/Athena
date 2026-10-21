@@ -3172,7 +3172,8 @@ also exercises a real sleeping child and verifies `TIMEOUT` plus a reaped child.
 Controlled RED reproduced the previous direct-launch path: the bounded helper was
 not called and the mocked timeout/output failures were incorrectly accepted as
 success. Focused GREEN passed on Windows/Python 3.11.9 (5 tests). This does not
-verify POSIX process-group termination on the cloud image. The preceding
+verify POSIX process-group and Windows Job Object termination on the target
+image. The preceding
 `apt-get update` and `apt-get install` now share a fixed 30-minute GNU `timeout`
 with a 30-second kill-after grace period. The later `rustup component add` and
 compiler-version probe use the same bounded command wrapper, so a successful

@@ -283,8 +283,9 @@ stdout+stderr gộp ở 64 KiB mỗi lệnh; thời hạn lần lượt là 5 gi
 `agent_lab.py` và `agent_tasks.json` chứa F01–F08, W0 rules/W2 batching,
 actual native AAE producer, full/compact+expand, scope/revision/expiry của handle
 và oracle facts/units/citations độc lập. Native producer timeout và early-leader-exit
-được cô lập trong process-group POSIX; hành vi descendant trên Windows và sandbox
-cross-runtime vẫn chưa được xác minh. Consumer AAE cũng từ chối frame xen kẽ và
+được cô lập trong process-group POSIX; Windows dùng Job Object với
+`KILL_ON_JOB_CLOSE` và đã có hai regression boundary trên host phát triển. Hành vi
+trên target cloud, sandbox và cross-runtime vẫn chưa được xác minh. Consumer AAE cũng từ chối frame xen kẽ và
 link ID không liên tục; content hash BLAKE3 vẫn cần oracle độc lập. W1 chỉ gọi model sau khi chọn rõ model,
 đặt request/token/byte/time cap và truyền cờ `--confirm-provider-no-charge`.
 Cờ này xác nhận operator đã kiểm tra riêng giá của đúng model và tài khoản; runner

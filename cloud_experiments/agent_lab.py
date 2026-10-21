@@ -227,6 +227,12 @@ def validate_aae(data, source_url, max_bytes=262144):
 
 
 def _bounded_process(command, timeout_s, max_bytes, cwd):
+    windows_job = None
+    if os.name == "nt":
+        try:
+            windows_job = _WindowsJobObject()
+        except OSError as exc:
+            raise LabError("PRODUCER_JOB_SETUP") from exc
     options = {}
     if os.name == "posix":
         # A native producer is an untrusted boundary. Give it a private
@@ -235,13 +241,27 @@ def _bounded_process(command, timeout_s, max_bytes, cwd):
         options["start_new_session"] = True
     elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
         options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, cwd=cwd,
-                               env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, **options)
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, cwd=cwd,
+                                   env={"LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}, **options)
+        if windows_job is not None:
+            try:
+                windows_job.assign(process._handle)
+            except OSError as exc:
+                process.kill()
+                process.wait(timeout=5)
+                raise LabError("PRODUCER_JOB_ASSIGNMENT") from exc
+    except Exception:
+        if windows_job is not None:
+            windows_job.close()
+        raise
 
     def terminate():
         try:
-            if os.name == "posix":
+            if windows_job is not None:
+                windows_job.terminate()
+            elif os.name == "posix":
                 # The leader may already have exited while a descendant still
                 # owns stdout/stderr; kill the group regardless of leader state.
                 os.killpg(process.pid, signal.SIGKILL)
@@ -280,20 +300,30 @@ def _bounded_process(command, timeout_s, max_bytes, cwd):
             process.wait(timeout=5)
         for thread in threads:
             thread.join(timeout=5)
+        if windows_job is not None:
+            windows_job.close()
         raise LabError("PRODUCER_TIMEOUT") from exc
+    except BaseException:
+        if windows_job is not None:
+            windows_job.close()
+        raise
     finally:
         # The overflow path can terminate from a drain thread before wait()
         # returns; repeat the group kill defensively for the process boundary.
         terminate()
-    for thread in threads:
-        thread.join(timeout=5)
-    if any(thread.is_alive() for thread in threads):
-        raise LabError("PRODUCER_DRAIN_INCOMPLETE")
-    if overflow.is_set():
-        raise LabError("PRODUCER_BYTE_LIMIT")
-    if code:
-        raise LabError("PRODUCER_EXIT", str(code) + ":stderr_sha256=" + hashlib.sha256(buffers[1]).hexdigest())
-    return bytes(buffers[0])
+    try:
+        for thread in threads:
+            thread.join(timeout=5)
+        if any(thread.is_alive() for thread in threads):
+            raise LabError("PRODUCER_DRAIN_INCOMPLETE")
+        if overflow.is_set():
+            raise LabError("PRODUCER_BYTE_LIMIT")
+        if code:
+            raise LabError("PRODUCER_EXIT", str(code) + ":stderr_sha256=" + hashlib.sha256(buffers[1]).hexdigest())
+        return bytes(buffers[0])
+    finally:
+        if windows_job is not None:
+            windows_job.close()
 
 
 class RustProbeProducer:
@@ -342,6 +372,89 @@ class RustProbeProducer:
                 "boundary": "ACTUAL_CONFIGURED_NATIVE_AAE", "aae": data.decode("utf-8"),
                 "links": [link["url"] for link in parsed["links"]],
                 "hash_gate": parsed["content_hash_validation"]}
+
+
+class _WindowsJobObject:
+    """Kill-on-close process container for the native producer boundary."""
+
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+    def __init__(self):
+        if os.name != "nt":
+            raise OSError("Windows Job Objects are unavailable")
+        import ctypes
+        from ctypes import wintypes
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                ("PerJobUserTimeLimit", ctypes.c_longlong),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateJobObjectW
+        create.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        create.restype = wintypes.HANDLE
+        set_information = kernel32.SetInformationJobObject
+        set_information.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        set_information.restype = wintypes.BOOL
+        self._assign = kernel32.AssignProcessToJobObject
+        self._assign.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        self._assign.restype = wintypes.BOOL
+        self._terminate = kernel32.TerminateJobObject
+        self._terminate.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        self._terminate.restype = wintypes.BOOL
+        self._close = kernel32.CloseHandle
+        self._close.argtypes = [wintypes.HANDLE]
+        self._close.restype = wintypes.BOOL
+        self._handle = create(None, None)
+        if not self._handle:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW")
+        info = ExtendedLimitInformation()
+        info.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not set_information(self._handle, self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                               ctypes.byref(info), ctypes.sizeof(info)):
+            error = ctypes.get_last_error()
+            self._close(self._handle)
+            self._handle = None
+            raise OSError(error, "SetInformationJobObject")
+        self._ctypes = ctypes
+
+    def assign(self, process_handle):
+        if not self._handle or not self._assign(self._handle, process_handle):
+            raise OSError(self._ctypes.get_last_error(), "AssignProcessToJobObject")
+
+    def terminate(self):
+        if self._handle:
+            self._terminate(self._handle, 1)
+
+    def close(self):
+        if self._handle:
+            self._close(self._handle)
+            self._handle = None
 
 
 class EvidenceTransport:

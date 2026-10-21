@@ -229,7 +229,7 @@
       "gaps": [
         "Finite independent-load and deterministic cancellation/recovery controls exist; soak/deployment SLOs remain NOT VERIFIED",
         "Linux snapshot003 exposed a leader-cancel schedule defect; snapshot004 revised pending/join controls and17service scenarios passed, but broad offered-load/soak/production success remains NOT VERIFIED",
-        "Native producer timeout and early-leader-exit paths now kill a private POSIX process group with focused regression coverage; Windows descendant behavior, bounded cross-runtime IPC/backpressure, total CPU/thread budgets, fairness, worker restart and deployed recovery remain NOT_IMPLEMENTED/NOT_VERIFIED."
+        "Native producer timeout and early-leader-exit paths now kill a private POSIX process group and a Windows Job Object with focused regression coverage; target-host behavior, bounded cross-runtime IPC/backpressure, total CPU/thread budgets, fairness, worker restart and deployed recovery remain NOT_IMPLEMENTED/NOT_VERIFIED."
       ],
       "implementation_status": "PARTIAL_RESEARCH_HARNESS",
       "harness": [
