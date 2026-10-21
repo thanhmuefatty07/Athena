@@ -383,16 +383,30 @@ def _expected_aae_blocks(expected):
     if not isinstance(expected, dict) or not isinstance(expected.get("blocks"), list):
         return None
     records = []
+    explicit_source_indices = []
     for item in expected["blocks"]:
         if isinstance(item, (tuple, list)) and len(item) == 3:
             role, text, links = item
+            source_index = None
         elif isinstance(item, dict):
             role, text, links = item.get("role"), item.get("text"), item.get("links", [])
+            source_index = item.get("source_index")
         else:
             raise ValueError("Independent BLAKE3 oracle received malformed expected block")
         if not isinstance(role, str) or not isinstance(text, str) or not isinstance(links, list):
             raise ValueError("Independent BLAKE3 oracle received malformed expected block")
-        records.append((role, text, links))
+        if source_index is not None and (type(source_index) is not int or source_index < 0):
+            raise ValueError("Independent BLAKE3 oracle received invalid source block index")
+        explicit_source_indices.append(source_index is not None)
+        records.append((role, text, links, source_index))
+    if any(explicit_source_indices) and not all(explicit_source_indices):
+        raise ValueError("Independent BLAKE3 oracle needs source indices for every expected block")
+    if all(explicit_source_indices):
+        source_indices = [record[3] for record in records]
+        if sorted(source_indices) != list(range(len(records))):
+            raise ValueError("Independent BLAKE3 oracle source indices must be a permutation")
+    else:
+        records = [(role, text, links, index) for index, (role, text, links, _) in enumerate(records)]
     return records
 
 
@@ -401,23 +415,26 @@ def _verify_independent_aae_hashes(frames, blocks, expected):
     if expected_blocks is None:
         if any(block.get("highlight") for block in blocks):
             raise ValueError("Independent BLAKE3 oracle needs source-order expected blocks")
-        expected_blocks = [(block["role"], block["text"], block["links"]) for block in blocks]
+        expected_blocks = [(block["role"], block["text"], block["links"], index)
+                           for index, block in enumerate(blocks)]
     if len(expected_blocks) != len(blocks):
         raise ValueError("Independent BLAKE3 block oracle mismatch")
 
-    joined = "\n".join(text for _, text, _ in expected_blocks)
+    source_order_blocks = sorted(expected_blocks, key=lambda record: record[3])
+    joined = "\n".join(text for _, text, _, _ in source_order_blocks)
     content_hash = _independent_blake3(joined.encode("utf-8"))
     if frames[0].get("content_hash") != content_hash:
         raise ValueError("Independent BLAKE3 content hash oracle mismatch")
 
     expected_by_id = {}
-    for index, (role, text, links) in enumerate(expected_blocks):
-        block_bytes = role.encode("utf-8") + b"\x00" + text.encode("utf-8") + index.to_bytes(8, "little")
-        expected_by_id[_independent_blake3(block_bytes)] = (role, text, links)
+    for role, text, links, source_index in expected_blocks:
+        block_bytes = (role.encode("utf-8") + b"\x00" + text.encode("utf-8")
+                       + source_index.to_bytes(8, "little"))
+        expected_by_id[_independent_blake3(block_bytes)] = (role, text, links, source_index)
     if set(expected_by_id) != {block["id"] for block in blocks}:
         raise ValueError("Independent BLAKE3 block oracle mismatch")
     for block in blocks:
-        if expected_by_id[block["id"]] != (block["role"], block["text"], block["links"]):
+        if expected_by_id[block["id"]][:3] != (block["role"], block["text"], block["links"]):
             raise ValueError("Independent BLAKE3 block oracle mismatch")
 
 
@@ -457,8 +474,15 @@ def validate_aae(payload, expected=None, *, independent_hash=False):
             raise ValueError("Repeated link within owner")
     if expected is not None:
         actual = [(block.get("role"), block["text"], block["links"]) for block in blocks]
-        if actual != expected["blocks"] or links != expected.get("links", []):
+        expected_blocks = _expected_aae_blocks(expected)
+        if (expected_blocks is None
+                or actual != [(role, text, block_links) for role, text, block_links, _ in expected_blocks]
+                or links != expected.get("links", [])):
             raise ValueError("Independent content oracle mismatch")
+        for block, expected_block in zip(blocks, expected["blocks"]):
+            if (isinstance(expected_block, dict) and "expected_highlight" in expected_block
+                    and block.get("highlight") is not expected_block["expected_highlight"]):
+                raise ValueError("Independent highlight oracle mismatch")
     if independent_hash:
         _verify_independent_aae_hashes(frames, blocks, expected)
     return frames

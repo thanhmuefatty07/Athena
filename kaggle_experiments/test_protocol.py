@@ -719,6 +719,48 @@ class CorrectnessRegressions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Independent BLAKE3"):
             protocol.validate_aae(bad_payload, {"blocks": [("paragraph", text, [])]}, independent_hash=True)
 
+    def test_independent_aae_oracle_reconstructs_source_order_after_query_reordering(self):
+        from blake3 import blake3
+
+        source_blocks = [
+            {"role": "paragraph", "text": "background", "links": [], "source_index": 0},
+            {"role": "paragraph", "text": "term0", "links": [], "source_index": 1},
+            {"role": "paragraph", "text": "term0 term0 term0 term0 term0", "links": [], "source_index": 2},
+        ]
+        output_blocks = [source_blocks[2], source_blocks[0], source_blocks[1]]
+        content_hash = blake3("\n".join(block["text"] for block in source_blocks).encode("utf-8")).hexdigest()
+        frames = [
+            {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+             "content_hash": content_hash, "total_blocks": 3},
+        ]
+        for block in output_blocks:
+            block_id = blake3(
+                block["role"].encode("utf-8") + b"\x00" + block["text"].encode("utf-8")
+                + block["source_index"].to_bytes(8, "little")
+            ).hexdigest()
+            frames.append({"type": "block", "id": block_id, "role": block["role"],
+                           "text": block["text"], "links": block["links"],
+                           "highlight": block["source_index"] == 2})
+        frames.append({"type": "end", "block_count": 3})
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames).encode("utf-8")
+        expected = {"blocks": output_blocks, "links": []}
+
+        protocol.validate_aae(payload, expected, independent_hash=True)
+
+        tampered = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+        tampered[1]["id"] = blake3(
+            tampered[1]["role"].encode("utf-8") + b"\x00" + tampered[1]["text"].encode("utf-8")
+            + (0).to_bytes(8, "little")
+        ).hexdigest()
+        bad_payload = "".join(json.dumps(frame) + "\n" for frame in tampered).encode("utf-8")
+        with self.assertRaisesRegex(ValueError, "Independent BLAKE3"):
+            protocol.validate_aae(bad_payload, expected, independent_hash=True)
+
+        malformed_expected = json.loads(json.dumps(expected))
+        malformed_expected["blocks"][2]["source_index"] = 0
+        with self.assertRaisesRegex(ValueError, "source indices must be a permutation"):
+            protocol.validate_aae(payload, malformed_expected, independent_hash=True)
+
     def test_parity_divergence_and_missing_end_are_fatal(self):
         with self.assertRaises(ValueError):
             protocol.require_parity(self.envelope(), self.envelope("Different"))

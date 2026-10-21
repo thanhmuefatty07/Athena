@@ -3313,3 +3313,27 @@ Windows), campaign 78/78 (4 skip do Windows), `py_compile` và `git diff --check
 đều pass. Đây là bằng chứng oracle/harness và source identity; Linux bootstrap,
 provider thật, independent collector, physical RSS và quyết định tối ưu toàn cục
 vẫn chưa được xác nhận cho tới khi có receipt cloud riêng.
+
+### 19.36 Literal oracle cho query reorder — 22/10/2026
+
+Fixture `expected_blocks` có thể khai báo `source_index` theo vị trí gốc và
+`expected_highlight` theo kết quả query. Oracle yêu cầu các chỉ số nguồn tạo
+thành hoán vị đầy đủ `0..n-1`, tính content hash theo thứ tự nguồn, tính block ID
+theo chỉ số nguồn, rồi đối chiếu thứ tự đầu ra và cờ highlight độc lập. Năm ca
+query nhỏ trong workload native hiện có literal quan sát: miss, query
+lặp/khác hoa thường, không có token, Unicode và xếp hạng làm đổi thứ tự block.
+Query cases lớn không có literal block list được đối chiếu thêm với export
+no-query của cùng binary: Python kiểm lại hash/ID theo thứ tự nguồn, membership,
+link catalog, giới hạn/cách xếp cờ highlight và thứ tự ổn định của phần còn lại.
+Đây là kiểm tra nhất quán giữa hai mode, không phải oracle độc lập cho text parser
+hay chất lượng xếp hạng; các kết luận ngữ nghĩa ấy vẫn chỉ có ở fixture literal
+nhỏ và các phép kiểm rank riêng.
+
+Kiểm chứng local trên Python 3.11.9: protocol 50/50 pass; năm query/oracle và
+contender-freeze regressions pass; `cargo fmt --all -- --check` pass trên Rust
+1.99.1. Full campaign suite
+đã chạy 79 test nhưng lần chạy đó bị 10 lỗi source-freeze do test Rust tạm thời
+làm đổi byte `src/aae.rs`; byte nguồn đã được khôi phục từ HEAD và ba regression
+liên quan pass lại. Toàn suite trên đúng trạng thái cuối còn chờ exact-head CI.
+Không chạy cloud; target VM, provider, collector độc lập, physical RSS và các
+nghĩa vụ H/I/L còn thiếu vẫn `NOT VERIFIED`.

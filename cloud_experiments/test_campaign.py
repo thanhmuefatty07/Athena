@@ -1740,6 +1740,122 @@ class ExpandedResearchControls(unittest.TestCase):
         fragment_frames[2]["url"] = "https://example.org/a"
         self.assertTrue(workloads.envelope_errors(encode(fragment_frames), resolved))
 
+    def test_query_reorder_fixture_binds_output_order_to_original_block_indices(self):
+        from blake3 import blake3
+        from cloud_experiments import workloads
+        from kaggle_experiments import protocol
+
+        case = next(item for item in workloads.native_cases("screen") if item["id"] == "query-reorder")
+        fixture = case["fixture"]
+        expected_blocks = fixture["expected_blocks"]
+        self.assertEqual(fixture["query"], "term0")
+        self.assertEqual([block["source_index"] for block in expected_blocks], [2, 0, 1])
+
+        source_blocks = sorted(expected_blocks, key=lambda block: block["source_index"])
+        content_hash = blake3("\n".join(block["text"] for block in source_blocks).encode("utf-8")).hexdigest()
+        frames = [{"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+                   "content_hash": content_hash, "total_blocks": len(expected_blocks)}]
+        for block in expected_blocks:
+            block_id = blake3(block["role"].encode("utf-8") + b"\x00" + block["text"].encode("utf-8")
+                              + block["source_index"].to_bytes(8, "little")).hexdigest()
+            frames.append({"type": "block", "id": block_id, "role": block["role"],
+                           "text": block["text"], "links": block.get("links", []),
+                           "highlight": block["source_index"] == 2})
+        frames.append({"type": "end", "block_count": len(expected_blocks)})
+        payload = "".join(json.dumps(frame) + "\n" for frame in frames).encode("utf-8")
+
+        self.assertEqual(workloads.envelope_errors(payload, fixture), [])
+        protocol.validate_aae(payload, {"blocks": expected_blocks, "links": []}, independent_hash=True)
+
+        tampered_frames = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+        tampered_frames[1]["highlight"] = False
+        tampered_payload = "".join(json.dumps(frame) + "\n" for frame in tampered_frames).encode("utf-8")
+        self.assertIn("Literal query-highlight result differs", workloads.envelope_errors(tampered_payload, fixture))
+        with self.assertRaisesRegex(ValueError, "Independent highlight oracle"):
+            protocol.validate_aae(tampered_payload, {"blocks": expected_blocks, "links": []}, independent_hash=True)
+
+    def test_queryless_source_order_oracle_checks_large_query_output_and_cleans_scratch(self):
+        from blake3 import blake3
+        from kaggle_experiments import protocol
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="athena-query-oracle-test-") as folder:
+            root = Path(folder)
+            input_path = root / "query.json"
+            input_path.write_text(json.dumps({"html": "<p>first</p><p>second</p>", "query": "second",
+                                              "highlight_limit": 1}), encoding="utf-8")
+            source_texts = ["first", "second"]
+            source_hash = blake3("\n".join(source_texts).encode("utf-8")).hexdigest()
+
+            def block(text, source_index, highlighted):
+                block_id = blake3(b"paragraph\x00" + text.encode("utf-8")
+                                  + source_index.to_bytes(8, "little")).hexdigest()
+                return {"type": "block", "id": block_id, "role": "paragraph", "text": text,
+                        "links": [], "highlight": highlighted}
+
+            def envelope(blocks):
+                frames = [{"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+                           "content_hash": source_hash, "total_blocks": len(blocks)}, *blocks,
+                          {"type": "end", "block_count": len(blocks)}]
+                return "".join(json.dumps(frame) + "\n" for frame in frames).encode("utf-8")
+
+            source_payload = envelope([block("first", 0, False), block("second", 1, False)])
+            query_payload = envelope([block("second", 1, True), block("first", 0, False)])
+            run = type("Run", (), {"directory": root})()
+            case = {"id": "query-case", "stage": "pipeline"}
+
+            def source_order_invoke(_run, _binary, _case, source_fixture_path, _iterations, _cpu):
+                self.assertIsNone(json.loads(Path(source_fixture_path).read_text(encoding="utf-8"))["query"])
+                return source_payload
+
+            with patch.object(research, "_invoke", side_effect=source_order_invoke) as invoke:
+                expected = research._queryless_source_order_expected(run, Path("unused"), case,
+                                                                      input_path, query_payload)
+                self.assertTrue(invoke.called)
+                source_fixture_path = Path(invoke.call_args.args[3])
+                self.assertFalse(source_fixture_path.exists())
+            protocol.validate_aae(query_payload, expected, independent_hash=True)
+            self.assertEqual({path.name for path in root.iterdir()}, {"query.json"})
+
+            bad_query = [json.loads(line) for line in query_payload.decode("utf-8").splitlines()]
+            bad_query[0]["content_hash"] = "0" * 64
+            bad_payload = "".join(json.dumps(frame) + "\n" for frame in bad_query).encode("utf-8")
+            with self.assertRaisesRegex(ValueError, "Independent BLAKE3 content hash"):
+                protocol.validate_aae(bad_payload, expected, independent_hash=True)
+
+            with patch.object(research, "_invoke", side_effect=RuntimeError("controlled failure")):
+                with self.assertRaisesRegex(RuntimeError, "controlled failure"):
+                    research._queryless_source_order_expected(run, Path("unused"), case,
+                                                              input_path, query_payload)
+            self.assertEqual({path.name for path in root.iterdir()}, {"query.json"})
+
+    def test_research_oracles_require_source_order_crosscheck_for_unliteralized_queries(self):
+        from blake3 import blake3
+        from cloud_experiments import workloads
+        from kaggle_experiments import runner
+        from unittest.mock import patch
+
+        text = "query-result"
+        block_id = blake3(b"paragraph\x00" + text.encode("utf-8") + (0).to_bytes(8, "little")).hexdigest()
+        payload = (json.dumps({"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
+                              "content_hash": blake3(text.encode("utf-8")).hexdigest(), "total_blocks": 1}) + "\n"
+                   + json.dumps({"type": "block", "id": block_id, "role": "paragraph", "text": text,
+                                 "links": [], "highlight": False}) + "\n"
+                   + json.dumps({"type": "end", "block_count": 1}) + "\n").encode("utf-8")
+        expected = {"blocks": [{"role": "paragraph", "text": text, "links": [],
+                                "source_index": 0, "expected_highlight": False}], "links": []}
+        case = {"id": "unliteralized-query", "stage": "pipeline", "fixture": {"query": "query"}}
+        with tempfile.TemporaryDirectory(prefix="athena-query-oracles-test-") as folder:
+            run = type("Run", (), {"directory": Path(folder)})()
+            fixture_path = Path(folder) / "query.json"
+            with patch.object(research, "_invoke", side_effect=[payload, payload, b'{"status":"PASS"}']), \
+                    patch.object(research, "_queryless_source_order_expected", return_value=expected) as oracle, \
+                    patch.object(workloads, "envelope_errors", return_value=[]), \
+                    patch.object(runner, "probe_oracles"), patch.object(runner, "content_oracles"):
+                research._oracles(run, Path("candidate"), Path("baseline"), [case],
+                                  {case["id"]: fixture_path})
+            oracle.assert_called_once_with(run, Path("candidate"), case, fixture_path, payload)
+
     def test_library_panel_includes_real_feature_and_algorithm_interactions(self):
         from cloud_experiments import contenders
         variants, panels = research.native_matrix()

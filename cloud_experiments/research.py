@@ -16,6 +16,7 @@ import random
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from cloud_experiments import campaign, experimental_design, lifecycle
@@ -1202,9 +1203,11 @@ def _oracles(run, binary, baseline, cases, paths, *, header_mode="explicit"):
             expected = None
             fixture = case["fixture"]
             if isinstance(fixture, dict) and isinstance(fixture.get("expected_blocks"), list):
-                expected = {"blocks": [(item["role"], item["text"], item.get("links", []))
-                                      for item in fixture["expected_blocks"]],
+                expected = {"blocks": fixture["expected_blocks"],
                             "links": fixture.get("expected_links", [])}
+            elif isinstance(fixture, dict) and fixture.get("query") is not None:
+                expected = _queryless_source_order_expected(
+                    run, binary, case, paths[case["id"]], actual)
             protocol.validate_aae(actual, expected,
                                   independent_hash=(expected is not None or fixture.get("query") is None))
     # Independent literal/content/math/denial oracles are distinct from baseline parity.
@@ -1220,6 +1223,60 @@ def _oracles(run, binary, baseline, cases, paths, *, header_mode="explicit"):
             "intentional_output_difference_cases": len(cases) if header_mode == "scope" else 0,
             "independent_native_controls": control,
             "limit": "Finite independent oracles and differential outputs; no exhaustive correctness claim"}
+
+
+def _queryless_source_order_expected(run, binary, case, fixture_path, query_payload):
+    """Cross-check a query envelope against this candidate's source-order export."""
+    fixture_path = Path(fixture_path)
+    if fixture_path.is_symlink() or fixture_path.stat().st_size > 8 * 1024 ** 2:
+        raise ValueError("Query oracle fixture is linked or exceeds the admitted file size")
+    with fixture_path.open("rb") as stream:
+        raw = stream.read(8 * 1024 ** 2 + 1)
+    if len(raw) > 8 * 1024 ** 2:
+        raise ValueError("Query oracle fixture exceeds the admitted file size")
+    source_fixture = json.loads(raw)
+    if not isinstance(source_fixture, dict) or source_fixture.get("query") is None:
+        raise ValueError("Query oracle requires a query-bearing fixture")
+    source_fixture["query"] = None
+
+    with tempfile.TemporaryDirectory(prefix="athena-query-oracle-", dir=run.directory) as scratch:
+        source_path = Path(scratch) / "source-order.json"
+        source_path.write_text(json.dumps(source_fixture, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+        source_payload = _invoke(run, binary, case, source_path, 0, None)
+
+    source_frames = protocol.validate_aae(source_payload, independent_hash=True)
+    query_frames = protocol.validate_aae(query_payload)
+    source_blocks = [frame for frame in source_frames if frame.get("type") == "block"]
+    query_blocks = [frame for frame in query_frames if frame.get("type") == "block"]
+    source_by_id = {
+        block["id"]: (index, block) for index, block in enumerate(source_blocks)
+    }
+    if len(source_by_id) != len(source_blocks) or len(query_blocks) != len(source_blocks):
+        raise ValueError("Query output block set differs from its source-order export")
+
+    expected_blocks, highlighted, tail_source_indices = [], [], []
+    for block in query_blocks:
+        source = source_by_id.get(block.get("id"))
+        if source is None or type(block.get("highlight")) is not bool:
+            raise ValueError("Query output has an unknown block or invalid highlight flag")
+        source_index, source_block = source
+        is_highlight = block["highlight"]
+        highlighted.append(is_highlight)
+        if not is_highlight:
+            tail_source_indices.append(source_index)
+        expected_blocks.append({
+            "role": source_block["role"], "text": source_block["text"],
+            "links": source_block["links"], "source_index": source_index,
+            "expected_highlight": is_highlight,
+        })
+    highlight_limit = source_fixture.get("highlight_limit", 5)
+    if (type(highlight_limit) is not int or highlight_limit < 0
+            or highlighted != sorted(highlighted, reverse=True)
+            or sum(highlighted) > highlight_limit
+            or tail_source_indices != sorted(tail_source_indices)):
+        raise ValueError("Query highlights violate the declared limit or stable source-order tail")
+    expected_links = [frame["url"] for frame in source_frames if frame.get("type") == "link"]
+    return {"blocks": expected_blocks, "links": expected_links}
 
 
 def _collection(run):

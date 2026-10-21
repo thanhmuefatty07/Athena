@@ -179,10 +179,48 @@ def native_cases(split):
     for size in (256, 4096):
         html = "".join(f"<p>{nonce} term0 <a href='/item/{i}'>evidence{i}</a></p>" for i in range(size))
         add("link-scaling-" + str(size), html, owners=["H01", "H04", "H05", "H10"])
-    for query in ("absent_token", "TERM0 term0 term0!!!", "...", "内容 e\u0301"):
-        name = ("miss", "duplicate-case", "empty-token", "unicode")[("absent_token", "TERM0 term0 term0!!!", "...", "内容 e\u0301").index(query)]
+    query_partition_blocks = {
+        "miss": [
+            {"role": "paragraph", "text": "term0 内容 e\u0301", "links": [],
+             "source_index": 0, "expected_highlight": False},
+            {"role": "paragraph", "text": "unrelated", "links": [],
+             "source_index": 1, "expected_highlight": False},
+        ],
+        "duplicate-case": [
+            {"role": "paragraph", "text": "term0 内容 e\u0301", "links": [],
+             "source_index": 0, "expected_highlight": True},
+            {"role": "paragraph", "text": "unrelated", "links": [],
+             "source_index": 1, "expected_highlight": False},
+        ],
+        "empty-token": [
+            {"role": "paragraph", "text": "term0 内容 e\u0301", "links": [],
+             "source_index": 0, "expected_highlight": False},
+            {"role": "paragraph", "text": "unrelated", "links": [],
+             "source_index": 1, "expected_highlight": False},
+        ],
+        "unicode": [
+            {"role": "paragraph", "text": "term0 内容 e\u0301", "links": [],
+             "source_index": 0, "expected_highlight": True},
+            {"role": "paragraph", "text": "unrelated", "links": [],
+             "source_index": 1, "expected_highlight": False},
+        ],
+    }
+    for name, query in (("miss", "absent_token"), ("duplicate-case", "TERM0 term0 term0!!!"),
+                        ("empty-token", "..."), ("unicode", "内容 e\u0301")):
         add("query-partition-" + name, "<p>term0 内容 e\u0301</p><p>unrelated</p>" + marker,
-            query=query, highlight_limit=1)
+            query=query, highlight_limit=1, expected_blocks=query_partition_blocks[name])
+
+    query_reorder_source = [
+        {"role": "paragraph", "text": "background", "links": [], "source_index": 0,
+         "expected_highlight": False},
+        {"role": "paragraph", "text": "term0", "links": [], "source_index": 1,
+         "expected_highlight": False},
+        {"role": "paragraph", "text": "term0 term0 term0 term0 term0", "links": [], "source_index": 2,
+         "expected_highlight": True},
+    ]
+    add("query-reorder", "<p>background</p><p>term0</p><p>term0 term0 term0 term0 term0</p>" + marker,
+        query="term0", highlight_limit=1,
+        expected_blocks=[query_reorder_source[2], query_reorder_source[0], query_reorder_source[1]])
 
     caption = "Annual Revenue " + nonce
     table_html = (f'<!doctype html><table id="revenue"><caption>Annual <b>Revenue</b> {nonce}</caption>'
@@ -291,12 +329,26 @@ def envelope_errors(raw, fixture, *, header_mode="explicit"):
         frames = [json.loads(line) for line in raw.splitlines()]
         if not frames or frames[0].get("type") != "meta" or frames[-1].get("type") != "end":
             return ["Broken AAE boundary frames"]
+        block_frames = [frame for frame in frames if frame.get("type") == "block"]
         blocks = [{key: frame[key] for key in ("role", "text", "links")}
-                  for frame in frames if frame.get("type") == "block"]
+                  for frame in block_frames]
         links = [frame["url"] for frame in frames if frame.get("type") == "link"]
         errors = []
-        if "expected_blocks" in fixture and blocks != fixture["expected_blocks"]:
+        expected_blocks = fixture.get("expected_blocks")
+        expected_projection = ([{key: item[key] for key in ("role", "text", "links")}
+                                for item in expected_blocks]
+                               if isinstance(expected_blocks, list) and all(isinstance(item, dict)
+                                                                           and all(key in item for key in ("role", "text", "links"))
+                                                                           for item in expected_blocks)
+                               else expected_blocks)
+        if "expected_blocks" in fixture and blocks != expected_projection:
             errors.append("Literal role/text/link ownership differs")
+        if isinstance(expected_blocks, list) and len(block_frames) == len(expected_blocks):
+            for index, expected_block in enumerate(expected_blocks):
+                if (isinstance(expected_block, dict) and "expected_highlight" in expected_block
+                        and block_frames[index].get("highlight") is not expected_block["expected_highlight"]):
+                    errors.append("Literal query-highlight result differs")
+                    break
         if "expected_links" in fixture and links != fixture["expected_links"]:
             errors.append("Literal resolved link identity differs")
         if frames[0].get("total_blocks") != len(blocks) or frames[-1].get("block_count") != len(blocks):
