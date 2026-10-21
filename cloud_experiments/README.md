@@ -19,7 +19,8 @@ Không dùng `MAPPED` làm readiness; phải triển khai adapter/oracle/collect
 Linux gates và pilot recovery/cost trước campaign mới. Gate Linux hiện hành
 chạy 76/76 test không skip; Actions audit đồng thời đạt Rust fmt/test/Clippy/
 release build. Hai resource-bound regressions mới và source archive được
-đối chiếu trên commit reviewed; đây là prelaunch evidence, chưa phải benchmark
+đối chiếu trên commit reviewed; việc ghi `source.tgz` dùng byte cap và publication
+nguyên tử để lỗi giữa chừng không biến archive dở dang thành input tiếp theo; đây là prelaunch evidence, chưa phải benchmark
 toàn matrix, provider inference hay production readiness. VM đã được dừng,
 disk/evidence/cache được giữ lại. Dự trù 48–96 giờ cũ cần reforecast sau pilot
 cho scope bổ sung.
