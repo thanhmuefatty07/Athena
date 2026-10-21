@@ -518,10 +518,10 @@ fn derive_header_associations(
     }
     let mut ids = BTreeMap::new();
     for (index, cell) in cells.iter().enumerate() {
-        if let Some(id) = &cell.id {
-            if ids.insert(id.clone(), index).is_some() {
-                return Err("duplicate table header id".into());
-            }
+        if let Some(id) = &cell.id
+            && ids.insert(id.clone(), index).is_some()
+        {
+            return Err("duplicate table header id".into());
         }
     }
 
@@ -590,24 +590,30 @@ fn derive_header_associations(
         }
         let (first_row, first_column, _, _) = bounds[index];
         let mut candidates = BTreeMap::<usize, (u8, usize, usize)>::new();
-        for column in first_column..=bounds[index].3 {
-            for &header_index in &column_headers[column] {
-                let (header_row, header_column, last_row, _) = bounds[header_index];
-                if last_row < first_row {
-                    candidates
-                        .entry(header_index)
-                        .or_insert((0, header_row, header_column));
-                }
+        for &header_index in column_headers
+            .iter()
+            .skip(first_column)
+            .take(bounds[index].3 - first_column + 1)
+            .flatten()
+        {
+            let (header_row, header_column, last_row, _) = bounds[header_index];
+            if last_row < first_row {
+                candidates
+                    .entry(header_index)
+                    .or_insert((0, header_row, header_column));
             }
         }
-        for row in first_row..=bounds[index].2 {
-            for &header_index in &row_headers[row] {
-                let (header_row, header_column, _, last_column) = bounds[header_index];
-                if last_column < first_column {
-                    candidates
-                        .entry(header_index)
-                        .or_insert((1, header_row, header_column));
-                }
+        for &header_index in row_headers
+            .iter()
+            .skip(first_row)
+            .take(bounds[index].2 - first_row + 1)
+            .flatten()
+        {
+            let (header_row, header_column, _, last_column) = bounds[header_index];
+            if last_column < first_column {
+                candidates
+                    .entry(header_index)
+                    .or_insert((1, header_row, header_column));
             }
         }
         let mut ordered = candidates.into_iter().collect::<Vec<_>>();

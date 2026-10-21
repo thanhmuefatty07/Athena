@@ -380,17 +380,45 @@ class ManagedRun(runner.EvidenceRun):
             self.last_storage_check = now
         buffers, held, failure = [bytearray(), bytearray()], [0], []
         guard = threading.Lock()
-        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=(os.name == "posix"),
-                                   env=_research_child_environment())
+        windows_job = None
+        process = None
+        if os.name == "nt":
+            # A supervised command is an untrusted boundary.  Reuse the
+            # producer's verified Job Object so timeout/output/disk failure
+            # cannot leave descendants running after the leader is gone.
+            from cloud_experiments.agent_lab import _WindowsJobObject
+            windows_job = _WindowsJobObject()
+        try:
+            process = subprocess.Popen(
+                command, cwd=cwd,
+                stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=(os.name == "posix"),
+                env=_research_child_environment())
+            if windows_job is not None:
+                try:
+                    windows_job.assign(process._handle)
+                except OSError:
+                    process.kill()
+                    process.wait(timeout=10)
+                    raise
+        except BaseException:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            if windows_job is not None:
+                windows_job.close()
+            raise
 
         def terminate():
             try:
-                if os.name == "posix":
+                if windows_job is not None:
+                    windows_job.terminate()
+                elif os.name == "posix":
                     os.killpg(process.pid, signal.SIGKILL)
                 else:
                     process.kill()
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
 
         def drain(index, pipe):
@@ -445,13 +473,15 @@ class ManagedRun(runner.EvidenceRun):
             process.wait(timeout=10)
             raise
         finally:
-            if os.name == "posix":
+            if windows_job is not None or os.name == "posix":
                 terminate()
             for thread in threads:
                 thread.join(timeout=5)
             if any(thread.is_alive() for thread in threads):
                 terminate()
                 failure.append("PIPE_LIFETIME")
+            if windows_job is not None:
+                windows_job.close()
         stdout, stderr = map(bytes, buffers)
         record = {"argv": command, "cwd": str(cwd), "exit_code": process.returncode,
                   "wall_ns": round((time.monotonic() - started) * 1e9),

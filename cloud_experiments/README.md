@@ -494,10 +494,10 @@ mới được khởi chạy.
 ### Current implementation and target-host verification
 
 Current research source has durable collection journals, resume and storage
-checks, process-tree cleanup on POSIX, export receipts, supervisor retry state and
+checks, process-tree cleanup on POSIX and Windows Job Objects, export receipts, supervisor retry state and
 NIM request gating. These controls do not implement every H01–H14 owner or make a
 broad campaign ready. Exact Linux/Python 3.13.5 and pinned Rust 1.99.1 checks,
-service installation, descendant process cleanup, disk admission and interrupted
+service installation, Linux target-host descendant cleanup, disk admission and interrupted
 run export still require current-snapshot cloud verification. Preparation checks
 do not launch the benchmark campaign.
 
@@ -540,9 +540,10 @@ failure durability. Checkpoint hashes detect accidental corruption under the
 trusted-runner assumption; same-OS result authenticity remains NOT VERIFIED.
 
 These controls have local Windows/Python 3.11 coverage, including a killed real
-child and a fresh-process restart. A Linux descendant-memory/reaping check now
-exists in the lifecycle suite. POSIX lock behavior and the modified native entry
-point still require Linux/Python 3.13 target verification before a large job.
+child, a fresh-process restart and ManagedRun descendant cleanup through a
+Windows Job Object. A Linux descendant-memory/reaping check now exists in the
+lifecycle suite. POSIX lock behavior and the modified native entry point still
+require Linux/Python 3.13 target verification before a large job.
 Incomplete timing collection is rejected, not automatically resumed or mixed
 across sessions. Compute windows may be longer or split by phase only after
 actual capacity, credit and supervisor/VM lifetime admission; the global study
