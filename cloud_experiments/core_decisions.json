@@ -303,7 +303,7 @@
       "oracle": "Same semantic fixtures and target feature checks through actual compiler/runtime; independent holdout for PGO; startup, binary size, peak memory and full-path outcomes included.",
       "closure": "Keep source/lock fixed while changing one registered build factor, then confirm combined contenders on the declared CPU/service targets; no unsafe policy change or unsupported CPU assumption.",
       "gaps": [
-        "LTO/codegen/native-CPU comparator definitions exist; all profile tuples have not been built and confirmed",
+        "Build receipts now capture pinned rustc/cargo identity, requested profile environment and rustflags, and resume rejects compiler/profile drift; all profile tuples have not been built and confirmed",
         "Allocator/PGO/runtime/hardware rivals and portable deployment validation remain unverified",
         "PLANNED cross-runtime CPU affinity/quota, native intra/inter-op pools, spinning, JIT/GC startup and held-out contention measurements are NOT_IMPLEMENTED; GPU/training remains DEFERRED."
       ],

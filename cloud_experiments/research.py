@@ -646,6 +646,64 @@ def _current_network_namespace_id():
     return os.readlink("/proc/self/ns/net")
 
 
+def _parse_verbose_toolchain(raw, command):
+    if not isinstance(raw, (bytes, bytearray)):
+        raise ValueError("Toolchain identity is not bytes")
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("Toolchain identity is not UTF-8") from error
+    lines = text.splitlines()
+    if not lines or not lines[0] or len(text.encode("utf-8")) > 64 * 1024:
+        raise ValueError("Toolchain identity is empty or oversized")
+    prefix = "rustc " if command == "rustc" else "cargo " if command == "cargo" else None
+    if prefix is None or not lines[0].startswith(prefix):
+        raise ValueError("Unexpected toolchain identity command")
+    fields = {}
+    for line in lines[1:]:
+        if ": " in line:
+            key, value = line.split(": ", 1)
+            if key and value and len(key) <= 64 and len(value) <= 1024:
+                fields[key] = value
+    required = {"release", "host"}
+    if command == "rustc":
+        required.add("LLVM version")
+    if not required <= fields.keys():
+        raise ValueError("Incomplete toolchain identity")
+    return {"first_line": lines[0], "fields": fields,
+            "stdout_sha256": hashlib.sha256(bytes(raw)).hexdigest()}
+
+
+def _capture_build_receipt(run, workspace, build):
+    rustc = _parse_verbose_toolchain(
+        _run_isolated_cargo(run, ["rustc", "-Vv"], cwd=workspace, timeout=60), "rustc")
+    cargo = _parse_verbose_toolchain(
+        _run_isolated_cargo(run, ["cargo", "-Vv"], cwd=workspace, timeout=60), "cargo")
+    toolchain_path = workspace / "rust-toolchain.toml"
+    if toolchain_path.is_symlink() or not toolchain_path.is_file():
+        raise ValueError("Missing pinned rust-toolchain.toml")
+    try:
+        import tomllib
+        channel = tomllib.loads(toolchain_path.read_text(encoding="utf-8"))["toolchain"]["channel"]
+    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError) as error:
+        raise ValueError("Invalid pinned rust-toolchain.toml") from error
+    if not isinstance(channel, str) or not channel:
+        raise ValueError("Invalid pinned Rust channel")
+    release = rustc["fields"]["release"]
+    if channel not in {"stable", "beta", "nightly"} and release != channel:
+        raise RuntimeError("Compiler release does not match rust-toolchain.toml")
+    return {"schema": "athena-build-receipt/1", "toolchain_channel": channel,
+            "rustc": rustc, "cargo": cargo,
+            "cargo_profile_env": dict(build.get("cargo_profile_env", {})),
+            "probe_env": dict(build.get("probe_env", {})),
+            "rustflags": list(build.get("rustflags", []))}
+
+
+def _require_build_receipt(previous, current):
+    if previous.get("build_receipt") != current:
+        raise lifecycle.IntegrityError("Resumed binary lacks matching compiler/profile receipt")
+
+
 def _verify_build_network_isolation(run):
     if platform.system() != "Linux":
         raise RuntimeError("Native dependency builds require a Linux network namespace")
@@ -699,6 +757,7 @@ def _build(run, workspace, files, variant, target_cache):
         dependency_inputs = libraries.verify_build_inputs(files, transformed, definition["factors"])
         if previous.get("dependency_input_evidence") != dependency_inputs:
             raise lifecycle.IntegrityError("Resumed binary lacks matching pre-build dependency verification")
+        _require_build_receipt(previous, _capture_build_receipt(run, workspace, definition["build"]))
         isolation = _verify_build_network_isolation(run)
         prior_isolation = previous.get("build_network_isolation", {})
         if (prior_isolation.get("status") != isolation["status"]
@@ -721,6 +780,7 @@ def _build(run, workspace, files, variant, target_cache):
     run.save()
     build_started = time.monotonic()
     build = definition["build"]
+    build_receipt = None
     existing = dict(os.environ)
     rustup_home = os.environ.get("RUSTUP_HOME") or str(Path.home() / ".rustup")
     try:
@@ -746,6 +806,7 @@ def _build(run, workspace, files, variant, target_cache):
         os.environ["CARGO_HOME"] = str(cargo_home)
         os.environ["RUSTUP_HOME"] = rustup_home
         os.environ["HOME"] = str(cargo_home)
+        build_receipt = _capture_build_receipt(run, workspace, build)
         run.run(["cargo", "fetch", "--locked"], cwd=workspace, timeout=1200)
         _run_isolated_cargo(run, ["cargo", "fmt", "--all"], cwd=workspace, timeout=300)
         _run_isolated_cargo(run, ["cargo", "fmt", "--all", "--", "--check"], cwd=workspace, timeout=300)
@@ -757,6 +818,8 @@ def _build(run, workspace, files, variant, target_cache):
         os.environ.update(existing)
     if (workspace / "Cargo.lock").read_bytes() != transformed["Cargo.lock"]:
         raise ValueError("Locked dependency graph changed")
+    if build_receipt is None:
+        raise RuntimeError("Build compiler/profile receipt was not captured")
     graph = runner.dependency_metadata(run, workspace)
     dependency_evidence = libraries.verify_graph(files["Cargo.lock"], transformed["Cargo.lock"], graph, definition["factors"])
     if destination.exists():
@@ -781,6 +844,7 @@ def _build(run, workspace, files, variant, target_cache):
         "lock_sha256": protocol.sha256_file(workspace / "Cargo.lock"),
         "manifest_sha256": protocol.sha256_file(workspace / "Cargo.toml"),
         "build_wall_seconds": time.monotonic() - build_started,
+        "build_receipt": build_receipt,
         "dependency_input_evidence": dependency_inputs,
         "build_network_isolation": network_isolation,
         "dependency_evidence": dependency_evidence,

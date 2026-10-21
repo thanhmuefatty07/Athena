@@ -1592,6 +1592,43 @@ class ExpandedResearchControls(unittest.TestCase):
             self.assertEqual(run.commands[0][0], "unshare")
             self.assertIn("--net", run.commands[0])
 
+    def test_build_receipt_binds_compiler_profile_and_resume_identity(self):
+        from cloud_experiments import contenders
+        from unittest.mock import patch
+        rustc = (b"rustc 1.99.1 (stable-test 2026-10-01)\n"
+                 b"binary: rustc\ncommit-hash: abc\ncommit-date: 2026-10-01\n"
+                 b"host: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 21.1.0\n")
+        cargo = (b"cargo 1.99.1 (stable-test 2026-10-01)\n"
+                 b"release: 1.99.1\nhost: x86_64-unknown-linux-gnu\n")
+        with tempfile.TemporaryDirectory(prefix="athena-build-receipt-") as folder:
+            workspace = Path(folder)
+            (workspace / "rust-toolchain.toml").write_text(
+                "[toolchain]\nchannel = \"1.99.1\"\nprofile = \"minimal\"\n", encoding="utf-8")
+            build = contenders.metadata("build-native")["build"]
+
+            def isolated(_run, command, **_kwargs):
+                return rustc if command[0] == "rustc" else cargo
+
+            with patch.object(research, "_run_isolated_cargo", side_effect=isolated):
+                receipt = research._capture_build_receipt(object(), workspace, build)
+            self.assertEqual(receipt["schema"], "athena-build-receipt/1")
+            self.assertEqual(receipt["rustc"]["fields"]["release"], "1.99.1")
+            self.assertEqual(receipt["cargo"]["fields"]["host"], "x86_64-unknown-linux-gnu")
+            self.assertEqual(receipt["rustflags"], ["-C", "target-cpu=native"])
+            previous = {"build_receipt": receipt}
+            research._require_build_receipt(previous, receipt)
+            with self.assertRaisesRegex(research.lifecycle.IntegrityError, "compiler/profile"):
+                research._require_build_receipt({}, receipt)
+            changed = dict(receipt, toolchain_channel="stable")
+            with self.assertRaisesRegex(research.lifecycle.IntegrityError, "compiler/profile"):
+                research._require_build_receipt(previous, changed)
+
+            bad_rustc = rustc.replace(b"release: 1.99.1", b"release: 1.98.0")
+            with patch.object(research, "_run_isolated_cargo", side_effect=lambda _run, command, **_kwargs:
+                              bad_rustc if command[0] == "rustc" else cargo), \
+                    self.assertRaisesRegex(RuntimeError, "does not match"):
+                research._capture_build_receipt(object(), workspace, build)
+
     def test_literal_oracle_rejects_corruption_and_wrong_denial_even_with_valid_json(self):
         from cloud_experiments import workloads
         fixture = {"expected_blocks": [{"role": "paragraph", "text": "visible", "links": []}]}

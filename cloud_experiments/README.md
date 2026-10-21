@@ -258,6 +258,11 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   regression: mọi contender khai báo phải materialize được từ đúng core hiện
   tại trước khi build. Đây là kiểm tra tính chạy được của comparator, không phải
   bằng chứng performance.
+- H10 build receipt hiện ghi nhận `rustc -Vv`, `cargo -Vv`, channel trong
+  `rust-toolchain.toml`, profile environment và `rustflags`; resume từ binary
+  cũ bị từ chối nếu receipt compiler/profile khác. Receipt này khóa danh tính
+  build, nhưng chưa chứng minh profile nào thắng về runtime, RSS, startup hay
+  portability.
 - Mọi cell screening được interleave theo cùng macroblock/case; AB/BA cân
   bằng, CPU pin và warmup giữ rõ. Báo cáo tương tác dùng log quantile theo
   block, có cả three-way term khi đủ cell. Các contrast này chỉ exploratory,
