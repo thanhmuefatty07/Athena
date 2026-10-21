@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: '1.99.1'
           components: rustfmt, clippy
@@ -29,16 +29,29 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           python-version: '3.11'
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: '1.99.1'
           components: rustfmt, clippy
       - name: Install numerical test dependency
-        run: timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir numpy
+        run: timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir --require-hashes --only-binary=:all: -r cloud_experiments/requirements-ci.txt
+      - name: Verify generated Kaggle kernels are current
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B -m kaggle_experiments.generate_clusters --owner vnthanhphm
+          git diff --exit-code -- \
+            kaggle_experiments/athena-c1-core-stages-20261015/main.py \
+            kaggle_experiments/athena-c1-core-stages-20261015/kernel-metadata.json \
+            kaggle_experiments/athena-c2-dom-rss-20261015/main.py \
+            kaggle_experiments/athena-c2-dom-rss-20261015/kernel-metadata.json \
+            kaggle_experiments/athena-c3-deps-concurrency-20261015/main.py \
+            kaggle_experiments/athena-c3-deps-concurrency-20261015/kernel-metadata.json \
+            kaggle_experiments/bundle.json
       - name: Check Linux entrypoint syntax
         run: bash -n cloud_experiments/bootstrap.sh cloud_experiments/finish.sh
       - name: Run Linux-only process and service boundaries
@@ -108,7 +121,7 @@ jobs:
           timeout --kill-after=10s 120s cargo +1.99.1 metadata --locked --format-version 1 > cargo-metadata.json
       - name: Upload Linux gate evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           name: athena-linux-gates-${{ github.run_id }}
           if-no-files-found: warn

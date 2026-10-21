@@ -155,9 +155,13 @@ impl Engine {
         Self {
             source_flights: SingleFlight::new(),
             representation_flights: SingleFlight::new(),
-            network_permits: Arc::new(Semaphore::new(max_origin_inflight.max(1))),
-            cpu_permits: Arc::new(Semaphore::new(max_origin_inflight.max(1))),
-            pending_permits: Semaphore::new(max_pending),
+            network_permits: Arc::new(Semaphore::new(
+                max_origin_inflight.clamp(1, Semaphore::MAX_PERMITS),
+            )),
+            cpu_permits: Arc::new(Semaphore::new(
+                max_origin_inflight.clamp(1, Semaphore::MAX_PERMITS),
+            )),
+            pending_permits: Semaphore::new(max_pending.min(Semaphore::MAX_PERMITS)),
             max_html_nodes: max_html_nodes.max(1),
             lexical_mode,
         }
@@ -465,6 +469,27 @@ mod tests {
         assert_eq!(
             Engine::with_lexical_mode(1, 100, LexicalMode::Prepared).lexical_mode,
             LexicalMode::Prepared
+        );
+    }
+
+    #[test]
+    fn custom_permit_limits_are_clamped_before_semaphore_construction() {
+        let engine = Engine::with_pending_limit(
+            Semaphore::MAX_PERMITS.saturating_add(1),
+            100,
+            Semaphore::MAX_PERMITS.saturating_add(1),
+        );
+        assert_eq!(
+            engine.network_permits.available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+        assert_eq!(
+            engine.cpu_permits.available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+        assert_eq!(
+            engine.pending_permits.available_permits(),
+            Semaphore::MAX_PERMITS
         );
     }
 

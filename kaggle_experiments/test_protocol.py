@@ -165,6 +165,24 @@ class BoundedProcessControls(unittest.TestCase):
             self.assertLessEqual(result.captured_output_bytes, 1024)
 
 
+class MeasurementResourceControls(unittest.TestCase):
+    def test_measurement_artifact_byte_limit_is_checked_before_parse(self):
+        with tempfile.TemporaryDirectory(prefix="athena-measurement-limit-") as directory:
+            path = Path(directory) / "samples.jsonl"
+            path.write_text("{}\n", encoding="utf-8")
+            with patch.object(protocol, "MAX_MEASUREMENT_BYTES", 1):
+                with self.assertRaisesRegex(ValueError, "byte limit"):
+                    protocol.load_measurements(path)
+
+    def test_bootstrap_draw_limit_rejects_unbounded_work(self):
+        cases = {"case": {"rounds": [{"baseline": [1.0], "candidate": [1.0]}] * 20,
+                           "quantiles": [0.5], "family_size": 1,
+                           "analysis_policy": protocol.LEGACY_ANALYSIS_POLICY,
+                           "spec": {}}}
+        with self.assertRaisesRegex(ValueError, "bootstrap draw limit"):
+            protocol.analyze_measurements(cases, draws=protocol.MAX_BOOTSTRAP_DRAWS + 1)
+
+
 class RustupBootstrapControls(unittest.TestCase):
     def test_toolchain_preparation_rejects_unpinned_bootstrap_before_execution(self):
         from io import BytesIO

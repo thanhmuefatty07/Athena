@@ -9,6 +9,10 @@ PROTOCOL_VERSION = "athena-research/2"
 STUDY_REVISION = "2.1"
 ANALYSIS_POLICY = "paired-rounds/2.1"
 LEGACY_ANALYSIS_POLICY = "paired-rounds/2.0"
+MAX_MEASUREMENT_BYTES = 512 * 1024 * 1024
+MAX_MEASUREMENT_LINE_BYTES = 1024 * 1024
+MAX_MEASUREMENT_RECORDS = 2_000_000
+MAX_BOOTSTRAP_DRAWS = 1_000_000
 C1_STAGES = ("rank", "table", "parse", "export", "export_no_query", "pipeline", "pipeline_no_query")
 QUANTILES = (0.50, 0.95, 0.99)
 REQUIRED_CHECKS = {
@@ -75,6 +79,16 @@ def interval_decision(intervals):
 def load_measurements(path, manifest=None):
     """Reject incomplete pairs, missing/duplicate iterations, and stale evidence."""
     path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Measurement artifact is not a regular file")
+    maximum_bytes = MAX_MEASUREMENT_BYTES
+    if manifest is not None:
+        declared = manifest.get("spec", {}).get("limits", {}).get("measurement_bytes", maximum_bytes)
+        if type(declared) is not int or not 1 <= declared <= MAX_MEASUREMENT_BYTES:
+            raise ValueError("Invalid measurement byte limit")
+        maximum_bytes = declared
+    if path.stat().st_size > maximum_bytes:
+        raise ValueError("Measurement artifact exceeds byte limit")
     specifications = None
     policy = LEGACY_ANALYSIS_POLICY
     if manifest is not None:
@@ -121,6 +135,10 @@ def load_measurements(path, manifest=None):
     groups, identifiers, records, fingerprints = {}, set(), 0, {}
     with path.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
+            if line_number > MAX_MEASUREMENT_RECORDS:
+                raise ValueError("Measurement artifact exceeds record limit")
+            if len(line.encode("utf-8")) > MAX_MEASUREMENT_LINE_BYTES:
+                raise ValueError("Measurement record exceeds line limit")
             record = json.loads(line)
             case_id = record.get("case_id", record.get("stage"))
             arm = record.get("candidate")
@@ -272,6 +290,8 @@ def bootstrap_deltas(rounds, probabilities, draws, seed, backend="auto"):
 
 
 def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, backend="auto"):
+    if type(draws) is not int or not 1 <= draws <= MAX_BOOTSTRAP_DRAWS:
+        raise ValueError("Invalid bootstrap draw limit")
     policies = {case.get("analysis_policy", LEGACY_ANALYSIS_POLICY) for case in cases.values()}
     if len(policies) != 1 or not policies <= {LEGACY_ANALYSIS_POLICY, ANALYSIS_POLICY}:
         raise ValueError("Unknown or mixed analysis policies")
