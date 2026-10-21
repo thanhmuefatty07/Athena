@@ -351,13 +351,19 @@ def prepare(destination):
                                 "kaggle_experiments/generate_clusters.py", "kaggle_results/verify_statistics.py",
                                 "kaggle_results/pull_and_analyze.py", "model"])
     files = {key: value for key, value in files.items() if "__pycache__" not in key}
-    previous = subprocess.check_output(["git", "show", "HEAD:src/aae.rs"], cwd=ROOT)
+    previous = pack_snapshots.bounded_command_output(
+        ["git", "show", "HEAD:src/aae.rs"], cwd=ROOT,
+        max_bytes=pack_snapshots.GIT_SOURCE_OUTPUT_BYTES)
     files["cloud_experiments/previous_aae.rs"] = previous
     raw = pack_snapshots.archive_files(files)
+    if len(raw) > pack_snapshots.GIT_ARCHIVE_OUTPUT_BYTES:
+        raise ValueError("Source archive exceeds bundle budget")
     (destination / "source.tgz").write_bytes(raw)
     spec = study_spec()
     spec.update(source_sha256=digest(raw), files={key: digest(value) for key, value in sorted(files.items())},
-                git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                git_head=pack_snapshots.bounded_command_output(
+                    ["git", "rev-parse", "HEAD"], cwd=ROOT,
+                    max_bytes=pack_snapshots.GIT_METADATA_OUTPUT_BYTES).decode("ascii").strip(),
                 working_tree="Frozen allowlisted bytes; includes existing user changes")
     spec["study_id"] = digest(json.dumps(spec, sort_keys=True).encode())
     write_json(destination / "spec.json", spec)

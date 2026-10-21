@@ -8,13 +8,13 @@ from pathlib import Path
 
 
 MANIFEST_SHA256 = "d5fe9f4c7d1b796f9449a13bed164e9fbde7894a1e8457b12a265e24e042ba38"
-LOCK_SHA256 = "d1280bf0d2b7d388801293ee79a17707af687092a3b83649f871548d41ddf5fe"
+LOCK_SHA256 = "8b1f2125c8e6ecfb7a86b33dd32999a4de93484be832cb9cde13809be6963d9a"
 SONIC_LOCK = "cloud_experiments/locks/sonic-0.5.10.lock"
-SONIC_LOCK_SHA256 = "4cc00c7248aefcdace378e797b3c235fd53cbaabd5f7803ccbb46d8a40c66f64"
+SONIC_LOCK_SHA256 = "e8ba8bf65247ca1f21b5405595d6474484f7c6dd88fe8437abf3b0ca522f719d"
 LEAN_LOCK = "cloud_experiments/locks/scraper-lean.lock"
-LEAN_LOCK_SHA256 = "3c53fb75d9df4d7f9debeb2e43b9ae5b2fef97bdf51c849a8fa69cade306376d"
+LEAN_LOCK_SHA256 = "fe039c9132c2ea2ee67140f2d6711e9e5bbd2b620f567ac267543d3bff05c199"
 SONIC_LEAN_LOCK = "cloud_experiments/locks/sonic-0.5.10-scraper-lean.lock"
-SONIC_LEAN_LOCK_SHA256 = "c1707aa51d0f13f4fbb5250e3d20671c1c83cabac33eff39c2ecadebb8d10ade"
+SONIC_LEAN_LOCK_SHA256 = "bfc0a3ba963e3f1aa67c7c1a1e9a17a6ced1e8ced8b9237fcfa30454faf0abe9"
 
 
 def lock_profile(factors):

@@ -221,7 +221,10 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   trong lock Sonic. Truy vấn advisory không chứng minh không có lỗ hổng.
 - Ba lock trong `locks/` là đầu vào comparator: Sonic 0.5.10, Scraper lean,
   Sonic + lean. Lean giữ `errors`, chỉ bỏ CLI và hai package `getopts` /
-  `unicode-width`. Không nâng version dependency sẵn có. Sonic chỉ hỗ trợ
+  `unicode-width`. Các profile này dùng cùng bản vá RustSec của lock chính
+  (`rustls-webpki 0.103.16`, `webpki-root-certs 1.0.10`) và đã qua metadata/
+  advisory gate riêng. Không nâng version dependency sẵn có ngoài bản vá.
+  Sonic chỉ hỗ trợ
   writer `frame`; ghép với direct/buffered/reuse bị từ chối rõ ràng.
 - ID tổ hợp được chuẩn hóa theo registry; các panel không build/đo lại cùng
   bộ factor chỉ vì thứ tự tên khác. `screen_plan` khóa cohort chung cho từng

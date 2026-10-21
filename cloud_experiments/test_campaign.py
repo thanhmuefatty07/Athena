@@ -60,6 +60,15 @@ class CampaignControls(unittest.TestCase):
             server.server_close()
             worker.join(timeout=2)
 
+    def test_source_preparation_command_stops_at_output_and_time_bounds(self):
+        from kaggle_experiments import pack_snapshots
+        noisy = [sys.executable, "-c", "import sys; sys.stdout.write('x' * 1000000)"]
+        with self.assertRaisesRegex(ValueError, "output exceeds"):
+            pack_snapshots.bounded_command_output(noisy, cwd=Path.cwd(), max_bytes=4096)
+        stalled = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with self.assertRaisesRegex(TimeoutError, "time bound"):
+            pack_snapshots.bounded_command_output(stalled, cwd=Path.cwd(), timeout_s=1, max_bytes=4096)
+
     def test_json_commit_preserves_other_staging_and_failed_write_keeps_old_state(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory(prefix="athena-commit-") as folder:

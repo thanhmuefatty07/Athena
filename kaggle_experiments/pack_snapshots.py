@@ -4,16 +4,84 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import tarfile
+import threading
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = "8de5709e6c47fd57713ca821131579b2e8c25a36"
+GIT_COMMAND_TIMEOUT_SECONDS = 30.0
+GIT_ARCHIVE_OUTPUT_BYTES = 16 * 1024 ** 2
+GIT_SOURCE_OUTPUT_BYTES = 8 * 1024 ** 2
+GIT_METADATA_OUTPUT_BYTES = 4096
 
 
 def digest(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def bounded_command_output(command, *, cwd, timeout_s=GIT_COMMAND_TIMEOUT_SECONDS,
+                           max_bytes=GIT_ARCHIVE_OUTPUT_BYTES):
+    """Run a local preparation command with bounded stdout/stderr and lifetime."""
+    if type(timeout_s) not in (int, float) or not 0 < timeout_s <= GIT_COMMAND_TIMEOUT_SECONDS:
+        raise ValueError("Preparation command timeout is outside its bound")
+    if type(max_bytes) is not int or not 0 < max_bytes <= GIT_ARCHIVE_OUTPUT_BYTES:
+        raise ValueError("Preparation command output bound is outside its limit")
+    process_kwargs = {"cwd": cwd, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if os.name == "posix":
+        process_kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, **process_kwargs)
+    buffers = [bytearray(), bytearray()]
+    overflow = threading.Event()
+
+    def drain(stream, buffer):
+        while True:
+            chunk = stream.read(min(64 * 1024, max_bytes + 1))
+            if not chunk:
+                return
+            if len(buffer) + len(chunk) > max_bytes:
+                overflow.set()
+                return
+            buffer.extend(chunk)
+
+    readers = [threading.Thread(target=drain, args=(stream, buffer), daemon=True)
+               for stream, buffer in zip((process.stdout, process.stderr), buffers)]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout_s
+    timed_out = False
+    while process.poll() is None:
+        if overflow.is_set():
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            break
+        time.sleep(0.01)
+    if process.poll() is None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except ProcessLookupError:
+            pass
+    returncode = process.wait()
+    for reader in readers:
+        reader.join(timeout=1)
+    for stream in (process.stdout, process.stderr):
+        stream.close()
+    if overflow.is_set():
+        raise ValueError("Preparation command output exceeds its byte bound")
+    if timed_out:
+        raise TimeoutError("Preparation command exceeded its time bound")
+    stdout, stderr = (bytes(buffer) for buffer in buffers)
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
+    return stdout
 
 
 def archive_files(files):
@@ -28,9 +96,10 @@ def archive_files(files):
 
 
 def collect_snapshots():
-    original = subprocess.check_output(
+    original = bounded_command_output(
         ["git", "archive", "--format=tar", BASELINE, "src", "Cargo.toml",
-         "Cargo.lock", "rust-toolchain.toml", "tests", "fixtures"], cwd=ROOT)
+         "Cargo.lock", "rust-toolchain.toml", "tests", "fixtures"], cwd=ROOT,
+        max_bytes=GIT_ARCHIVE_OUTPUT_BYTES)
     with tarfile.open(fileobj=io.BytesIO(original), mode="r:") as archive:
         baseline = {member.name: archive.extractfile(member).read()
                     for member in archive if member.isfile()}
@@ -54,8 +123,9 @@ def main():
     baseline, candidate, transformations = collect_snapshots()
     destination = Path(__file__).resolve().parent
     metadata = {"protocol": "athena-research/2", "baseline_commit": BASELINE,
-                "candidate_commit": subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+                "candidate_commit": bounded_command_output(
+                    ["git", "rev-parse", "HEAD"], cwd=ROOT,
+                    max_bytes=GIT_METADATA_OUTPUT_BYTES).decode("ascii").strip(),
                 "comparison": "source-only; identical dependency graph, toolchain, release profile and benchmark harness",
                 "baseline_controls": transformations}
     for label, files in (("baseline", baseline), ("candidate", candidate)):

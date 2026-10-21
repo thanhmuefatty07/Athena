@@ -12,6 +12,8 @@ Tệp Downloads do người dùng cung cấp trùng byte với MASTER_BLUEPRINT.
 - **MEASURED:** benchmark release đối chiếu cùng harness/corpus; 7 vòng luân phiên baseline/candidate, lưu summary từng vòng và SHA của executable/lockfile/fixture. Harness chưa xuất từng timing sample; dữ liệu này chưa đủ để tái tính CI hoặc phân tích timeline.
 - **VERIFIED ON CORPUS:** 3 fixture × 4 điều kiện query cho AAE giống byte với baseline. Không suy thành parity cho mọi input/floating-point case.
 - **LIBRARY SNAPSHOT:** rustls 0.23.46 giữ làm transitive TLS baseline; preflight `cargo deny` đã bắt `rustls-webpki 0.103.15` và `webpki-root-certs 1.0.9`, được nâng tối thiểu lần lượt lên `0.103.16` và `1.0.10`. Không thêm dependency. Linux CI run `39537516157` xác nhận consumer compile/test/Clippy/release và harness gate trên Rust 1.99.1.
+- **CANDIDATE LOCK PROFILES:** ba lock comparator (Sonic, Scraper lean, Sonic + lean) đã được đồng bộ cùng hai bản vá RustSec; `cargo metadata --locked` và `cargo deny --offline --locked check advisories bans sources` đều qua cho từng profile sau khi fetch vào Cargo home riêng. Đây là graph/advisory evidence, chưa là runtime/performance proof của candidate.
+- **PREPARATION BOUNDARY:** các lệnh Git dùng để tạo snapshot có giới hạn đầu ra mỗi stream và timeout; kiểm tra tiến trình thật vượt 4 KiB và treo đã bị dừng đúng lỗi. Snapshot campaign thực tế vẫn tạo được bundle 342.449 bytes trong scratch.
 - **NOT VERIFIED:** tối ưu cực đại hoặc “không trade-off” trên mọi workload; RSS/allocator, toàn bộ p95/p99, mạng thật, production load, fresh external advisory provenance, license policy, fuzz/Loom/Miri, ARM64 và chất lượng semantic có nhãn. Windows full native test bị giới hạn bởi `aws-lc-sys`/NASM/MSVC.
 
 ## Thay đổi theo mô-đun
