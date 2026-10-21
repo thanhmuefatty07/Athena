@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.99.1'
@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - uses: dtolnay/rust-toolchain@master
@@ -103,7 +103,7 @@ jobs:
           timeout --kill-after=10s 120s cargo +1.99.1 metadata --locked --format-version 1 > cargo-metadata.json
       - name: Upload Linux gate evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: athena-linux-gates-${{ github.run_id }}
           if-no-files-found: warn
