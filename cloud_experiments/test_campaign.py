@@ -389,9 +389,11 @@ class AgentBoundaryControls(unittest.TestCase):
                 "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
             )
             parent = (
-                "import subprocess,sys,time;"
-                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
-                "time.sleep(.3)"
+                "import subprocess,sys,time\nfrom pathlib import Path\n"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]])\n"
+                "deadline=time.monotonic()+1.5\n"
+                "while not Path(sys.argv[2]).exists() and time.monotonic()<deadline:\n"
+                "    time.sleep(.01)\n"
             )
             self.assertEqual(
                 agent_lab._bounded_process(
@@ -430,9 +432,11 @@ class AgentBoundaryControls(unittest.TestCase):
                 "Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(30)"
             )
             parent = (
-                "import subprocess,sys,time;"
-                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]]);"
-                "time.sleep(.3)"
+                "import subprocess,sys,time\nfrom pathlib import Path\n"
+                "subprocess.Popen([sys.executable,'-B','-c',sys.argv[1],sys.argv[2]])\n"
+                "deadline=time.monotonic()+1.5\n"
+                "while not Path(sys.argv[2]).exists() and time.monotonic()<deadline:\n"
+                "    time.sleep(.01)\n"
             )
             self.assertEqual(
                 agent_lab._bounded_process(
