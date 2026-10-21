@@ -1512,6 +1512,22 @@ class ExpandedResearchControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bounded streaming"):
             contenders.metadata("lib-json-sonic+aae-direct")
 
+    def test_every_declared_contender_transforms_against_the_current_frozen_core(self):
+        from cloud_experiments import campaign, contenders, research
+        files = campaign.source_files(research.ROOT, [
+            "src", "tests", "fixtures", "Cargo.toml", "Cargo.lock", "deny.toml",
+            "rust-toolchain.toml", "engineering-constitution.md", "CORE_RESEARCH_PLAN.md",
+            "cloud_experiments", "kaggle_experiments/protocol.py", "kaggle_experiments/runner.py",
+            "kaggle_experiments/probe.rs", "kaggle_experiments/test_protocol.py",
+            "kaggle_experiments/pack_snapshots.py", "kaggle_experiments/generate_clusters.py",
+            "kaggle_results/verify_statistics.py", "kaggle_results/pull_and_analyze.py", "model",
+        ])
+        for variant in sorted(contenders.definitions()):
+            with self.subTest(variant=variant):
+                transformed = contenders.transform(files, variant)
+                self.assertIn("Cargo.lock", transformed)
+                self.assertIn("Cargo.toml", transformed)
+
     def test_research_build_rejects_unreviewed_manifest_and_lock_before_cargo(self):
         root = research.ROOT
         files = campaign.source_files(root, ["src", "tests", "fixtures", "Cargo.toml", "Cargo.lock",

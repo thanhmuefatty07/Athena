@@ -7,8 +7,8 @@ from hashlib import sha256
 _DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "html_headers": "explicit", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde"}
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
-    "src/aae.rs": "169a53a88caa5a471c690e7a78e143d97063a6c80e902b89b5baadc7c106ffde",
-    "src/rank.rs": "32dd5ce781576ca851152a556237cfb8f42209536f7cb169207119294425ca3d",
+    "src/aae.rs": "f5806098dfcce627b57d93ad9795fbc3599c8dce64905484feebfbfee216e983",
+    "src/rank.rs": "533afed73d093002a3a6c4dde78b0e3a834435f15caa8c24016bf21438ce0d94",
     "src/projection.rs": "7f201ea9e43a357ff36d84040503df8065e61fdc378016e4704a55b9792a72d2",
     "src/table.rs": "eb1933a8f29d21f0a8887a6c17cebfc4a2f78b98a73f7a2040139966a561533e",
 }
@@ -417,7 +417,12 @@ def transform(files, variant_id):
         edit("src/aae.rs", lambda text: _reserve_source(text, factors["reserve"]))
     if "lookup" in factors:
         def lookup(text):
-            text = _region(text, "    let term_ids: HashMap<_, _> = terms", "    let mut postings", "")
+            text = _region(
+                text,
+                "    let term_ids: HashMap<_, _> = terms",
+                "    let mut postings = vec![Vec::<(usize, usize)>::new(); terms.len()];",
+                "",
+            )
             text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
             operation = "if let Ok(term) = terms.binary_search_by(|term| term.as_str().cmp(key.as_ref())) {" if factors["lookup"] == "binary" else "if let Some(term) = terms.iter().position(|term| term.as_str() == key.as_ref()) {"
             return _replace(text, "            if let Some(&term) = term_ids.get(lowercase(word).as_ref()) {", "            let key = lowercase(word);\n            " + operation)

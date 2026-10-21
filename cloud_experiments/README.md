@@ -253,6 +253,11 @@ Contract đầy đủ nằm ở `CORE_RESEARCH_PLAN.md` mục 15–18.
   Clippy và build release thật. Một tổ hợp nhiều yếu tố chỉ là comparator;
   source của baseline và comparator đều được băm sau formatting, kể cả probe
   được inject. Không suy đúng chỉ từ file/binary tồn tại hay exit 0.
+- Sau khi H03 thêm prepared-state vào `src/aae.rs` và `src/rank.rs`, frozen
+  source digests và H02 transformation region đã được cập nhật cùng owning
+  regression: mọi contender khai báo phải materialize được từ đúng core hiện
+  tại trước khi build. Đây là kiểm tra tính chạy được của comparator, không phải
+  bằng chứng performance.
 - Mọi cell screening được interleave theo cùng macroblock/case; AB/BA cân
   bằng, CPU pin và warmup giữ rõ. Báo cáo tương tác dùng log quantile theo
   block, có cả three-way term khi đủ cell. Các contrast này chỉ exploratory,
