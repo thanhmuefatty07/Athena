@@ -1,7 +1,11 @@
 import json
 import math
+import os
 import random
+import subprocess
+import sys
 import unittest
+from unittest import mock
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,9 +13,30 @@ from model.cost_model import model
 from model.queueing import erlang_c
 from model.singleflight_sim import simulate
 from model.statistics import min_perfect_trials_for_lower_success, wilson
+from model import benchmark
 
 
 class NumericalContracts(unittest.TestCase):
+    def test_offline_benchmark_child_cannot_inherit_credentials(self):
+        with mock.patch.dict(os.environ, {
+                'NVIDIA_API_KEY': 'synthetic-provider-secret',
+                'GOOGLE_APPLICATION_CREDENTIALS': 'synthetic-cloud-secret',
+                'HTTPS_PROXY': 'synthetic-proxy-secret'}, clear=False):
+            environment = benchmark.benchmark_child_environment()
+            self.assertNotIn('NVIDIA_API_KEY', environment)
+            self.assertNotIn('GOOGLE_APPLICATION_CREDENTIALS', environment)
+            self.assertNotIn('HTTPS_PROXY', environment)
+            child = subprocess.run(
+                [sys.executable, '-B', '-c',
+                 'import json,os; print(json.dumps({k: os.environ.get(k) for k in '
+                 '("NVIDIA_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "HTTPS_PROXY", "PATH")}))'],
+                check=True, capture_output=True, text=True, env=environment)
+            observed = json.loads(child.stdout)
+            self.assertIsNone(observed['NVIDIA_API_KEY'])
+            self.assertIsNone(observed['GOOGLE_APPLICATION_CREDENTIALS'])
+            self.assertIsNone(observed['HTTPS_PROXY'])
+            self.assertEqual(observed['PATH'], environment.get('PATH'))
+
     def test_declared_cost_scenario_is_exact(self):
         params = json.loads(Path(__file__).with_name('inputs.json').read_text())
         result = model(params)
