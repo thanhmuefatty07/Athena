@@ -1,0 +1,32 @@
+{
+  "long": {
+    "input": {
+      "html": "<!doctype html><html><head><title>Athena core fixture</title></head><body><main><h1>Core integration fixture</h1><p>Athena extracts searchable evidence from this local synthetic document.</p><p>Rust core parses HTML and exports bounded AAE records.</p><p>Tiếng Việt — café 👩🏽‍💻</p><a href=\"/guide\">Research guide</a></main></body></html>",
+      "url": "https://example.org/research/core",
+      "query": "searchable evidence Rust core",
+      "observed_at_unix_ms": 1735689600000,
+      "limit": 16384
+    },
+    "expected_contains": [
+      "Core integration fixture",
+      "searchable evidence",
+      "bounded AAE records",
+      "Tiếng Việt — café 👩🏽‍💻"
+    ],
+    "expected_link": "https://example.org/guide"
+  },
+  "short": {
+    "input": {
+      "html": "<!doctype html><html><body><main><h1>Short core fixture</h1><p>Small bounded research payload.</p></main></body></html>",
+      "url": "https://example.org/research/short",
+      "query": "bounded research",
+      "observed_at_unix_ms": 1735689600001,
+      "limit": 4096
+    },
+    "expected_contains": [
+      "Short core fixture",
+      "bounded research payload"
+    ],
+    "expected_link": null
+  }
+}

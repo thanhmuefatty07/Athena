@@ -1,13 +1,16 @@
 # ATHENA V2 — MASTER TECHNICAL BLUEPRINT / IMPLEMENTATION REFERENCE
 
-**Ngày khóa thiết kế:** 14/10/2026; cập nhật kiểm chứng 15/10/2026
-**Bản:** 2.0.2-research-first
-**Ngôn ngữ triển khai lõi:** Rust 1.99.0, edition 2024  
-**Trạng thái chứng cứ:** Lõi tham chiếu đã build bằng Rust 1.99.0 trên Windows x86_64. Có baseline release, benchmark đối chiếu ngoại tuyến, kiểm thử Rust/Python, Clippy và audit dependency; số lượng/kết quả cuối được ghi trong `ENGINEERING_REVIEW.md`. **Chưa đạt trạng thái production-verified**: chưa đo hệ thống triển khai, mạng thật, RSS/allocator, fuzz, Loom/Miri hay ARM64.
+**Ngày khóa thiết kế:** 14/10/2026; cập nhật phạm vi nghiên cứu 18/10/2026
+**Bản:** 2.0.5-research-decisions
+**Ngôn ngữ triển khai lõi:** Rust 1.99.1, edition 2024
+
+**Trạng thái chứng cứ:** Lõi tham chiếu đã build bằng Rust 1.99.0 trên Windows và Kaggle Linux x86_64. Study 2.1 có raw CPU, process peak RSS trên corpus links và đối chiếu tuple RNG; phán quyết nằm trong `kaggle_results/v21-run-004/research-decision.json` (trong đó `cpu_core` đã được dỡ bỏ cổng REJECT sau khi tối ưu hóa AAE serializer/hasher, đạt `READY_FOR_SCOPED_REVIEW`), diễn giải hiện hành trong `CORE_RESEARCH_PLAN.md` và `CHECKPOINT.md`. **Chưa đạt trạng thái production-verified**: chưa đo hệ thống triển khai, live network/browser/harness end-to-end, allocator/containment tổng quát, fuzz, Loom/Miri hay ARM64. Audit cũ không thay advisory gate cho tuple mới.
 
 **Ưu tiên hiện tại của người dùng:** lập kế hoạch và định hướng nghiên cứu; chốt triển khai sau khi agent khác cung cấp bằng chứng. [CORE_RESEARCH_PLAN.md](CORE_RESEARCH_PLAN.md) quy định stack Rust, các phương án so sánh, Kaggle và protocol kiểm chứng. Các sửa đổi mã hiện có là draft chưa được chốt; kết quả Windows không thay kết quả Kaggle. Không lấy roadmap dài hạn bên dưới làm lệnh bắt đầu coding.
 
 **Phạm vi bổ sung ngày 15/10/2026:** được sửa harness nghiên cứu để khắc phục sai lệch đo lường; người dùng tự chạy benchmark Kaggle. [Protocol v2 và hướng dẫn chạy](kaggle_experiments/README.md) là hợp đồng thực nghiệm hiện tại. Kết quả legacy không tự duyệt candidate; thay production core cần quyết định theo từng nhóm bằng chứng.
+
+**Phạm vi đã thống nhất ngày 16/10/2026:** core trước, chỉ mục web riêng để sau. Nghiên cứu cách phối hợp tìm nguồn, đọc/trích xuất/crawl và truy cập nguồn được phép, lấy Exa/Firecrawl/Bright Data làm tham chiếu năng lực; bổ sung **Search as Code (SaC)** của Perplexity để so sánh cách agent lập workflow qua SDK trong sandbox. [CORE_RESEARCH_PLAN.md](CORE_RESEARCH_PLAN.md) mục 3.4–3.7/6.6 quy định định hướng, mục **9–13** quy định giao việc: U01–U10, owner/consumer map, WP00–WP08, task/workflow contracts, oracle/panel, spec/resource/trust và gate G0–G6. Agent nhận đúng một scope, giữ baseline và evidence identity, không suy blueprint thành lệnh triển khai toàn bộ. Đây là **[PROPOSED]**, chưa phải API/SDK/runner đã triển khai hoặc quyết định gọi các dịch vụ ngoài.
 
 > Mục tiêu: công cụ truy xuất web được cấp phép, phục vụ AI agent, tối thiểu chi phí trên **mỗi kết quả đúng và đủ bằng chứng**, hỗ trợ freshness có thể quan sát, định dạng đầu ra có cấu trúc, ưu tiên hiệu suất hệ thống end-to-end. Không lấy việc vượt CAPTCHA, giả mạo fingerprint, lấy clearance cookie, quét proxy mở hoặc né rate limit làm cơ chế kinh doanh.
 
@@ -78,6 +81,8 @@ Kết quả trả kèm `fetch_started_at`, `response_observed_at`, `validation_m
 ## 3. Architecture và failure boundaries
 
 **[PROPOSED]** Sơ đồ dưới đây là ranh giới của sản phẩm đích. Các thành phần có mã thực tế được phân biệt trong mục 4.2; sơ đồ không phải yêu cầu triển khai đồng thời tất cả thành phần.
+
+Ở vòng core hiện tại, input là URL hoặc search candidates có provenance qua adapter/corpus đã xác định. Planner lựa chọn đọc, mở rộng hoặc dừng theo yêu cầu chất lượng/freshness và budget; không mặc định kích hoạt mọi năng lực. Kiến trúc SDK/SaC so sánh workflow cố định, agent gọi từng tool, chương trình batch viết sẵn và chương trình do agent sinh trên cùng core primitives. MCP/direct SDK là adapter ngoài; subcall vẫn qua cùng policy/admission/budget. Agent kiểm soát kế hoạch, còn quyền truy cập, byte/resource caps và cancellation được core thực thi. Chưa triển khai sandbox hay search index từ mô tả này.
 
 ```text
 Agent SDK / REST / gRPC / MCP
@@ -159,10 +164,10 @@ Khóa có thể lưu dưới dạng struct typed rồi hash bằng hasher cho ma
 
 | Thành phần | V2 baseline | Tại sao | Khi nào đổi |
 |---|---|---|---|
-| Rust | 1.99.0, edition 2024 | toolchain đã kiểm tra và pin | nâng sau CI + perf regression |
+| Rust | 1.99.1, edition 2024 | pin hiện hành; evidence 1.99.0 giữ riêng | local gates theo engineering review; Linux/performance cần evidence mới |
 | Runtime | Tokio 1.53.x | cancellation, async sockets, sync primitives | so sánh `monoio` chỉ khi profile chỉ ra hạn chế |
 | HTTP | Reqwest 0.13.5 + rustls | TLS và HTTP abstraction mature, DNS override | Hyper custom connector khi cần bounded DNS-aware connection cache |
-| HTML | scraper 0.27 → html5ever | chuẩn HTML5 error recovery và DOM tree | adapter fast path có validation parity |
+| HTML | scraper 0.27.0 + html5ever 0.39.0 | chuẩn HTML5 recovery; TreeSink adapter đếm node trước cấp phát | direct-to-arena/parser rival chỉ sau parity, resource và performance evidence |
 | Node projection | Rust `Vec<Node>` 32 bytes | locality, bounded indexing | SoA khi profile chứng minh throughput tăng |
 | Shared bytes | `bytes` | share immutable byte buffers không copy theo cloning | giới hạn use case theo lifetime và actual buffers |
 | Dedupe | `std::Mutex<HashMap>` + `tokio::watch` | leader election atomic, dễ kiểm toán | sharded locks khi contention proven |
@@ -172,9 +177,9 @@ Khóa có thể lưu dưới dạng struct typed rồi hash bằng hasher cho ma
 | Stats model | rand_distr Beta | Thompson sampling thật | hierarchical contextual bandit khi đủ telemetry |
 | Observability | `tracing`/OTel (proposed) | end-to-end attribution | sampling policy khi log cost tăng |
 
-**Dependency pinning:** `Cargo.lock` đã tồn tại và được dùng với `--locked`. Đợt 14–15/10/2026 cập nhật riêng rustls `0.23.45 → 0.23.46` để xử lý bốn advisory RustSec; audit sau cập nhật báo 0 vulnerability đã biết trong database tại thời điểm chạy. Không thêm dependency. `cargo deny` đã kiểm tra advisories/bans/sources; license inventory không thay thế duyệt tuân thủ pháp lý. Không suy từ semver hay audit sạch thành tương thích/an toàn tuyệt đối.
+**Dependency pinning:** `Cargo.lock` đã tồn tại và được dùng với `--locked`. `html5ever = 0.39.0` là direct edge cho TreeSink adapter; crate này vốn đã nằm trong graph qua scraper nên không thêm package version. Đợt 14–15/10/2026 cập nhật riêng rustls `0.23.45 → 0.23.46` để xử lý bốn advisory RustSec; audit sau cập nhật báo 0 vulnerability đã biết trong database tại thời điểm chạy. `cargo deny` đã kiểm tra advisories/bans/sources; license inventory không thay thế duyệt tuân thủ pháp lý. Không suy từ semver hay audit sạch thành tương thích/an toàn tuyệt đối.
 
-**Vòng nghiên cứu tiếp theo:** giữ graph hiện tại làm comparator; khảo sát rand `0.10.3` + rand_distr `0.6.0` như một nhóm tương thích, parser TreeSink và transport reuse là các thí nghiệm riêng. Danh mục đủ 11 direct dependencies, rival và gate chốt nằm trong mục 2–3 của CORE_RESEARCH_PLAN.md. Chưa thay manifest hoặc chọn parser/runtime mới trước kết quả kiểm chứng.
+**Vòng nghiên cứu tiếp theo:** giữ graph hiện tại làm comparator; khảo sát rand `0.10.3` + rand_distr `0.6.0` như một nhóm tương thích, bounded TreeSink behavior và transport reuse là các thí nghiệm riêng. Danh mục đủ 12 direct dependencies, rival và gate chốt nằm trong mục 2–3 của CORE_RESEARCH_PLAN.md. Không chọn parser/runtime mới trước kết quả kiểm chứng.
 
 ### 4.2 Mô-đun có mã thực tế và nhiệm vụ
 
@@ -183,10 +188,10 @@ Khóa có thể lưu dưới dạng struct typed rồi hash bằng hasher cho ma
 | `src/network.rs` | HTTPS/443 allowlist + DNS pinning + body cap | reject redirects/proxy/IP literals; validate policy/ETag trước DNS; timeout cả DNS+HTTP+body | pooled custom connector, robots enforcement, legacy charset, compressed decoding, egress firewall |
 | `src/singleflight.rs` | đồng bộ cùng key | cancel guard, wake followers, result retention | LRU/cap active key, leader detached mode, metrics, load shedding |
 | `src/arena.rs` | index-based DOM 32 bytes | range checking, stable buffer lifetime | bounded preallocation telemetry, adaptive layout |
-| `src/projection.rs` | HTML5 parse → compact projection | byte/node/link quota, preformatted fidelity, dedupe tuyến tính, dictionary một bản URL | metadata/a11y attrs, table structural integration, encoding sniffing, parser RSS isolation, lost-content eval |
+| `src/projection.rs` | HTML5 parse → compact projection | TreeSink node-admission cap before node allocation; chunked input; byte/output/link quota; preformatted fidelity; linear dedupe; single URL dictionary | hard RSS/allocator cap, attributes/tokenizer memory caps, metadata/a11y attrs, table structural integration, encoding sniffing, parser RSS isolation, lost-content eval |
 | `src/table.rs` | grid 2D spans | group ends tính một lần, sparse rows, overlap và quota columns | WHATWG parity for malformed overlapping and nested tables |
 | `src/rank.rs` | lexical BM25 scoring | query-only postings; giữ full document lengths/DF/IDF; term order xác định | labeled relevance evaluation, chunk merging and cross-encoder |
-| `src/aae.rs` | JSONL AAE serialization | byte cap kể cả escaping/newline/end, hash incremental có buffer giới hạn | streaming to socket, token budget, diff, incremental skeleton semantics |
+| `src/aae.rs` | JSONL AAE serialization | logical byte cap kể cả escaping/newline/end; source hiện tạo full frame và joined text, chưa chứng minh hard temporary-memory cap | bounded intermediate writer/hash cần đo parity/RSS; streaming to socket, token budget, diff, incremental skeleton semantics |
 | `src/orchestrator.rs` | two-layer source/representation flights | effective-policy keys, pending admission, CPU quota sống theo worker, deadline tổng | persistent cache, source authorization, tenant fairness, distributed routing |
 | `src/bandit.rs` | adaptive TierSampler | discounted Beta draws, eligibility and USD/attempt | posterior calibration, failover Bellman, nonstationary evaluation |
 | `src/ip_policy.rs` | address classifier | many common special-use network exclusions | registry synchronization + firewall, full validation |
@@ -212,9 +217,9 @@ const _: () = assert!(std::mem::size_of::<Node>() == 32);
 
 **Byte size:** `7 * 4 + 1 + 1 + 2 = 32`. Nếu 50.000 node, payload node là `1.600.000 bytes` = `1.526 MiB`; số này không tính raw HTML, parser tree, decoded text, attributes, Vec capacity, overhead allocator. `#[repr(C,align(32))]` không tự làm nhanh hơn, phải profile `perf`, cache-misses và IPC. `append_child` cập nhật `last_child` O(1), nhưng append front load và parser construction vẫn chi phối nhiều ca. HTML entities (`&amp;`) bắt buộc decode, nên không thể quảng cáo toàn bộ DOM là “zero-copy từ HTTP response”.
 
-**Giới hạn hiện có:** `ParseLimits` mặc định HTML/text/link bytes mỗi loại 4 MiB, URL đã resolve 8192 byte, 250.000 arena nodes tính cả root, 1200 từ/chunk. `Engine` lấy HTML/text/link budgets từ fetch policy, dùng 1000 từ/chunk; pending mặc định `32 × max(1, origin_capacity)`, có `with_pending_limit` để cấu hình. `export_jsonl` mặc định cap JSONL 16 MiB; `export_jsonl_with_limit` cho quota riêng. Caller bị quá tải/deadline trả lỗi; worker blocking đã bắt đầu vẫn giữ quota đến khi thực sự kết thúc. Đã kiểm thử biên và input khuếch đại URL.
+**Giới hạn hiện có:** `ParseLimits` mặc định HTML/text/link bytes mỗi loại 4 MiB, URL đã resolve 8192 byte, 250.000 output arena nodes, 250.000 HTML parser nodes và 1200 từ/chunk. Parser giới hạn node tại `TreeSink` trước khi node được cấp; sau khi chạm ngưỡng, phần input HTML tiếp theo không được gửi vào parser. `Engine` lấy HTML/text/link budgets và cùng giới hạn node parser/output từ fetch policy, dùng 1000 từ/chunk; pending mặc định `32 × max(1, origin_capacity)`, có `with_pending_limit` để cấu hình. `export_jsonl` mặc định cap JSONL 16 MiB; `export_jsonl_with_limit` cho quota riêng. Caller bị quá tải/deadline trả lỗi; worker blocking đã bắt đầu vẫn giữ quota đến khi thực sự kết thúc. Đã kiểm thử biên và input khuếch đại URL.
 
-**Giới hạn còn phải chứng minh/tích hợp:** parser HTML5 dựng cây trước node/text quota; byte cap không phải tổng RSS/capacity allocator. Cần đo và cô lập parser khi mở dịch vụ không tin cậy, thêm attrs/table-grid/token quotas theo pipeline thực tế. Input vượt budget trước đây có thể được nhận nay trả lỗi có chủ đích; dùng API limits rõ ràng khi tăng budget, rồi đo lại workload. Benchmark mỗi giới hạn bằng pathological fixtures, không dựa vào một file đẹp.
+**Giới hạn còn phải chứng minh/tích hợp:** node quota không phải tổng RSS/capacity allocator; byte cap hiện được kiểm khi nội dung đã được đọc vào bộ nhớ. Cần đo peak và concurrency trên Linux, đánh giá attributes/tokenizer/projection allocations, và cô lập parser nếu yêu cầu deployment cần hard process-memory kill. Input vượt parser-node budget nay trả lỗi có chủ đích; dùng API limits rõ ràng khi tăng quota, rồi đo lại workload. Benchmark mỗi giới hạn bằng pathological fixtures, không dựa vào một file đẹp.
 
 ### 4.3.1 Kiểm soát độ phức tạp extraction
 
@@ -464,6 +469,8 @@ Targets phải điều chỉnh sau feasibility testing; không tạo target p95=
 3. Reviewer chốt từng candidate ACCEPT/REJECT/HOLD; giữ kết quả bất lợi và UNKNOWN.
 4. Chỉ candidate ACCEPT mới có implementation scope cụ thể; sau đó agent được giao mới triển khai và kiểm chứng diff đó.
 
+Study 2.1 là evidence đã lưu, không reset hoặc retag thành Study mới. Vòng nghiên cứu tiếp theo tập trung ablation AAE, tương tác giữa các tối ưu, workflow/SDK/SaC và chi phí thực ở harness. Các shard Kaggle có baseline/candidate trong cùng VM, có budget và scope riêng; model/harness thật và live access là gate riêng. Chỉ mục web riêng được hoãn theo quyết định người dùng; các phase dài hạn về sau không tự mở rộng phạm vi này.
+
 Các phase dài hạn bên dưới là backlog tham khảo, không phải lệnh triển khai hoặc lịch đang chạy. Không mở rộng vòng hiện tại sang CI/deployment/billing/operations.
 
 ### Phase 0 — Build verifiability & baseline (days 1–5)
@@ -556,3 +563,29 @@ Các phase dài hạn bên dưới là backlog tham khảo, không phải lệnh
 ### Final design decision
 
 Athena không tối ưu bằng cách dựa vào “giao thức có lỗ hổng kinh tế”. Athena tối ưu bằng **giảm fetch thừa hợp lệ**, **giữ bằng chứng nguồn**, **reuse an toàn**, **chọn chính xác thông tin cần cho Agent** và **giảm chi phí cho một kết quả đúng**. Đây là con đường bền vững hơn để đạt throughput cao và chứng minh lợi thế thương mại. Tất cả code đã viết nằm trong `src/`; các module chưa implemented được đánh dấu rõ, không gắn nhãn hoàn tất giả.
+
+Các comparator, native/service probes và agent research harness mới nằm riêng
+ở `cloud_experiments/`. Trạng thái mã,
+gaps và điều kiện bàn giao hiện tại nằm ở mục 17 của [kế hoạch nghiên cứu](CORE_RESEARCH_PLAN.md).
+Không xem research prototype, pilot COMPLETE hay finite correctness controls là
+production architecture/performance đã được chốt.
+
+Nghiên cứu dependency/core được mở rộng tại CORE_RESEARCH_PLAN.md mục 18: locked library/feature tuples, interactions, causal denials và reviewed corpus intake. Các comparator nằm trong cloud_experiments; chưa phải lựa chọn production hay bằng chứng tối ưu toàn cục.
+
+**Điểm vào nghiên cứu hiện hành — 18/10/2026:**
+[CORE_RESEARCH_PLAN.md mục 19](CORE_RESEARCH_PLAN.md#19-bản-đồ-bài-toán-và-nghiên-cứu-để-quyết-định-nâng-cấp-core--18102026)
+map các khoảng trống source vào H01–H14, F01–F08 và interaction obligations.
+Phân biệt search-only với đọc/render khi cần; các trục freshness, connection,
+session/proxy và representation có thể kết hợp, không là các tier loại trừ nhau.
+Nghiên cứu state machine, demand-driven plan và sandbox SDK trên cùng primitives;
+giữ AAE/1 compatibility riêng với negotiated selected/reference evidence.
+Nguồn REA/Exa/Firecrawl/Bright Data/Perplexity đã được đối chiếu công khai;
+chưa cài/chạy REA hoặc xác định thuật toán server không được phân phối.
+Đây là kế hoạch quyết định, chưa là core upgrade hoặc kết quả benchmark mới.
+
+Harness cloud đã bổ sung atomic manifest/JSON publication và resumable
+confirmation analysis theo từng completed case; hướng dẫn tại
+[cloud_experiments/README.md](cloud_experiments/README.md#continuing-a-long-confirmation-analysis).
+Local process-kill/restart, stale-result rejection và statistical-output parity
+đã có checks; target Linux và full performance/quality closure vẫn là gate riêng.
+Không coi các sửa lifecycle của nghiên cứu là production-core speedup.

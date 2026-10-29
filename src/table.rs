@@ -24,6 +24,7 @@ pub struct Grid {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GridError {
     TooLarge,
+    TooManySlots,
     InvalidGroupOrder,
     Overlap,
 }
@@ -46,6 +47,18 @@ fn resize_row(row: &mut Vec<Option<usize>>, width: usize, max_cols: usize) {
 }
 
 pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, GridError> {
+    let max_slots = max_rows.saturating_mul(max_cols);
+    expand_with_slot_limit(rows, max_rows, max_cols, max_slots)
+}
+
+/// Expand a logical table while bounding the total number of initialized grid slots.
+/// The slot budget is enforced before each row grows, including final rectangular padding.
+pub fn expand_with_slot_limit(
+    rows: &[Row],
+    max_rows: usize,
+    max_cols: usize,
+    max_slots: usize,
+) -> Result<Grid, GridError> {
     if rows.len() > max_rows || max_cols == 0 {
         return Err(GridError::TooLarge);
     }
@@ -57,6 +70,7 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
     let mut cells = Vec::new();
     let mut width = 0;
     let mut group_end = 0;
+    let mut initialized_slots = 0usize;
     for (r, row) in rows.iter().enumerate() {
         if r == group_end {
             group_end = (r + 1..rows.len())
@@ -81,6 +95,12 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
             let index = cells.len();
             for line in slots.iter_mut().take(r + dr).skip(r) {
                 if line.len() < end_col {
+                    initialized_slots = initialized_slots
+                        .checked_add(end_col - line.len())
+                        .ok_or(GridError::TooManySlots)?;
+                    if initialized_slots > max_slots {
+                        return Err(GridError::TooManySlots);
+                    }
                     resize_row(line, end_col, max_cols);
                 }
                 for spot in &mut line[c..end_col] {
@@ -96,7 +116,15 @@ pub fn expand(rows: &[Row], max_rows: usize, max_cols: usize) -> Result<Grid, Gr
         }
     }
     for row in &mut slots {
-        resize_row(row, width, max_cols);
+        if row.len() < width {
+            initialized_slots = initialized_slots
+                .checked_add(width - row.len())
+                .ok_or(GridError::TooManySlots)?;
+            if initialized_slots > max_slots {
+                return Err(GridError::TooManySlots);
+            }
+            resize_row(row, width, max_cols);
+        }
     }
     Ok(Grid {
         cells,
@@ -139,6 +167,26 @@ mod tests {
             assert_eq!(grid.width, max_cols);
             assert!(grid.slots[0].capacity() <= max_cols);
         }
+    }
+    #[test]
+    fn slot_budget_accepts_exact_grid_and_rejects_one_slot_below() {
+        let rows = [
+            Row {
+                group: 0,
+                cells: vec![cell("A", 2, 2)],
+            },
+            Row {
+                group: 0,
+                cells: vec![],
+            },
+        ];
+        let exact = expand_with_slot_limit(&rows, 2, 2, 4).unwrap();
+        assert_eq!(exact.width, 2);
+        assert_eq!(exact.slots, vec![vec![Some(0); 2], vec![Some(0); 2]]);
+        assert_eq!(
+            expand_with_slot_limit(&rows, 2, 2, 3),
+            Err(GridError::TooManySlots)
+        );
     }
     #[test]
     fn overlaps_are_errors_and_group_order_is_validated() {

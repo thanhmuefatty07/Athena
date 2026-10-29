@@ -2,6 +2,7 @@
 import base64
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import io
 import json
 import math
@@ -15,17 +16,217 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 
 if __package__:
     from .protocol import (
-        PROTOCOL_VERSION, is_digest, parse_peak_rss, require_parity,
+        PROTOCOL_VERSION, is_digest, parse_peak_rss, require_parity, strict_json_loads,
         sha256_file, validate_aae,
     )
 
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+RUSTUP_VERSION = "1.29.1"
+RUSTUP_TOOLCHAIN = "1.99.1"
+MAX_CAPTURED_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_RUSTUP_INSTALLER_BYTES = 64 * 1024 ** 2
+RUSTUP_INSTALLER_CHUNK_BYTES = 64 * 1024
+RUSTUP_DOWNLOAD_TIMEOUT_SECONDS = 600
+RUSTUP_DOWNLOAD_WORKER_SOURCE = """\
+import sys
+from urllib.parse import urlsplit
+from urllib.request import urlopen
+
+url, destination, max_bytes = sys.argv[1:4]
+max_bytes = int(max_bytes)
+with urlopen(url, timeout=60) as response:
+    final_url = getattr(response, "geturl", lambda: url)()
+    if urlsplit(final_url).scheme.lower() != "https":
+        raise ValueError("Rustup installer download redirected away from HTTPS")
+    total_bytes = 0
+    with open(destination, "xb") as output:
+        while True:
+            chunk = response.read(65536)
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise ValueError("Rustup installer response was not binary")
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise ValueError("Rustup installer exceeds the configured byte limit")
+            output.write(chunk)
+"""
+PINNED_RUSTUP_SHA256 = {
+    "x86_64-unknown-linux-gnu": "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71",
+    "aarch64-unknown-linux-gnu": "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433",
+}
+RUSTUP_TARGETS_BY_MACHINE = {
+    "x86_64": "x86_64-unknown-linux-gnu",
+    "aarch64": "aarch64-unknown-linux-gnu",
+}
+
+# A benchmark child executes repository-controlled build scripts and binaries.
+# Keep toolchain/runtime controls that the runner deliberately owns, but do not
+# pass provider, cloud, notebook or proxy credentials through an implicit
+# ``env=None`` subprocess boundary.
+_CHILD_ENV_KEYS = frozenset({
+    "CARGO_HOME", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+    "CARGO_PROFILE_RELEASE_LTO", "CARGO_TARGET_DIR", "COMSPEC", "HOME", "LANG",
+    "LC_ALL", "LOGNAME", "PATH", "PATHEXT", "PYTHONDONTWRITEBYTECODE", "PYTHONUTF8",
+    "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "TZ",
+    "USER", "USERNAME", "WINDIR",
+})
+
+
+def child_environment(environment=None):
+    """Return a bounded child environment; explicit environments are preserved."""
+    if environment is not None:
+        return environment
+    return {key: value for key, value in os.environ.items()
+            if key.upper() in _CHILD_ENV_KEYS}
+
+
+class BoundedProcessResult:
+    def __init__(self, returncode, stdout, stderr, status, elapsed_ns, output_limit_bytes):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.status = status
+        self.elapsed_ns = elapsed_ns
+        self.output_limit_bytes = output_limit_bytes
+        self.captured_output_bytes = len(stdout) + len(stderr)
+
+
+def run_bounded_process(command, *, timeout, output_limit, cwd=None, input_bytes=None, env=None):
+    """Bound captured stdout/stderr and stop the child when their combined cap is exceeded."""
+    if type(output_limit) is not int or output_limit < 1:
+        raise ValueError("Invalid output limit")
+    if output_limit > MAX_CAPTURED_COMMAND_OUTPUT_BYTES:
+        raise ValueError("output limit exceeds the runner hard cap")
+    if (not command or type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
+            or (input_bytes is not None and not isinstance(input_bytes, bytes))):
+        raise ValueError("Invalid bounded-process timeout, command, or input")
+    command = [str(value) for value in command]
+    process = subprocess.Popen(command, cwd=cwd,
+                               stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=child_environment(env),
+                               start_new_session=(os.name == "posix"))
+    buffers, captured = [bytearray(), bytearray()], [0]
+    lock = threading.Lock()
+    output_limit_hit, pipe_error = threading.Event(), threading.Event()
+
+    def terminate_group():
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.kill()
+
+    def drain(index, pipe):
+        try:
+            reader = getattr(pipe, "read1", pipe.read)
+            while True:
+                chunk = reader(65536)
+                if not chunk:
+                    break
+                with lock:
+                    if output_limit_hit.is_set():
+                        break
+                    remaining = output_limit - captured[0]
+                    kept = min(len(chunk), remaining)
+                    if kept:
+                        buffers[index].extend(chunk[:kept])
+                        captured[0] += kept
+                    if kept < len(chunk):
+                        output_limit_hit.set()
+                        break
+        except OSError:
+            pipe_error.set()
+        finally:
+            pipe.close()
+
+    def feed():
+        try:
+            process.stdin.write(input_bytes)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+
+    threads = [threading.Thread(target=drain, args=(index, pipe), daemon=True)
+               for index, pipe in enumerate((process.stdout, process.stderr))]
+    feeder = threading.Thread(target=feed, daemon=True) if input_bytes is not None else None
+    started = time.monotonic()
+    deadline = started + timeout
+    status = "EXITED"
+
+    def has_exited():
+        if os.name == "posix" and hasattr(os, "waitid") and hasattr(os, "WNOWAIT"):
+            info = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            return info is not None and info.si_pid != 0
+        return process.poll() is not None
+
+    started_threads = []
+    feeder_started = False
+    try:
+        for thread in threads:
+            thread.start()
+            started_threads.append(thread)
+        if feeder:
+            feeder.start()
+            feeder_started = True
+        while not has_exited():
+            if output_limit_hit.is_set():
+                status = "OUTPUT_LIMIT"
+                terminate_group()
+                break
+            if pipe_error.is_set():
+                status = "PIPE_ERROR"
+                terminate_group()
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status = "TIMEOUT"
+                terminate_group()
+                break
+            time.sleep(min(0.02, remaining))
+    except BaseException:
+        terminate_group()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            terminate_group()
+            process.wait(timeout=5)
+        for thread in started_threads:
+            thread.join(timeout=5)
+        if feeder_started:
+            feeder.join(timeout=5)
+        raise
+    if os.name == "posix":
+        terminate_group()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        terminate_group()
+        process.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+    if feeder:
+        feeder.join(timeout=5)
+    if any(thread.is_alive() for thread in threads) or (feeder and feeder.is_alive()):
+        terminate_group()
+        status = "PIPE_LIFETIME"
+    elif output_limit_hit.is_set():
+        status = "OUTPUT_LIMIT"
+    elif pipe_error.is_set() and status == "EXITED":
+        status = "PIPE_ERROR"
+    return BoundedProcessResult(process.returncode, *(bytes(buffer) for buffer in buffers), status,
+                                round((time.monotonic() - started) * 1e9), output_limit)
 
 
 def unpack_snapshot(encoded, expected_digest, hashes, destination):
@@ -88,35 +289,29 @@ class EvidenceRun:
         if remaining <= 0:
             raise TimeoutError("Experiment wall-clock budget exhausted")
         self.log("CMD " + json.dumps(command) + " cwd=" + str(cwd))
-        start = time.perf_counter_ns()
-        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=(os.name == "posix"))
-        try:
-            stdout, stderr = process.communicate(input_bytes, timeout=min(timeout, remaining))
-        except subprocess.TimeoutExpired:
-            if os.name == "posix":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            else:
-                process.kill()
-            stdout, stderr = process.communicate()
-            self.manifest["commands"].append({"argv": command, "cwd": str(cwd),
-                "status": "TIMEOUT", "exit_code": process.returncode})
-            self.log("TIMEOUT\n" + stderr.decode("utf-8", errors="replace"))
-            raise TimeoutError("Supervised process timed out")
-        record = {"argv": command, "cwd": str(cwd), "exit_code": process.returncode,
-                  "wall_ns": time.perf_counter_ns() - start,
+        output_limit = self.manifest.get("spec", {}).get("limits", {}).get(
+            "command_output_bytes", 8 * 1024 * 1024)
+        result = run_bounded_process(command, cwd=cwd, timeout=min(timeout, remaining),
+                                     output_limit=output_limit, input_bytes=input_bytes)
+        stdout, stderr = result.stdout, result.stderr
+        record = {"argv": command, "cwd": str(cwd), "exit_code": result.returncode,
+                  "status": result.status, "wall_ns": result.elapsed_ns,
+                  "captured_output_bytes": result.captured_output_bytes,
+                  "output_limit_bytes": result.output_limit_bytes,
                   "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
                   "stderr_sha256": hashlib.sha256(stderr).hexdigest()}
         self.manifest["commands"].append(record)
         self.log("RESULT " + json.dumps(record))
-        if log_output or process.returncode:
+        if log_output or result.returncode:
             self.log(stdout.decode("utf-8", errors="replace") + stderr.decode("utf-8", errors="replace"))
-        if process.returncode:
-            raise subprocess.CalledProcessError(process.returncode, command, stdout, stderr)
+        if result.status == "OUTPUT_LIMIT":
+            raise RuntimeError("Supervised process exceeded the combined output limit: OUTPUT_LIMIT")
+        if result.status == "TIMEOUT":
+            raise TimeoutError("Supervised process timed out")
+        if result.status != "EXITED":
+            raise RuntimeError("Supervised process pipe handling failed: " + result.status)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, command, stdout, stderr)
         return stdout
 
     def check(self, name, action):
@@ -155,19 +350,26 @@ class EvidenceRun:
 
 
 def prepare_toolchain(run):
+    external_flags = sorted(
+        name for name in os.environ
+        if (name in {"RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"} and os.environ.get(name))
+        or name.startswith("CARGO_PROFILE_RELEASE_")
+    )
+    if external_flags:
+        raise RuntimeError(
+            "External compiler flags would change the controlled experiment: "
+            + ", ".join(external_flags)
+        )
+
     cargo_bin = str(Path.home() / ".cargo" / "bin")
     os.environ["PATH"] = cargo_bin + os.pathsep + os.environ.get("PATH", "")
-    os.environ["RUSTUP_TOOLCHAIN"] = "1.99.0"
+    os.environ["RUSTUP_TOOLCHAIN"] = RUSTUP_TOOLCHAIN
     if not shutil.which("rustup"):
-        installer = run.run(["curl", "--proto", "=https", "--tlsv1.2", "-sSf",
-                             "https://sh.rustup.rs"])
-        path = run.directory / "rustup-init.sh"
-        path.write_bytes(installer)
-        run.run(["sh", str(path), "-y", "--profile", "minimal", "--default-toolchain", "none"], timeout=600)
-    run.run(["rustup", "toolchain", "install", "1.99.0", "--profile", "minimal",
+        install_pinned_rustup(run)
+    run.run(["rustup", "toolchain", "install", RUSTUP_TOOLCHAIN, "--profile", "minimal",
              "--component", "rustfmt", "--component", "clippy"], timeout=900)
     rustc = run.run(["rustc", "-Vv"]).decode()
-    if "release: 1.99.0\n" not in rustc:
+    if f"release: {RUSTUP_TOOLCHAIN}\n" not in rustc:
         raise RuntimeError("Unexpected Rust toolchain; stable fallback forbidden")
     environment = {"rustc": rustc, "cargo": run.run(["cargo", "-Vv"]).decode(),
                    "python": sys.version, "platform": platform.platform(),
@@ -178,15 +380,62 @@ def prepare_toolchain(run):
     for file in ("cpu.max", "memory.max"):
         path = Path("/sys/fs/cgroup") / file
         environment[file] = path.read_text().strip() if path.exists() else "UNKNOWN"
-    if os.environ.get("RUSTFLAGS") or any(name.startswith("CARGO_PROFILE_RELEASE_") for name in os.environ):
-        raise RuntimeError("External release/CPU flags would change the controlled experiment")
     run.manifest["environment"] = environment
-    return {"rust_version": "1.99.0", "target": re.search(r"host: (.+)", rustc).group(1)}
+    return {"rust_version": RUSTUP_TOOLCHAIN, "target": re.search(r"host: (.+)", rustc).group(1)}
 
 
-def dependency_metadata(run, source):
-    metadata = json.loads(run.run(["cargo", "metadata", "--locked", "--format-version", "1"],
-                                 cwd=source, log_output=False))
+def install_pinned_rustup(run, target=None, machine=None):
+    if target is None:
+        architecture = (machine or platform.machine()).lower()
+        try:
+            target = RUSTUP_TARGETS_BY_MACHINE[architecture]
+        except KeyError:
+            raise ValueError(f"Unsupported Linux architecture for rustup-init: {architecture!r}") from None
+    expected_digest = PINNED_RUSTUP_SHA256.get(target)
+    if (expected_digest is None or len(expected_digest) != 64
+            or any(char not in "0123456789abcdef" for char in expected_digest)):
+        raise ValueError(f"Unsupported or invalid rustup-init digest target: {target!r}")
+
+    url = ("https://static.rust-lang.org/rustup/archive/"
+           f"{RUSTUP_VERSION}/{target}/rustup-init")
+    with tempfile.TemporaryDirectory(prefix="rustup-init-", dir=run.directory) as directory:
+        installer = Path(directory) / "rustup-init"
+        download_worker = Path(directory) / "download-rustup-installer.py"
+        download_worker.write_text(RUSTUP_DOWNLOAD_WORKER_SOURCE, encoding="utf-8")
+        run.run([sys.executable, "-B", str(download_worker), url, str(installer),
+                 str(MAX_RUSTUP_INSTALLER_BYTES)],
+                timeout=RUSTUP_DOWNLOAD_TIMEOUT_SECONDS, log_output=False)
+
+        hasher = hashlib.sha256()
+        total_bytes = 0
+        with installer.open("rb") as source:
+            while True:
+                chunk = source.read(RUSTUP_INSTALLER_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_RUSTUP_INSTALLER_BYTES:
+                    raise ValueError("Rustup installer exceeds the configured byte limit")
+                hasher.update(chunk)
+
+        if total_bytes == 0 or not hmac.compare_digest(hasher.hexdigest(), expected_digest):
+            raise ValueError("Rustup installer checksum mismatch")
+        if os.name == "posix":
+            os.chmod(installer, 0o755)
+        run.run([str(installer), "-y", "--profile", "minimal", "--default-toolchain", RUSTUP_TOOLCHAIN,
+                 "--no-modify-path"], timeout=600, log_output=False)
+
+
+def dependency_metadata(run, source, *, cargo_feature_args=("--features", "research-probes"),
+                        target="x86_64-unknown-linux-gnu"):
+    profiles = {("--features", "research-probes"): "aws-lc",
+                ("--no-default-features", "--features", "research-probes,tls-ring"): "ring"}
+    feature_args = tuple(cargo_feature_args)
+    if feature_args not in profiles or target != "x86_64-unknown-linux-gnu":
+        raise ValueError("Unsupported pinned Linux dependency-graph profile")
+    command = ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", target]
+    command.extend(feature_args)
+    metadata = strict_json_loads(run.run(command, cwd=source, log_output=False))
     root_id = metadata["resolve"]["root"]
     root_node = next(node for node in metadata["resolve"]["nodes"] if node["id"] == root_id)
     packages = {package["id"]: package for package in metadata["packages"]}
@@ -194,7 +443,7 @@ def dependency_metadata(run, source):
                                   "version": packages[dependency["pkg"]]["version"],
                                   "id": dependency["pkg"]}
               for dependency in root_node["deps"]}
-    return {"root": root_id, "direct": direct,
+    return {"root": root_id, "direct": direct, "tls_provider": profiles[feature_args],
             "packages": {key: {"name": item["name"], "version": item["version"], "source": item["source"]}
                          for key, item in packages.items()},
             "nodes": metadata["resolve"]["nodes"],
@@ -240,8 +489,8 @@ def build(run, source, arm, run_tests=False):
 
 def probe_json(run, binary, mode, data=None, args=()):
     content = None if data is None else json.dumps(data).encode()
-    return json.loads(run.run([binary / "research_probe", mode, *args],
-                              input_bytes=content, log_output=False))
+    return strict_json_loads(run.run([binary / "research_probe", mode, *args],
+                                     input_bytes=content, log_output=False))
 
 
 def bm25_reference(texts, query):
@@ -320,7 +569,8 @@ def content_oracles(run, binary, fixture_dir, include_pre=False):
         path = fixture_dir / (name + ".html")
         path.write_text(html, encoding="utf-8")
         payload = run.run([binary / "athena-core-v2", path, "https://example.org/"], log_output=False)
-        frames = validate_aae(payload, {"blocks": blocks, "links": links})
+        frames = validate_aae(payload, {"blocks": blocks, "links": links},
+                              expected_source_url="https://example.org/")
         expected_hash = probe_json(run, binary, "hash", [block[1] for block in blocks])["hash"]
         if frames[0]["content_hash"] != expected_hash:
             raise ValueError("Joined-text hash oracle failed")
@@ -329,7 +579,7 @@ def content_oracles(run, binary, fixture_dir, include_pre=False):
 
 
 def bench_result(run, binary, stage, size, iterations):
-    result = json.loads(run.run([binary / "bench_core", stage, size, iterations], log_output=False))
+    result = strict_json_loads(run.run([binary / "bench_core", stage, size, iterations], log_output=False))
     raw, offsets = result.get("raw_ns"), result.get("sample_offsets_ns")
     if (result.get("protocol") != PROTOCOL_VERSION or result.get("stage") != stage
             or result.get("iterations") != iterations or not isinstance(raw, list)
@@ -348,8 +598,9 @@ def verify_variant_identity(run, binaries, fixture_dir):
     outputs = [run.run([binaries[arm] / "athena-core-v2", path, "https://example.org/"],
                        log_output=False) for arm in ("baseline", "candidate")]
     for output in outputs:
-        validate_aae(output)
-    validate_aae(outputs[1], {"blocks": [("preformatted", "if ready:\n    run()\n    stop()", [])]})
+        validate_aae(output, expected_source_url="https://example.org/")
+    validate_aae(outputs[1], {"blocks": [("preformatted", "if ready:\n    run()\n    stop()", [])]},
+                 expected_source_url="https://example.org/")
     if outputs[0] == outputs[1]:
         raise ValueError("Known source-variant control did not distinguish baseline and candidate")
     return {arm: hashlib.sha256(output).hexdigest()
@@ -440,7 +691,7 @@ def execute_c2(run, snapshots):
         outputs = [run.run([binaries[arm] / "athena-core-v2", path, "https://example.org/"],
                            log_output=False) for arm in ("baseline", "candidate")]
         require_parity(*outputs)
-        frames = validate_aae(outputs[1])
+        frames = validate_aae(outputs[1], expected_source_url="https://example.org/")
         if sum(frame["type"] == "link" for frame in frames) != anchors:
             raise ValueError("Link sweep dropped catalog entries")
         cases = [case for case in run.manifest["spec"]["cases"] if case["size"] == anchors]
@@ -461,7 +712,8 @@ def execute_c2(run, snapshots):
         path.write_text("<div>" * depth + f"<p>{text}</p>" + "</div>" * depth, encoding="utf-8")
         output = run.run([binaries["candidate"] / "athena-core-v2", path, "https://example.org/"],
                          log_output=False)
-        validate_aae(output, {"blocks": [("paragraph", text, [])]})
+        validate_aae(output, {"blocks": [("paragraph", text, [])]},
+                     expected_source_url="https://example.org/")
         deep_receipts[str(depth)] = hashlib.sha256(output).hexdigest()
     run.manifest["checks"]["deep_dom"] = {"status": "PASS", "evidence": deep_receipts}
 

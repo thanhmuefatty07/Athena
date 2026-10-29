@@ -1,0 +1,179 @@
+{
+  "schema": "athena-library-research/1",
+  "status": "RESEARCH_NOT_ADOPTION",
+  "libraries": {
+    "bytes": {
+      "consumer": [
+        "src/arena.rs:DomArena",
+        "src/projection.rs:parse_html_with_limits"
+      ],
+      "purpose": "Owned immutable response/text buffers; clone, reset and drop lifetimes",
+      "alternatives": [
+        "Locked Bytes",
+        "Vec<u8>/Arc<[u8]> at actual ownership boundaries"
+      ],
+      "gate": "Exact bytes, sharing/drop/reset isolation; only benchmark where allocation/copy cost is measured",
+      "source": "https://docs.rs/bytes/1.12.1/bytes/struct.Bytes.html"
+    },
+    "blake3": {
+      "consumer": [
+        "src/aae.rs:export_jsonl_with_limit"
+      ],
+      "purpose": "Public content/block identity; digest algorithm is a compatibility contract",
+      "alternatives": [
+        "Locked default runtime SIMD/assembly",
+        "Same 1.8.7 pure feature",
+        "Same 1.8.7 prefer_intrinsics feature"
+      ],
+      "gate": "Literal 32-byte digest and byte-identical AAE; hash-update/library interactions and whole export/pipeline cost. Different hash algorithm is incompatible with aae/1.",
+      "source": "https://docs.rs/blake3/1.8.7/blake3/"
+    },
+    "rand": {
+      "consumer": [
+        "src/bandit.rs"
+      ],
+      "purpose": "Seeded stochastic routing; direct 0.9 edge must not be confused with transitive 0.10",
+      "alternatives": [
+        "Locked direct 0.9.5",
+        "Verified seeded generator adapter under the same sampling contract"
+      ],
+      "gate": "Determinism within declared stream and independent distribution/tail checks; routing quality/cost on replay and real tasks",
+      "source": "https://docs.rs/rand/0.9.5/rand/"
+    },
+    "rand_distr": {
+      "consumer": [
+        "src/bandit.rs"
+      ],
+      "purpose": "Beta sampling used by route selection",
+      "alternatives": [
+        "Locked 0.5.1 Beta",
+        "Verified numerically stable Beta sampler adapter"
+      ],
+      "gate": "Parameter/error boundaries, seeded moments/tails across extreme priors; do not infer task quality from moment checks",
+      "source": "https://docs.rs/rand_distr/0.5.1/rand_distr/struct.Beta.html"
+    },
+    "reqwest": {
+      "consumer": [
+        "src/network.rs",
+        "cloud_experiments/service_probe.rs"
+      ],
+      "purpose": "HTTP/TLS and bounded response streaming",
+      "alternatives": [
+        "Locked 0.13.5 Rustls/http2/stream",
+        "Same Reqwest/Rustls version with aws-lc-rs versus ring, only if the exact security/peer contract is preserved",
+        "Same-client pool/connection/runtime configuration",
+        "Hyper adapter with equivalent public-network authorization and TLS"
+      ],
+      "gate": "Actual pinned hostname/CA/peer, redirects/proxies disabled, streaming cap, timeouts/cancellation, pool/cache/revalidation, permitted public DNS; compare crypto provider crossed with client_per_fetch and policy_pool using identical TLS/protocol/peer/failure controls and full-path CPU/tail/build/size costs; HTTP1 loopback does not cover production HTTP2/3",
+      "source": "https://docs.rs/reqwest/0.13.5/reqwest/"
+    },
+    "rustls": {
+      "consumer": [
+        "src/network.rs::initialize_tls_provider",
+        "cloud_experiments/service_probe.rs::Service::build_client"
+      ],
+      "purpose": "Select one Rustls CryptoProvider explicitly; keep the default AWS-LC path and admit ring only as a research profile",
+      "alternatives": [
+        "Reqwest 0.13.5 rustls feature with AWS-LC default provider",
+        "Reqwest 0.13.5 rustls-no-provider plus Rustls 0.23.46 ring provider initialized before ClientBuilder"
+      ],
+      "gate": "Exact one-provider feature graph; actual client construction and all TLS allow/deny, hostname, CA, peer-pin, cancellation, cache and pool contracts; paired provider-by-client-lifetime service measurements; do not claim security equivalence or performance superiority from compilation alone",
+      "source": "https://docs.rs/rustls/0.23.46/rustls/crypto/struct.CryptoProvider.html"
+    },
+    "scraper": {
+      "consumer": [
+        "src/projection.rs:parse_html_with_limits"
+      ],
+      "purpose": "HTML5 tree construction and parse warnings; tokenizer alone is not an equivalent parser",
+      "alternatives": [
+        "Locked 0.27.0 defaults",
+        "0.27.0 no CLI with errors retained",
+        "0.27.0 atomic tendril",
+        "Candidate 0.29.0 paired with html5ever 0.40.1, exact separate lock and default features",
+        "Direct html5ever TreeSink adapter preserving HTML5 recovery",
+        "LOL HTML only for separately scoped streaming rewrite tasks"
+      ],
+      "gate": "Warning counts, repaired tree, templates/raw text/entities/foreign content, nearest-owner text/links and limits; compare the exact 0.27.0/0.39.0 and 0.29.0/0.40.1 pairs, preserve errors and node limits, review the new transitive graph before build/admission",
+      "source": "https://crates.io/crates/scraper"
+    },
+    "html5ever": {
+      "consumer": [
+        "src/projection.rs:BoundedTreeSink"
+      ],
+      "purpose": "Version-matched TreeSink callbacks to enforce a logical parser-node limit before the wrapped scraper tree allocates each node",
+      "alternatives": [
+        "Locked html5ever 0.39.0 with scraper::HtmlTreeSink adapter",
+        "Candidate html5ever 0.40.1 paired with scraper 0.29.0",
+        "Current scraper parser without a pre-allocation parser-node cap",
+        "A direct-to-arena sink only after HTML5 conformance and memory evidence"
+      ],
+      "gate": "HTML5 repaired-tree and warning parity below the node cap; exact node accounting including text and template fragments; bounded rejection without panic; full native/Linux correctness and peak-memory measurement; package/lock/API identity stays aligned with scraper.",
+      "source": "https://docs.rs/html5ever"
+    },
+    "serde": {
+      "consumer": [
+        "src/aae.rs:Frame"
+      ],
+      "purpose": "Typed serialization contract and derived field/tag names",
+      "alternatives": [
+        "Locked serde derive",
+        "Typed specialized serializer checked by independent JSON parser"
+      ],
+      "gate": "All fields/types/tag names, Unicode escaping, JSONL framing and byte caps; no hand-interpolated untrusted text",
+      "source": "https://docs.rs/serde/1.0.229/serde/"
+    },
+    "serde_json": {
+      "consumer": [
+        "src/aae.rs:BoundedWriter"
+      ],
+      "purpose": "Core AAE typed output; fixture JSON parsing is outside core stage timing",
+      "alternatives": [
+        "Locked 1.0.154 typed serializer",
+        "Sonic 0.5.10 framed typed output adapter",
+        "SIMD JSON input adapters only if an actual input-deserialization hot consumer is added"
+      ],
+      "gate": "Byte-identical AAE for actual frame types; independent literal framing/UTF8/exact-cap controls. Sonic WriteExt requires a separate bounded streaming design; arbitrary Value/float equivalence is unproven.",
+      "source": "https://docs.rs/serde_json/1.0.154/serde_json/"
+    },
+    "tokio": {
+      "consumer": [
+        "src/network.rs",
+        "src/singleflight.rs",
+        "src/orchestrator.rs"
+      ],
+      "purpose": "I/O scheduling, synchronization, bounded blocking work and cancellation",
+      "alternatives": [
+        "Locked runtime",
+        "Worker and blocking admission limits tuned to actual offered load"
+      ],
+      "gate": "Independent arrival schedule; leader/follower cancellation and recovery; no early permit release, queue saturation and shutdown draining. Runtime swap without I/O migration is not a drop-in comparison.",
+      "source": "https://docs.rs/tokio/1.53.3/tokio/"
+    },
+    "url": {
+      "consumer": [
+        "src/network.rs",
+        "src/projection.rs",
+        "src/aae.rs"
+      ],
+      "purpose": "Parsing/joining/canonicalization at authorization/cache/link boundaries",
+      "alternatives": [
+        "Locked 2.5.8",
+        "Specialized fast-path guarded by the same URL parser"
+      ],
+      "gate": "Schemes, IDNA/canonical host, credentials, relative links, fragment handling, SSRF and cache-policy key equivalence; retain parser for untrusted general URL input",
+      "source": "https://docs.rs/url/2.5.8/url/struct.Url.html"
+    },
+    "futures-util": {
+      "consumer": [
+        "src/network.rs:StreamExt"
+      ],
+      "purpose": "Bounded async response consumption and cancellation",
+      "alternatives": [
+        "Locked StreamExt",
+        "Direct stream polling within an actual equivalent client adapter"
+      ],
+      "gate": "Chunk limit, empty/truncated streams, dependency errors and cancellation; microbenchmarking an unused combinator cannot decide the core",
+      "source": "https://docs.rs/futures-util/0.3.34/futures_util/"
+    }
+  }
+}

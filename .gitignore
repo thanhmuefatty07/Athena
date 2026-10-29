@@ -1,4 +1,9 @@
 /target/
+/cloud_experiments/lexbor_adapter/target/
+/cloud_experiments/mcp_sdk/rust/target/
+/cloud_experiments/mcp_sdk/typescript/node_modules/
+__pycache__/
+*.py[cod]
 *.profraw
 *.profdata
 perf.data

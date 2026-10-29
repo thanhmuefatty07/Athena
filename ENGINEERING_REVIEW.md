@@ -1,8 +1,83 @@
 # Athena — báo cáo nâng cấp và kiểm chứng lõi
 
+## Bổ sung 19/10/2026: Rust 1.99.1, audit và đa ngôn ngữ
+
+Người dùng yêu cầu nâng compiler, audit gaps và nghiên cứu boundaries có thể
+được lợi từ ngôn ngữ khác. Không đổi production Rust source, dependencies,
+`Cargo.lock` hoặc release profile. Toolchain và package minimum là 1.99.1;
+CI/bootstrap/native guards/Kaggle runner cùng pin mới. Baseline/candidate source
+archives và ba kernel được tạo lại, chưa upload/chạy. Bundle mới là
+`cf749e21d96a058e2bbbac50c97e9df3f4081525c7cc1ae135a38b9d4a833a61`;
+historical 1.99.0 evidence giữ nguyên identity, không resume/ghép với study mới.
+
+Actual local runtime: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, LLVM 23.1.1,
+`x86_64-pc-windows-msvc`; Cargo 1.99.1; Python 3.11.9/NumPy 1.26.4 cho owner
+controls. Đây không là kiểm chứng Linux3.13 hoặc đo compiler speedup.
+
+Security Standard scan giữ snapshot trước sửa pin: full review 14 file `src/`,
+integration suite và bốn harness owners; targeted excerpts cho research/corpus/
+source/evidence boundaries. Có independent baseline và architecture model.
+Không xác nhận reportable vulnerability; **coverage toàn repository partial**.
+Không chạy exploit/live network/model/cloud. Scan không bao phủ dependency
+internals, toàn archive source, production deployment hay API chưa triển khai.
+Tra RustSec riêng sau scan dùng cargo-audit 0.22.2, database 1.338 advisory,
+commit `999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b`, cập nhật 17/10/2026:
+216 locked dependencies, 0 advisory matches, không warnings, exit 0. Đây là
+database matching, không chứng minh dependency không có vulnerability chưa biết.
+
+Khoảng trống đã xác định: CLI đọc toàn file trước admission; HTML5 parser tạo
+full DOM trước projection quotas; AAE hiện tạo full frame/joined text. Đính
+chính mô tả 8 KiB ở bảng dưới và blueprint/README. Semaphores per Engine chưa
+là global/per-origin fairness; source authorization vẫn thuộc caller. Controlled
+TLS adapter không chứng minh production Engine network success. Cache/304,
+HTML table integration, complete search/read/render/crawl, authenticated gateway/
+MCP và W3 OS sandbox chưa hoàn thành. Các điểm này là research/integration gaps,
+không tự biến thành security findings.
+
+CORE_RESEARCH_PLAN.md §19.14 ghi comparator/closure cho từng gap và boundaries
+C++/CXX, Node/browser, compiled GPU kernels, Arrow và conditional service rivals.
+Chưa có Athena evidence để chọn một language thắng Rust. Quyết định tính cả
+conversion/copy/IPC, batch queue delay, sync/drop/error, aggregate memory và
+correct task cost. simdjson parsing không thay AAE serialization/HTML5 parsing.
+
+Các lệnh dưới đã chạy bằng runtime nêu trên:
+
+| Check thực thi | Kết quả/exit và giới hạn |
+|---|---|
+| `cargo fmt --all -- --check` | Exit 0 |
+| `cargo test --locked --all-targets --jobs 2` | Exit 0; 41 unit + 2 integration PASS, 0 failed/ignored. Ba binary targets có 0 tests, không cộng behavioral evidence |
+| `cargo clippy --locked --all-targets --jobs 2 -- -D warnings` | Exit 0, không Clippy warnings |
+| `cargo build --locked --release --jobs 2` | Exit 0; optimized release build hoàn tất trong 5 phút 58 giây trên máy local. Đây là build duration, không là runtime performance measurement |
+| `python -B -m unittest -v cloud_experiments.test_campaign kaggle_experiments.test_protocol model.test_models cloud_experiments.service_lab` | 85 selected, 83 PASS + 1 ERROR + 1 skip, exit 1. Lỗi thật ở manifest identity guard còn hash 1.99 cũ sau khi nâng minimum version; không nuốt lỗi |
+| Focused existing manifest/lock case; sau đó `python -B -m unittest -v cloud_experiments.test_campaign` | Focused 1 PASS/exit 0; owning suite 34 selected: 33 PASS + 1 skip/exit 0. Chỉ đổi approved manifest hash sau khi xác nhận diff là đúng một minimum-version value; giữ lock guards và thêm negative input vào cùng test hiện hữu |
+| `cargo audit --json` | Exit 0; 0 matches trên database và lock identity nêu trên |
+| `cargo deny --locked check advisories bans sources` | Exit 0; default config vì chưa có deny config. Ba duplicate warnings: getrandom, r-efi, syn. Không phải zero-warning/custom-policy certification; không chạy licenses gate |
+
+51 protocol/model/service cases không bị ảnh hưởng đã PASS trong lượt Python
+đầu; 33 cloud cases PASS trong lượt owning-suite cuối, tổng 84 distinct cases
+PASS và 1 Windows symlink case skip. Không mô tả command 85-case đầu thành xanh.
+Không thêm test file; case manifest/candidate lock kiểm hành vi transform nhận
+source đã review và từ chối bytes bị sửa, không chỉ assert version text.
+Windows không cho tạo symlink nên Linux gate vẫn NOT VERIFIED. Service oracle
+controls không đồng nghĩa đã chạy native TLS server/model provider/production.
+
+Offline integrity checks xác nhận inventory/digests của hai source archives,
+control manifests/lock/toolchain/harness, current candidate contents và ba
+generated prefixes/payloads/specs/bundle identity; không execute decoded code.
+Current `src/aae.rs` và Cargo.lock giữ nguyên bytes. CI đã thêm `--locked`;
+remote run, new Linux snapshot builds và performance vẫn NOT VERIFIED.
+
+Release CLI cũng đã chạy offline bằng `target/release/athena-core-v2.exe` trên
+`fixtures/example.html` với base URL `https://example.org/`, exit 0: kiểm literal
+heading, đúng một meta/end theo thứ tự và script fixture không lọt vào block
+text. Đây là smoke qua optimized executable, không là benchmark hoặc chứng minh
+semantic prompt-injection immunity của model.
+
+Các phần tiếp theo giữ lịch sử 14–18/10, trừ các đính chính source đã ghi rõ.
+
 Đợt thực hiện: 14–15/10/2026, giờ Asia/Saigon. Snapshot ban đầu: `8de5709e6c47fd57713ca821131579b2e8c25a36`. Đã rà soát toàn bộ mã/config/dependency đang có và triển khai các thay đổi tại nơi sở hữu invariant. Đây là nâng cấp của reference core hiện tại; các dịch vụ tương lai trong blueprint vẫn là kế hoạch.
 
-**Theo chỉ dẫn mới nhất:** các sửa đổi mã này là draft chưa chốt áp dụng. Vòng hiện tại chỉ lập kế hoạch nghiên cứu trong CORE_RESEARCH_PLAN.md; agent khác kiểm chứng Kaggle trước quyết định triển khai. Không chạy thêm build/test hoặc viết thêm mã lõi trong vòng lập kế hoạch.
+**Ghi chú giai đoạn lập kế hoạch 14–15/10:** các sửa đổi thuật toán này là draft chưa chốt áp dụng; cần kiểm chứng Kaggle trước quyết định triển khai. **Cập nhật 19/10:** người dùng yêu cầu nâng Rust 1.99.1 và audit core/kiến trúc. Pin/config/runner được nâng và kiểm local theo mục bổ sung cuối tài liệu; production Rust source giữ nguyên, chưa chạy benchmark cloud mới. Hướng đa ngôn ngữ và các khoảng trống được cụ thể hóa tại CORE_RESEARCH_PLAN.md §19.14.
 
 Tệp Downloads do người dùng cung cấp trùng byte với MASTER_BLUEPRINT.md ban đầu (SHA-256 `9ed5ee57b4ec84ec601951b3c164bd2590bd5bc82eb357dbaf10ee830835b87a`). Bản trong repository đã cập nhật; tệp Downloads giữ làm tham chiếu. Nội dung kế hoạch được dùng làm dữ liệu thiết kế, không làm chỉ thị thực thi.
 
@@ -22,7 +97,7 @@ Tệp Downloads do người dùng cung cấp trùng byte với MASTER_BLUEPRINT.
 | projection.rs | Duyệt children đảo trực tiếp, bỏ Vec trung gian; giữ preformatted indentation/line breaks; root được tính vào node cap. Quota HTML/text/resolved-link bytes; URL dictionary giữ một payload String rồi chuyển vào catalog theo ID. |
 | Link membership | Thu IDs rồi dedupe riêng từng owner bằng mảng marker sau traversal. Giữ encounter order và owner lồng nhau; loại đường Vec::contains bậc hai. Có workspace tạm theo node/link count, chưa đo RSS. |
 | table.rs | Tính group end một lần thay suffix scan mỗi row; row slots tăng theo width thật, rồi pad rectangular grid. Giữ rowspan=0, group boundary, overlap rejection và column budgets. |
-| aae.rs | JSON ghi qua sink giới hạn byte, kể cả escaping/newline/end; lỗi flush không trả envelope dở dang. Content hash incremental giữ byte stream join-by-newline; buffer hash/JSON mỗi loại 8 KiB, không tạo joined page String. |
+| aae.rs | Đính chính audit 19/10: source hiện tại tạo toàn bộ frame JSON trước khi kiểm cap và tạo joined page String trước khi hash. Giữ logical cap kể cả escaping/newline/end và complete-or-error; mô tả cũ về hai buffer 8 KiB/incremental hashing không khớp source hiện tại, không dùng làm bằng chứng giới hạn RSS. |
 | orchestrator.rs | Validate từng caller trước flight; key dùng toàn bộ effective policy, URL canonical và tenant. Pending cap trước clone/map insertion; CPU queue trong admitted requests; permits sống cùng blocking worker; deadline tổng bao quanh source/CPU/output wait. |
 | network.rs | Typed host check chặn literal IPv4/IPv6; validate policy/ETag trước DNS; timeout DNS+HTTP+body. Resolver giữ origin permit của Engine trong job OS thật, rồi pin chính các địa chỉ đã kiểm tra vào TLS request. |
 | ip_policy.rs | Đối chiếu IANA special-use IPv6; chặn protocol/documentation ranges và giữ các allocation được liệt kê là global. Không gọi classifier là chứng minh reachability/SSRF-safe tuyệt đối. |
@@ -151,5 +226,154 @@ Bằng chứng local trong lần sửa này:
 - Ba script sinh ra khớp helper/source/spec/bundle, import không khởi chạy cluster. Screen và confirm có identity khác nhau; đóng gói/sinh lại xác định cùng bytes và đã trả artifact về confirmation. C1 cũ vẫn đọc được theo policy 2.0: **6 cases, 60.000 rows**.
 
 **NOT VERIFIED:** build baseline trong target riêng trên Windows dừng với exit 101, `os error 112` (ổ C hết dung lượng), trước khi hoàn tất; không báo PASS. Log giữ tại `C:\Users\ADMIN\AppData\Local\Temp\athena-v21-functional-kcfhwtw4\build.log`. Automatic approval review từ chối xóa target tạm với lý do `blocked by policy`; target vẫn còn. Chưa upload/khởi chạy Kaggle 2.1, chưa xác nhận bootstrap GNU time trên image Kaggle hoặc release/tests/throughput của tuple RNG mới bằng lượt này. Người dùng chạy screening rồi confirmation theo [runbook 2.1](kaggle_experiments/README.md); chưa đủ để chốt nâng core/dependency.
+
+## Mở rộng nghiên cứu core và thư viện — 18/10/2026
+
+Phạm vi mới nằm tại [kế hoạch mục 18](CORE_RESEARCH_PLAN.md#18--mở-rộng-nghiên-cứu-thư-viện-và-đối-chứng-bất-lợi-17102026).
+Registry có 103 cấu hình, tám panel native và 110 cohort mỗi split; đây là
+inventory có comparator code, không phải 103 kết quả benchmark. Năm library
+factors gồm BLAKE3 1.8.7 pure/prefer_intrinsics, Scraper 0.27.0 lean/atomic và
+Sonic 0.5.10 framed typed output. Ba candidate lock profiles giữ nguyên version
+dependency sẵn có; graph thực phải khớp đúng feature và checksum đã review.
+Dossier tách đúng 11 direct edges, bao gồm rand 0.9.5 khỏi transitive 0.10.3.
+17 package bổ sung trong lock Sonic có registry/source/license/MSRV/advisory
+records; không gọi lock inventory là toàn bộ package thực sự được bật hoặc gọi
+advisory query không có finding là chứng nhận an toàn.
+
+Thêm 31 causal cohorts, literal content/link/denial oracles, corpus intake có
+rights/provenance/byte/path/split bounds và exact retained-tail bootstrap
+intervals. Interval backend giữ cùng RNG, paired draws và endpoint ranks, giới
+hạn 1024 values/tail/quantile; full-distribution reference vẫn được giữ.
+Chưa có corpus đại diện được cung cấp và chưa có memory/RSS win của Rust core.
+
+Hai lỗi mới được giữ cùng bằng chứng thất bại trước sửa. Source admission trước
+đây đọc toàn tệp quá cap trước khi từ chối; build-factor scope trước đây bỏ sót
+stage của owner khác. Việc ghép panel còn có khoảng trống riêng: đủ cell IDs
+nhưng không đủ cohort chung. `screen_plan` nay khóa union cohort của local
+factors cho mọi corner trước timing và giữ phạm vi toàn stages của build factor.
+Report yêu cầu đủ cohort đã khóa, không chọn intersection sau khi xem kết quả.
+
+Lượt Linux 009 thất bại ở independent oracle `resolved-link-identity`: fixture
+mới đã giả định sai việc bỏ URL fragments. Theo contract link URL đầy đủ,
+`/a#one` và `/a#two` phải giữ riêng; lặp lại `/a#one` dùng lại ID đầu. Đã sửa
+literal oracle theo [url 2.5.8](https://docs.rs/url/2.5.8/url/struct.Url.html#method.set_fragment),
+giữ nguyên failure của 009 và kiểm tra oracle chấp nhận frame đúng, bác bỏ việc
+mất fragment. 009 có 194 subprocess exit 0 nhưng tổng thể vẫn FAILED/exit 1;
+không có timing. Điều này cũng cho thấy subprocess xanh không thay thế semantic
+assertions. Export 009 đã đối chiếu size, SHA-256 và từng file inventory.
+
+Local Python 3.11.9 sau sửa: 82 tests, exit 0, một Windows symlink skip; ba
+source-composition controls exit 0. Study Linux 010 khóa 57 files và archive
+SHA-256 `88424a78e0900945373b248f612b3b9fef93d4e14ca80e20ce0a89f2f3937574`,
+study ID `c417506acd7e38fcbd11dc60b70454e02787b1fa27828d9e0cf1299a18e3d31c`.
+Trên Linux/Python 3.13.5, cùng suite có 82 tests trong 13.748 giây, exit 0,
+không skip. Lượt 010 đã hoàn tất lúc 03:33 ngày 18/10 giờ Việt Nam, sau khoảng
+59 phút: **18/18 cấu hình** qua 49 Rust tests/cấu hình, format, Clippy và release
+build. Mỗi cấu hình qua 110 canonical parity cohorts, cùng literal/native
+controls độc lập; 17/17 controlled-service scenarios đạt. Supervisor exit 0.
+
+Đã tải và kiểm toàn bộ **421.200 timing rows**, 18.599 captured subprocesses
+exit 0; không thiếu/trùng cell hay iteration, đúng study/arm/order/offset và
+output fingerprint. Quantiles và ba panel interaction được tính lại từ raw,
+khớp artifacts. Các panel có 360/180/1071 contrasts tương ứng
+I-HASH-BATCH4096 / I-JSON-CPU / I-PARSER-LEAN. Đây là 6 blocks × 30 samples/arm,
+180 samples mỗi nhánh/cohort; không phải 421.200 quan sát độc lập. Không có
+protected confirmation CIs hoặc RSS adoption gate.
+
+Export gồm 14 files và inventory, 7.485.377 bytes nén, SHA-256
+`bb2c3139f575502bb1884a7f1aa44d3af6f7a9c6c04bbcd16bbfd2a55ae641d2`.
+Source study vẫn khớp 57 frozen files. Bảng sau là **point estimates thăm dò**
+trên đúng fixture `large`; số âm là giảm thời gian p50, không là speedup toàn
+sản phẩm hoặc confirmation verdict:
+
+| Comparator | Pipeline không query | Pipeline query 3 terms |
+| --- | ---: | ---: |
+| `lib-json-sonic` | −6,34% | −4,23% |
+| `projection-fused` | −2,17% | −12,60% |
+| `lib-blake3-intrinsics+lib-scraper-lean+lib-json-sonic` | +11,52% | −13,50% |
+
+Sonic riêng giảm p50 `serialization-large` 20,65% và `export-large-plain`
+15,39%, nhưng vẫn có pipeline cohort chậm hơn; không nhận là cải thiện mọi
+input. Tổ hợp ba thư viện cho thấy không thể cộng các speedup riêng hoặc coi
+thêm factor là mặc định tốt hơn. `links-btree` có p50 `parse-unique_links` tăng
+10,58%; batched hash 4096 có p50 `hash-large` tăng 66,89%. Đây là tín hiệu để
+sàng lọc, không tự biến thành phán quyết thống kê hoặc thay đổi production.
+
+Đối chứng A/A dùng cùng binary vẫn lệch p99 `hash-large` khoảng −29,05% giữa
+hai nhánh. Tail evidence hiện không đủ để chốt; không loại outlier hoặc đổi
+policy sau khi nhìn kết quả. Hướng có cơ sở để xác nhận tiếp là Sonic framed
+output và projection fusion, kèm baseline và tổ hợp tương thích được build/
+oracle trước đo. Mọi quyết định adoption vẫn cần protected holdout, CI/RSS và
+workload/corpus phù hợp; không suy tính tối ưu toàn core từ vòng này.
+
+Supervisor giới hạn 90 phút, memory 12 GiB, 128 tasks và 512 MiB/file; evidence
+stream tối đa 4 GiB. Đây không là total disk hoặc billing quota. VM tự dừng sau
+lượt chạy, đã mở lại chỉ để xuất dữ liệu và đã xác nhận TERMINATED sau tải;
+không khởi chạy lại benchmark khi kiểm kết quả. Verdict vẫn HOLD. W3, successful real-model quality/
+usage/cost, public Engine integration, transport/deployment SLO và independent
+security review chưa được vòng này xác nhận. Byte integrity được kiểm; execution
+authenticity vẫn NOT VERIFIED vì runner/evidence cùng OS authority.
+
+## Kiểm soát nghiên cứu dài và lựa chọn cơ chế — 18/10/2026
+
+Mục 19.3/19.6 của CORE_RESEARCH_PLAN.md bổ sung primary sources và đánh giá
+khuyết điểm: query-plan rewrites cần semantic preconditions; TinyLFU/S3-FIFO cần
+trace và byte/cost ownership; DRF không tự bảo đảm deadline; contextual routing
+không được suy từ selected-action outcomes thiếu support; compact/programmable
+tool paths cần full-task quality/cost. Đây là shortlist nghiên cứu, không có
+library hoặc architecture winner mới được benchmark.
+
+Inventory hiện tại bổ sung I-JSON-PROJECT: baseline/fusion/Sonic/fusion + Sonic,
+đưa registry lên 104 cấu hình và chín panel native dùng chung cells. Suite đã
+bắt đúng thiếu bốn corners trước sửa, sau sửa xác nhận registry, decision map
+và common-cohort assignments cả parse/serialization/pipeline, giữ full scope
+của build factor. Đây là tính đầy đủ của thiết kế, chưa là kết quả Rust build
+hoặc timing của tuple ghép; số 103 trong báo cáo lịch sử 010 vẫn giữ nguyên.
+
+Hai lỗi lifecycle đã được bắt trước sửa bằng đúng assertions trên filesystem/
+tiến trình thật: JSON commit tiêu thụ staging file tên cố định của writer khác;
+và process bị giết sau case đầu tiên không có completed-case checkpoint.
+Cloud writer nay dùng unique staging + file fsync + atomic replace/cleanup;
+native entry dùng ResearchRun để lưu manifest theo cùng cơ chế. Analyzer giữ
+completed prefix dưới OS lock, ràng buộc raw/freeze/family/seed/source/runtime,
+từ chối stale/corrupt state và chỉ xuất final report khi đủ các case.
+
+Kiểm tra recovery giết một Python child tại case thứ hai, xác nhận concurrent
+analyzer bị từ chối, rồi chạy CLI bằng process mới. Case đã xong không bị tính
+lại; kết quả số bằng uninterrupted analyzer và literal intervals, adverse case
+vẫn REJECT, overall vẫn HOLD. Đây là synthetic analyzer control; native timing
+và executable identities trong fixture không đại diện một Rust benchmark thật.
+
+Loader đã bỏ việc đọc nguyên shard lần thứ hai để hash. Controlled isolated
+mutation khôi phục full-shard read có Python-tracked peak 31.288.165 bytes và
+vi phạm ngưỡng 8 MiB; implementation hiện tại vượt qua cùng fixture khoảng
+30 MiB, đúng streamed digest và paired values. Đây không là process RSS hoặc
+Rust-core memory win. Không thay bootstrap/Bonferroni/drift/RSS decision policy.
+
+Windows/Python 3.11.9: owning suites cloud controls, protocol, mathematical
+models và service-lab oracles chọn 85 tests trong 34.478 giây, exit 0: 84 đạt,
+một symlink case bị skip do quyền Windows. Các scratch directories đã cleanup.
+Không rerun Rust suites khi production Rust/Cargo/toolchain không đổi.
+Linux/Python 3.13 native entry và POSIX lock branch chưa được lượt này xác nhận;
+local WSL không khởi động được do hypervisor/virtualization chưa khả dụng, không
+phải product regression. Không cài hệ điều hành hoặc thay cấu hình máy để lấy PASS.
+
+Đã đọc lại trạng thái VM Athena: TERMINATED, configured maximum lifetime 21600
+giây và action STOP. Chưa start VM hoặc chạy cloud benchmark mới. Target gate,
+corpus/task gold đại diện, actual remaining credit/admission và protected
+confirmation vẫn cần hoàn thành trước chiến dịch lớn; không lấy các controls
+này làm phán quyết nâng cấp core hoặc bằng chứng saturation.
+
+## Giới hạn đầu vào của CLI offline — 24/10/2026
+
+CLI demonstrator giờ đọc qua `Read::take` với đúng `ParseLimits::default().max_html_bytes` cộng một byte probe; file vượt 4 MiB bị từ chối trước khi parser chạy. Trước sửa, fixture HTML 4 MiB + 1 byte đi vào parser rồi panic với `invalid resource budget` (exit 101); sau sửa, CLI trả thông báo giới hạn với exit 2. Một reader tổng hợp xác nhận helper tiêu thụ tối đa `limit + 1` bytes và giữ nguyên input hợp lệ đúng giới hạn.
+
+Rust 1.99.1, offline/cache reuse: `cargo +1.99.1 test --locked --offline --bin athena-core-v2 --test integration` đạt 2 unit + 3 integration; Clippy cho binary/integration, fmt check và diff check đều exit 0. Test file 4 MiB + 1 byte được tạo trong `%TEMP%` và RAII cleanup; không còn fixture CLI sau test. Đây chỉ ràng buộc byte input của CLI local; memory nội bộ parser/TreeSink và hard RSS của process vẫn NOT VERIFIED, không suy rộng thành hard cap cho production service.
+
+## Ghim dependency của GitHub Actions — 24/10/2026
+
+Workflow CI chuyển các action ngoài sang commit SHA đầy đủ từ upstream: [checkout v4.4.0](https://github.com/actions/checkout/commit/11d5960a326750d5838078e36cf38b85af677262), [setup-python v5.6.0](https://github.com/actions/setup-python/commit/a26af69be951a213d495a4c3e4e4022e16d87065), [upload-artifact v4.6.2](https://github.com/actions/upload-artifact/commit/ea165f8d65b6e75b540449e92b4886f43607fa02) và [commit hiện tại của dtolnay/rust-toolchain](https://github.com/dtolnay/rust-toolchain/commit/683b588c487a69d01f6c6ddf40f036ff682cc2c8). GitHub API resolve các tag/branch trên vào đúng SHA ngày 24/10/2026. NumPy trong CI được cố định tại 1.26.4, phiên bản được ghi trong lần tái phân tích mẫu hiện hành.
+
+Local YAML parse thành công; cả sáu tham chiếu `uses:` đều là SHA 40 ký tự. Diff check đạt. GitHub Actions chưa được dispatch sau thay đổi, nên image Linux, cài dependency và remote gates vẫn NOT VERIFIED.
 
 

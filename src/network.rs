@@ -33,7 +33,6 @@ where
     .map_err(|_| FetchError::ResolveFailed)
 }
 
-#[derive(Debug)]
 pub enum FetchError {
     InvalidUrl,
     DeniedHost,
@@ -44,15 +43,66 @@ pub enum FetchError {
     UnsupportedContentEncoding,
     InvalidValidator,
     InvalidPolicy,
+    TlsProviderInitialization,
     Timeout,
     Network(reqwest::Error),
 }
+
+impl FetchError {
+    fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::InvalidUrl => "InvalidUrl",
+            Self::DeniedHost => "DeniedHost",
+            Self::DeniedAddress => "DeniedAddress",
+            Self::ResolveFailed => "ResolveFailed",
+            Self::TooManyAddresses => "TooManyAddresses",
+            Self::TooLarge => "TooLarge",
+            Self::UnsupportedContentEncoding => "UnsupportedContentEncoding",
+            Self::InvalidValidator => "InvalidValidator",
+            Self::InvalidPolicy => "InvalidPolicy",
+            Self::TlsProviderInitialization => "TlsProviderInitialization",
+            Self::Timeout => "Timeout",
+            Self::Network(_) => "Network",
+        }
+    }
+}
+
+impl fmt::Debug for FetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.diagnostic_name())
+    }
+}
+
 impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        f.write_str(self.diagnostic_name())
     }
 }
 impl std::error::Error for FetchError {}
+
+#[cfg(feature = "tls-ring")]
+pub fn initialize_tls_provider() -> Result<(), &'static str> {
+    static INITIALIZED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let initialized = INITIALIZED.get_or_init(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_some() {
+            return true;
+        }
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .is_ok()
+            || rustls::crypto::CryptoProvider::get_default().is_some()
+    });
+    if *initialized {
+        Ok(())
+    } else {
+        Err("could not install the configured ring TLS provider")
+    }
+}
+
+#[cfg(feature = "tls-aws-lc")]
+pub fn initialize_tls_provider() -> Result<(), &'static str> {
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct FetchPolicy {
@@ -178,6 +228,7 @@ async fn fetch_pinned(
     if addrs.is_empty() {
         return Err(FetchError::ResolveFailed);
     }
+    initialize_tls_provider().map_err(|_| FetchError::TlsProviderInitialization)?;
     // New client per validated resolution has a pooling cost; a production resolver-aware
     // connector should reuse pools keyed by host+validated IP+policy epoch.
     let client = reqwest::Client::builder()
@@ -189,7 +240,7 @@ async fn fetch_pinned(
         .resolve_to_addrs(host, &addrs)
         .user_agent("AthenaPermittedFetcher/0.1 (contact: operator-configured)")
         .build()
-        .map_err(FetchError::Network)?;
+        .map_err(|error| FetchError::Network(error.without_url()))?;
     let mut request = client
         .get(url.clone())
         .header(reqwest::header::ACCEPT_ENCODING, "identity")
@@ -200,7 +251,10 @@ async fn fetch_pinned(
     if let Some(value) = validator {
         request = request.header(IF_NONE_MATCH, value);
     }
-    let response = request.send().await.map_err(FetchError::Network)?;
+    let response = request
+        .send()
+        .await
+        .map_err(|error| FetchError::Network(error.without_url()))?;
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -230,7 +284,7 @@ async fn fetch_pinned(
     let mut stream = response.bytes_stream();
     let mut data = BytesMut::new();
     while let Some(next) = stream.next().await {
-        let part = next.map_err(FetchError::Network)?;
+        let part = next.map_err(|error| FetchError::Network(error.without_url()))?;
         if part.len() > policy.max_body_bytes.saturating_sub(data.len()) {
             return Err(FetchError::TooLarge);
         }
@@ -277,6 +331,50 @@ mod tests {
             fetch_https(&url, &policy, Some("bad\r\nheader")).await,
             Err(FetchError::InvalidValidator)
         ));
+    }
+    #[tokio::test]
+    async fn network_error_formatting_never_exposes_query_credentials() {
+        use std::time::Duration;
+
+        initialize_tls_provider().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("the local client must connect within the test bound")
+                .unwrap();
+            // Dropping the accepted stream without an HTTP response produces a
+            // deterministic request error while keeping the test loopback-only.
+        });
+
+        let secret = "athena-test-query-secret-sentinel";
+        let url = Url::parse(&format!("http://{address}/?token={secret}")).unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), client.get(url.clone()).send())
+            .await
+            .expect("the local request must finish within the test bound")
+            .unwrap_err();
+        server.await.unwrap();
+
+        assert_eq!(
+            error.url(),
+            Some(&url),
+            "fixture must produce a URL-bearing reqwest error"
+        );
+        let error = FetchError::Network(error);
+        assert!(
+            !format!("{error:?}").contains(secret),
+            "Debug output must not expose URL query credentials"
+        );
+        assert!(
+            !error.to_string().contains(secret),
+            "Display output must not expose URL query credentials"
+        );
     }
     #[test]
     fn ipv6_literals_are_denied_even_if_listed_as_hosts() {

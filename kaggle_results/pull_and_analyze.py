@@ -1,8 +1,11 @@
 """Download user-started Kaggle runs into a fresh directory; never starts a run."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
+
+from kaggle_experiments.protocol import strict_json_loads
 
 ROOT = Path(__file__).resolve().parent.parent
 CLUSTERS = {
@@ -16,6 +19,11 @@ def normalized_status(response):
     value = response.get("status") if isinstance(response, dict) else getattr(response, "status", None)
     value = getattr(value, "name", value)
     return str(value).rsplit(".", 1)[-1].upper()
+
+
+def exact_json_match(left, right):
+    return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == \
+        json.dumps(right, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def pull_kernel_output(kernel_id, destination):
@@ -32,9 +40,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.destination.exists():
         parser.error("Destination exists; never mix old and new raw evidence")
-    bundle = json.loads((ROOT / "kaggle_experiments/bundle.json").read_text(encoding="utf-8"))
-    kernels = {cluster: json.loads((ROOT / "kaggle_experiments" / directory / "kernel-metadata.json")
-                                   .read_text(encoding="utf-8"))["id"]
+    bundle_bytes = (ROOT / "kaggle_experiments/bundle.json").read_bytes()
+    bundle = strict_json_loads(bundle_bytes.decode("utf-8"))
+    bundle_sha256 = hashlib.sha256(bundle_bytes).hexdigest()
+    kernels = {cluster: strict_json_loads((ROOT / "kaggle_experiments" / directory / "kernel-metadata.json")
+                                          .read_text(encoding="utf-8"))["id"]
                for cluster, directory in CLUSTERS.items()}
     import kaggle
     statuses = {cluster: normalized_status(kaggle.api.kernels_status(kernel))
@@ -43,7 +53,9 @@ def main(argv=None):
     if any(status not in allowed for status in statuses.values()):
         parser.error("Runs are not all ready: " + json.dumps(statuses))
     args.destination.mkdir(parents=True, exist_ok=False)
-    receipt = {"expected_bundle_id": bundle["bundle_id"], "kernels": kernels, "statuses": statuses, "manifests": {}}
+    (args.destination / "bundle.json").write_bytes(bundle_bytes)
+    receipt = {"expected_bundle_id": bundle["bundle_id"], "bundle_file": "bundle.json",
+               "bundle_sha256": bundle_sha256, "kernels": kernels, "statuses": statuses, "manifests": {}}
     try:
         for cluster, kernel in kernels.items():
             folder = args.destination / cluster
@@ -51,10 +63,14 @@ def main(argv=None):
             manifests = list(folder.rglob("manifest.json"))
             if len(manifests) != 1:
                 raise ValueError("Expected one v2 manifest in " + str(folder))
-            manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+            manifest = strict_json_loads(manifests[0].read_text(encoding="utf-8"))
             if (manifest.get("bundle_id") != bundle["bundle_id"]
                     or manifest.get("protocol") != "athena-research/2" or manifest.get("cluster") != cluster):
                 raise ValueError("Downloaded source/spec bundle is stale or different: " + cluster)
+            expected_spec = bundle.get("specifications", {}).get(cluster)
+            if (not isinstance(expected_spec, dict)
+                    or not exact_json_match(manifest.get("spec"), expected_spec)):
+                raise ValueError("Downloaded specification does not match trusted bundle: " + cluster)
             if statuses[cluster] == "COMPLETE" and manifest.get("status") != "COMPLETE":
                 raise ValueError("Kaggle status does not match evidence status: " + cluster)
             receipt["manifests"][cluster] = str(manifests[0])

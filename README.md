@@ -6,7 +6,7 @@ The current implementation is a Rust reference library and offline CLI: pinned H
 
 ## Verification
 
-Rust 1.99.0, Windows x86_64: local Rust/Python tests, Clippy and release builds are recorded in the engineering review. The committed lockfile is used; rustls was patched to 0.23.46 after four advisory matches. No dependency was added. Remote Linux CI, production networking, fuzz/Loom/Miri, ARM64 and peak RSS remain unverified.
+The current toolchain and minimum Rust version are 1.99.1. CI, cloud bootstrap, native study guards and newly generated Kaggle snapshots use that pin. Historical 1.99.0 results retain their original identities; they are not measurements of 1.99.1. The committed lockfile is unchanged. See the engineering review for completed upgrade checks and the research plan §19.14 for the audit and language-boundary decisions. Remote Linux CI, production networking, fuzz/Loom/Miri, ARM64 and general peak RSS containment remain unverified.
 
 ```bash
 cargo fmt --all -- --check
@@ -39,7 +39,7 @@ Use module execution for `model.benchmark`: it imports Python's standard `statis
 
 - `parse_html` keeps its signature and applies default `ParseLimits`: HTML, decoded text and unique resolved URL bytes each 4 MiB; each resolved URL 8192 bytes; the requested node budget includes the arena root. Use `parse_html_with_limits` to configure these budgets explicitly.
 - Preformatted chunks preserve line breaks and indentation. Other chunks retain whitespace normalization and word truncation. Link IDs retain encounter order and per-owner deduplication, including nested content blocks.
-- `export_jsonl` keeps its signature with a 16 MiB escaped JSONL cap including newlines/end frame. `export_jsonl_with_limit` returns a complete envelope or an error. Hash and JSON writers use bounded 8 KiB buffers. Byte limits are logical data limits, not total allocator/RSS limits.
+- `export_jsonl` keeps its signature with a 16 MiB escaped JSONL cap including newlines/end frame. `export_jsonl_with_limit` returns a complete envelope or an error. The current implementation serializes a whole frame before checking its size and joins projected text before hashing. Earlier 8 KiB intermediate-buffer claims do not describe this source. Byte limits are logical data limits, not total allocator/RSS limits.
 - `Engine::new` admits at most 32 times the configured worker count, including coalesced followers. `Engine::with_pending_limit` configures that cap; zero denies admission. Overload and total caller deadline are explicit errors. Started DNS/parser/export blocking work keeps its corresponding permits until it exits; cancellation does not forcibly terminate it. The low-level `fetch_https` API delegates concurrency admission to its caller.
 - Source/representation keys include effective host and fetch limits, timeouts, policy label and tenant partition. Every caller still requires upstream source authorization before entering the engine.
 
@@ -49,4 +49,4 @@ Inputs exceeding new budgets intentionally return errors. New `FetchError`/`Pipe
 
 The HTML5 parser still constructs its tree before projection node/text quotas. Measure parser RSS/CPU under malformed input and establish containment before exposing untrusted production traffic. Persistent caching/freshness, robots/source authorization, per-tenant fairness, browser isolation, streaming backpressure, token budgets, billing and operations remain planned.
 
-The dialer creates a client per validated DNS resolution. A pooled connector requires verified DNS/IP/policy lifetime semantics and live socket tests. The IP classifier is a conservative filter backed by registry review; production egress isolation remains necessary. The table module handles an isolated row model; HTML table extraction and WHATWG/header semantics remain to integrate. The bandit remains a heuristic requiring labeled evaluation against deterministic baselines.
+The dialer creates a client per validated DNS resolution. A pooled connector requires verified DNS/IP/policy lifetime semantics and live socket tests. The IP classifier is a conservative filter backed by registry review; production egress isolation remains necessary. The table module handles an isolated row model; a research-only HTML table traversal/selector comparator now exists under `cloud_experiments`, while inferred header semantics and production/task integration remain open. The bandit remains a heuristic requiring labeled evaluation against deterministic baselines.

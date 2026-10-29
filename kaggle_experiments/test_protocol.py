@@ -2,7 +2,9 @@
 import contextlib
 import copy
 import io
+import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +63,702 @@ def dependency_fixture(root):
                 {"name": packages[dep]["name"], "pkg": dep,
                  "dep_kinds": [{"kind": None, "target": None}]} for dep in deps]}
                       for key, deps in edges.items()]}
+
+
+class BoundedProcessControls(unittest.TestCase):
+    def test_implicit_child_environment_excludes_credentials_and_unrecorded_compiler_flags(self):
+        with patch.dict(os.environ, {
+            "NVIDIA_API_KEY": "synthetic-nim-key",
+            "OPENROUTER_API_KEY": "synthetic-router-key",
+            "GOOGLE_APPLICATION_CREDENTIALS": "synthetic-gcp-path",
+            "KAGGLE_KEY": "synthetic-kaggle-key",
+            "CARGO_ENCODED_RUSTFLAGS": "--cfg=unrecorded-experiment-override",
+            "HTTPS_PROXY": "http://synthetic-proxy.invalid",
+            "PATH": os.environ.get("PATH", ""),
+        }, clear=False):
+            code = "import json,os; print(json.dumps({k:os.environ.get(k) for k in (\"NVIDIA_API_KEY\", \"OPENROUTER_API_KEY\", \"GOOGLE_APPLICATION_CREDENTIALS\", \"KAGGLE_KEY\", \"CARGO_ENCODED_RUSTFLAGS\", \"HTTPS_PROXY\", \"PATH\")}))"
+            result = runner.run_bounded_process([sys.executable, "-B", "-c", code], timeout=2, output_limit=4096)
+            self.assertEqual(result.status, "EXITED")
+            observed = json.loads(result.stdout)
+        for key in ("NVIDIA_API_KEY", "OPENROUTER_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS",
+                    "KAGGLE_KEY", "CARGO_ENCODED_RUSTFLAGS", "HTTPS_PROXY"):
+            self.assertIsNone(observed[key])
+        self.assertTrue(observed["PATH"])
+
+    def test_experiment_spec_cannot_raise_the_combined_output_hard_cap(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-hard-cap-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 8 * 1024 * 1024 + 1}})
+            marker = root / "child-ran.txt"
+            script = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')"
+            try:
+                with self.assertRaisesRegex(ValueError, "output limit"):
+                    run.run([sys.executable, "-B", "-c", script, str(marker)], timeout=2)
+                self.assertFalse(marker.exists(), "invalid budget must be rejected before child creation")
+                self.assertEqual(run.manifest["commands"], [])
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled output-budget test cleanup")
+
+    def test_command_output_limit_stops_both_streams_and_reaps_the_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-output-bound-") as directory:
+            root = Path(directory)
+            run = runner.EvidenceRun(root / "run", "c1", "a" * 64,
+                                     {"limits": {"command_output_bytes": 4096}})
+            pid_file = root / "child.pid"
+            script = (
+                "import os,sys,time; "
+                "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                "sys.stdout.buffer.write(b'o'*2048); sys.stdout.flush(); "
+                "sys.stderr.buffer.write(b'e'*2049); sys.stderr.flush(); "
+                "time.sleep(30)"
+            )
+            try:
+                error = None
+                try:
+                    run.run([sys.executable, "-B", "-c", script, str(pid_file)], timeout=2,
+                            log_output=False)
+                except Exception as caught:
+                    error = caught
+                self.assertIsInstance(error, RuntimeError, f"Expected output-limit rejection, got {error!r}")
+                self.assertIn("OUTPUT_LIMIT", str(error))
+                record = run.manifest["commands"][-1]
+                self.assertEqual(record["status"], "OUTPUT_LIMIT")
+                self.assertEqual(record["captured_output_bytes"], 4096)
+                pid = int(pid_file.read_text(encoding="ascii"))
+                if os.name == "nt":
+                    import ctypes
+                    from ctypes import wintypes
+
+                    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                    open_process = kernel32.OpenProcess
+                    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+                    open_process.restype = wintypes.HANDLE
+                    wait = kernel32.WaitForSingleObject
+                    wait.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+                    wait.restype = wintypes.DWORD
+                    close = kernel32.CloseHandle
+                    close.argtypes = (wintypes.HANDLE,)
+                    handle = open_process(0x00100000 | 0x1000, False, pid)
+                    if handle:
+                        try:
+                            self.assertNotEqual(wait(handle, 0), 0x00000102,
+                                                "child remained live after output-limit termination")
+                        finally:
+                            close(handle)
+                    else:
+                        self.assertEqual(ctypes.get_last_error(), 87,
+                                         "could not establish that the child process had exited")
+                else:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+            finally:
+                if not run.sample_stream.closed:
+                    run.finish(error="controlled process-output test cleanup")
+
+    def test_bounded_process_timeout_reaps_a_real_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-process-timeout-") as directory:
+            result = runner.run_bounded_process(
+                [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+                cwd=directory, timeout=0.2, output_limit=1024)
+            self.assertEqual(result.status, "TIMEOUT")
+            self.assertIsInstance(result.returncode, int)
+            self.assertLessEqual(result.captured_output_bytes, 1024)
+
+    def test_interruption_during_poll_reaps_the_started_child(self):
+        with tempfile.TemporaryDirectory(prefix="athena-process-interrupt-") as directory:
+            pid_file = Path(directory) / "child.pid"
+            script = "import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(30)"
+            real_sleep = runner.time.sleep
+            real_popen = runner.subprocess.Popen
+            children = []
+
+            def track_child(*args, **kwargs):
+                child = real_popen(*args, **kwargs)
+                children.append(child)
+                return child
+
+            interrupted = False
+
+            def interrupt_after_child_starts(_seconds):
+                nonlocal interrupted
+                if interrupted:
+                    real_sleep(_seconds)
+                    return
+                deadline = runner.time.monotonic() + 5
+                while not pid_file.exists() and runner.time.monotonic() < deadline:
+                    real_sleep(0.01)
+                if not pid_file.exists():
+                    raise AssertionError("child did not publish its PID before the poll deadline")
+                interrupted = True
+                raise KeyboardInterrupt("controlled poll interruption")
+
+            try:
+                with patch.object(runner.subprocess, "Popen", side_effect=track_child), \
+                        patch.object(runner.time, "sleep", side_effect=interrupt_after_child_starts):
+                    with self.assertRaisesRegex(KeyboardInterrupt, "controlled poll interruption"):
+                        runner.run_bounded_process(
+                            [sys.executable, "-B", "-c", script, str(pid_file)],
+                            cwd=directory, timeout=10, output_limit=1024)
+                self.assertEqual(len(children), 1, "the real child process handle was not retained")
+                self.assertEqual(int(pid_file.read_text(encoding="ascii")), children[0].pid)
+                self.assertIsNotNone(children[0].poll(), "child remained live after interruption")
+            finally:
+                for child in children:
+                    try:
+                        if child.poll() is None:
+                            child.kill()
+                    except OSError:
+                        if child.poll() is None:
+                            raise
+                    child.wait(timeout=5)
+
+
+class GeneratedEntryPointControls(unittest.TestCase):
+    _fallback_tempdir = None
+    _entrypoint_root = None
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        root = generate_clusters.ROOT
+        if (root / "bundle.json").is_file() and all(
+            (root / directory / "main.py").is_file()
+            for directory in generate_clusters.CLUSTERS.values()
+        ):
+            cls._entrypoint_root = root
+            return
+        cls._fallback_tempdir = tempfile.TemporaryDirectory(prefix="athena-generated-entrypoints-")
+        temp_root = Path(cls._fallback_tempdir.name)
+        for name in ("probe.rs", "protocol.py", "runner.py"):
+            (temp_root / name).write_bytes((root / name).read_bytes())
+        baseline = {"Cargo.toml": b"controlled manifest", "src/lib.rs": b"baseline"}
+        candidate = {"Cargo.toml": b"controlled manifest", "src/lib.rs": b"candidate"}
+        controls = {
+            "Cargo.toml": {
+                "original_sha256": None,
+                "controlled_sha256": pack_snapshots.digest(b"controlled manifest"),
+            }
+        }
+        metadata, archives = pack_snapshots.build_snapshot_artifacts(
+            baseline, candidate, controls, "c" * 40
+        )
+        (temp_root / "snapshots_meta.json").write_text(json.dumps(metadata), encoding="utf-8")
+        for arm, raw in archives.items():
+            (temp_root / f"{arm}.b64").write_text(
+                base64.b64encode(raw).decode("ascii"), encoding="ascii"
+            )
+        with patch.object(generate_clusters, "ROOT", temp_root), \
+                patch.object(pack_snapshots, "collect_snapshots", return_value=(baseline, candidate, controls)), \
+                patch.object(pack_snapshots, "current_commit", return_value="c" * 40), \
+                contextlib.redirect_stdout(io.StringIO()):
+            generate_clusters.main(["--owner", "test-owner"])
+        cls._entrypoint_root = temp_root
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            if cls._fallback_tempdir is not None:
+                cls._fallback_tempdir.cleanup()
+                cls._fallback_tempdir = None
+        finally:
+            super().tearDownClass()
+
+    def _load_entrypoint(self, cluster, directory):
+        root = self._entrypoint_root or generate_clusters.ROOT
+        path = root / directory / "main.py"
+        module_name = f"kaggle_experiments._generated_{cluster}_entrypoint"
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_checked_in_entrypoints_filter_inherited_credentials_from_real_children(self):
+        with patch.dict(os.environ, {"ATHENA_SYNTHETIC_SECRET": "safe-test-sentinel"}, clear=False):
+            for cluster, directory in generate_clusters.CLUSTERS.items():
+                with self.subTest(cluster=cluster):
+                    entrypoint = self._load_entrypoint(cluster, directory)
+                    self.assertEqual(entrypoint.RUSTUP_DOWNLOAD_TIMEOUT_SECONDS,
+                                     runner.RUSTUP_DOWNLOAD_TIMEOUT_SECONDS)
+                    self.assertEqual(entrypoint.RUSTUP_DOWNLOAD_WORKER_SOURCE,
+                                     runner.RUSTUP_DOWNLOAD_WORKER_SOURCE)
+                    code = "import os; print(os.environ.get('ATHENA_SYNTHETIC_SECRET', '<missing>'))"
+                    result = entrypoint.run_bounded_process(
+                        [sys.executable, "-B", "-c", code], timeout=2, output_limit=1024)
+                    self.assertEqual(result.status, "EXITED")
+                    self.assertEqual(result.stdout.decode("utf-8").strip(), "<missing>")
+
+    def test_bundle_runner_digest_matches_current_runner_source(self):
+        root = self._entrypoint_root or generate_clusters.ROOT
+        bundle = json.loads((root / "bundle.json").read_text(encoding="utf-8"))
+        current_runner = (generate_clusters.ROOT / "runner.py").read_bytes()
+        expected_digest = hashlib.sha256(current_runner).hexdigest()
+        self.assertEqual(bundle["runner_sha256"], expected_digest)
+        current_protocol = (generate_clusters.ROOT / "protocol.py").read_bytes()
+        self.assertEqual(bundle["protocol_sha256"], hashlib.sha256(current_protocol).hexdigest())
+
+    def test_generated_entrypoints_execute_the_strict_json_contract(self):
+        for cluster, directory in generate_clusters.CLUSTERS.items():
+            with self.subTest(cluster=cluster):
+                entrypoint = self._load_entrypoint(cluster, directory)
+                decoder = getattr(entrypoint, "strict_json_loads", None)
+                self.assertIsNotNone(decoder, "generated entrypoint is missing the current evidence decoder")
+                with self.assertRaisesRegex(ValueError, "Duplicate JSON object member"):
+                    decoder('{"decision":"HOLD","decision":"REJECT"}')
+                with self.assertRaisesRegex(ValueError, "Non-finite JSON number"):
+                    decoder('{"measurement":NaN}')
+
+    def test_native_probe_output_rejects_duplicate_json_members_in_all_entrypoints(self):
+        class Run:
+            def run(self, *_args, **_kwargs):
+                return b'{"scores":[],"scores":[[0,1.0]]}'
+
+        implementations = [("source", runner.probe_json)]
+        implementations.extend((cluster, self._load_entrypoint(cluster, directory).probe_json)
+                               for cluster, directory in generate_clusters.CLUSTERS.items())
+        for name, probe_json in implementations:
+            with self.subTest(implementation=name), self.assertRaisesRegex(
+                    ValueError, "Duplicate JSON object member"):
+                probe_json(Run(), Path("synthetic-binary"), "rank", {"texts": [], "query": "term"})
+
+    def test_cluster_generator_rejects_ambiguous_snapshot_protocol(self):
+        import base64
+        import hashlib
+
+        with tempfile.TemporaryDirectory(prefix="athena-cluster-generator-") as folder:
+            root = Path(folder)
+            data = b"synthetic bounded snapshot"
+            encoded = base64.b64encode(data).decode("ascii")
+            digest = hashlib.sha256(data).hexdigest()
+            (root / "snapshots_meta.json").write_text(
+                '{"protocol":"wrong","protocol":"athena-research/2",'
+                f'"baseline_tar_sha256":"{digest}","candidate_tar_sha256":"{digest}"}}',
+                encoding="utf-8")
+            for arm in ("baseline", "candidate"):
+                (root / (arm + ".b64")).write_text(encoded, encoding="ascii")
+            for name in ("probe.rs", "protocol.py", "runner.py"):
+                (root / name).write_text("", encoding="utf-8")
+            with patch.object(generate_clusters, "ROOT", root), self.assertRaisesRegex(
+                    ValueError, "Duplicate JSON object member"):
+                generate_clusters.main(["--owner", "test-owner"])
+
+    def test_cluster_generator_rejects_stale_source_inventory_before_writing(self):
+        recorded_baseline = {"Cargo.toml": b"controlled manifest", "src/lib.rs": b"baseline"}
+        recorded_candidate = {"Cargo.toml": b"controlled manifest", "src/lib.rs": b"candidate"}
+        controls = {"Cargo.toml": {"original_sha256": None,
+                                   "controlled_sha256": pack_snapshots.digest(b"controlled manifest")}}
+
+        def archive(files):
+            raw = pack_snapshots.archive_files(files)
+            return {"tar": raw, "tar_bytes": len(raw), "tar_sha256": pack_snapshots.digest(raw),
+                    "files": {path: pack_snapshots.digest(content)
+                              for path, content in sorted(files.items())}}
+
+        recorded_archives = {"baseline": archive(recorded_baseline),
+                             "candidate": archive(recorded_candidate)}
+        metadata = {"protocol": "athena-research/2", "baseline_commit": pack_snapshots.BASELINE,
+                    "candidate_commit": "c" * 40,
+                    "comparison": "source-only; identical dependency graph, toolchain, release profile and benchmark harness",
+                    "baseline_controls": controls}
+        for arm, values in recorded_archives.items():
+            metadata[arm + "_tar_bytes"] = values["tar_bytes"]
+            metadata[arm + "_tar_sha256"] = values["tar_sha256"]
+            metadata[arm + "_files"] = values["files"]
+
+        changed_existing_file = {**recorded_candidate, "src/lib.rs": b"candidate content changed"}
+        new_path = {**recorded_candidate, "tests/new-contract.rs": b"new regression contract"}
+        stale_modes = (("new source path", recorded_baseline, new_path, "c" * 40),
+                       ("changed bytes at an existing path", recorded_baseline, changed_existing_file, "c" * 40),
+                       ("HEAD changed with same source bytes", recorded_baseline, recorded_candidate, "d" * 40))
+        for label, observed_baseline, observed_candidate, observed_commit in stale_modes:
+            with self.subTest(stale_mode=label), tempfile.TemporaryDirectory(
+                    prefix="athena-stale-snapshot-") as folder:
+                root = Path(folder)
+                (root / "snapshots_meta.json").write_text(json.dumps(metadata), encoding="utf-8")
+                for arm, values in recorded_archives.items():
+                    (root / (arm + ".b64")).write_text(
+                        base64.b64encode(values["tar"]).decode("ascii"), encoding="ascii")
+                for name in ("probe.rs", "protocol.py", "runner.py"):
+                    (root / name).write_text("", encoding="utf-8")
+                with patch.object(generate_clusters, "ROOT", root), \
+                        patch.object(pack_snapshots, "collect_snapshots",
+                                     return_value=(observed_baseline, observed_candidate, controls)), \
+                        patch.object(pack_snapshots, "current_commit", return_value=observed_commit), \
+                        contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    with self.assertRaises(SystemExit) as raised:
+                        generate_clusters.main(["--owner", "test-owner"])
+
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("snapshot source inventory is stale", stderr.getvalue().lower())
+                self.assertFalse(any((root / directory / "main.py").exists()
+                                     for directory in generate_clusters.CLUSTERS.values()))
+
+    def test_snapshot_inventory_closes_declared_cloud_probe_target(self):
+        relative = "cloud_experiments/core_probe.rs"
+        expected = (pack_snapshots.ROOT / relative).read_bytes()
+        if (pack_snapshots.ROOT / ".git").exists():
+            baseline, candidate, controls = pack_snapshots.collect_snapshots()
+        else:
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src/bin/bench_core.rs"):
+                    data = (pack_snapshots.ROOT / name).read_bytes()
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            with patch.object(pack_snapshots.subprocess, "check_output", return_value=buffer.getvalue()):
+                baseline, candidate, controls = pack_snapshots.collect_snapshots()
+        self.assertEqual(candidate.get(relative), expected,
+                         "snapshot must include the Rust source named by Cargo.toml")
+        self.assertEqual(baseline.get(relative), expected,
+                         "baseline must receive the same controlled research probe")
+        self.assertEqual(controls[relative]["controlled_sha256"], pack_snapshots.digest(expected))
+
+    def _create_directory_link(self, link, target):
+        if os.name == "nt":
+            result = pack_snapshots.subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                self.skipTest("host could not create a directory junction: "
+                               + (result.stderr or result.stdout).strip()[:300])
+        else:
+            link.symlink_to(target, target_is_directory=True)
+        self.assertTrue(link.is_dir(), "path-link fixture was not created")
+
+    def test_snapshot_collection_rejects_source_root_link_outside_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="athena-snapshot-link-input-") as folder:
+            root = Path(folder) / "repo"
+            root.mkdir()
+            outside_source = Path(folder) / "outside-source"
+            (outside_source / "bin").mkdir(parents=True)
+            (outside_source / "bin/bench_core.rs").write_bytes(b"synthetic outside source")
+            self._create_directory_link(root / "src", outside_source)
+            for name in ("tests", "fixtures"):
+                (root / name).mkdir()
+            for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
+                (root / name).write_bytes(b"synthetic in-repository control")
+            (root / "cloud_experiments").mkdir()
+            (root / "cloud_experiments/core_probe.rs").write_bytes(b"synthetic in-repository probe")
+
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src/bin/bench_core.rs"):
+                    data = b"baseline control"
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+
+            with patch.object(pack_snapshots, "ROOT", root), \
+                    patch.object(pack_snapshots.subprocess, "check_output", return_value=buffer.getvalue()):
+                with self.assertRaisesRegex(ValueError, "(?i)(link|reparse|checkout|outside)"):
+                    pack_snapshots.collect_snapshots()
+            self.assertEqual((outside_source / "bin/bench_core.rs").read_bytes(), b"synthetic outside source")
+
+    def test_snapshot_writer_rejects_linked_output_before_any_write(self):
+        with tempfile.TemporaryDirectory(prefix="athena-snapshot-link-output-") as folder:
+            repo = Path(folder) / "repo"
+            repo.mkdir()
+            outside = Path(folder) / "outside-package"
+            outside.mkdir()
+            destination = repo / "kaggle_experiments"
+            self._create_directory_link(destination, outside)
+            fake_file = destination / "pack_snapshots.py"
+            candidate = {name: b"candidate" for name in
+                         ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src/bin/bench_core.rs")}
+            with patch.object(pack_snapshots, "ROOT", repo), \
+                    patch.object(pack_snapshots, "__file__", str(fake_file)), \
+                    patch.object(pack_snapshots, "collect_snapshots",
+                                 return_value=({"Cargo.toml": b"baseline"}, candidate, {})), \
+                    patch.object(pack_snapshots, "current_commit", return_value="c" * 40):
+                with self.assertRaisesRegex(ValueError, "(?i)(link|reparse|checkout|outside)"):
+                    pack_snapshots.main()
+
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertFalse((outside / "candidate.b64").exists())
+            self.assertFalse((outside / "snapshots_meta.json").exists())
+
+    def test_snapshot_writer_rejects_hardlinked_output_before_any_write(self):
+        with tempfile.TemporaryDirectory(prefix="athena-snapshot-hardlink-output-") as folder:
+            repo = Path(folder) / "repo"
+            destination = repo / "kaggle_experiments"
+            destination.mkdir(parents=True)
+            outside = Path(folder) / "outside-snapshot.txt"
+            outside.write_bytes(b"preserve this hard-linked external file")
+            try:
+                os.link(outside, destination / "baseline.b64")
+            except OSError as error:
+                self.skipTest("host could not create the hard link needed for the path-boundary check: " + str(error))
+            candidate = {name: b"candidate" for name in
+                         ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "src/bin/bench_core.rs")}
+            with patch.object(pack_snapshots, "ROOT", repo), \
+                    patch.object(pack_snapshots, "collect_snapshots",
+                                 return_value=({"Cargo.toml": b"baseline"}, candidate, {})), \
+                    patch.object(pack_snapshots, "current_commit", return_value="c" * 40):
+                with self.assertRaisesRegex(ValueError, "(?i)(hard.link|link|reparse|checkout|outside)"):
+                    pack_snapshots.main()
+
+            self.assertEqual(outside.read_bytes(), b"preserve this hard-linked external file")
+            self.assertFalse((destination / "candidate.b64").exists())
+            self.assertFalse((destination / "snapshots_meta.json").exists())
+
+    @staticmethod
+    def _write_minimal_generator_inputs(root, probe=b"synthetic probe"):
+        baseline = pack_snapshots.archive_files({"baseline.txt": b"baseline"})
+        candidate = pack_snapshots.archive_files({"candidate.txt": b"candidate"})
+        metadata = {"protocol": "athena-research/2",
+                    "baseline_tar_sha256": hashlib.sha256(baseline).hexdigest(),
+                    "candidate_tar_sha256": hashlib.sha256(candidate).hexdigest()}
+        (root / "snapshots_meta.json").write_text(json.dumps(metadata), encoding="utf-8")
+        (root / "baseline.b64").write_text(base64.b64encode(baseline).decode("ascii"), encoding="ascii")
+        (root / "candidate.b64").write_text(base64.b64encode(candidate).decode("ascii"), encoding="ascii")
+        (root / "probe.rs").write_bytes(probe)
+        (root / "protocol.py").write_text("# synthetic protocol source\n", encoding="utf-8")
+        (root / "runner.py").write_text("# synthetic runner source\n", encoding="utf-8")
+
+    def test_cluster_generator_rejects_probe_link_outside_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="athena-generator-link-input-") as folder:
+            root = Path(folder) / "kaggle_experiments"
+            root.mkdir()
+            outside = Path(folder) / "outside-probe.rs"
+            outside.write_bytes(b"synthetic external payload")
+            self._write_minimal_generator_inputs(root)
+            (root / "probe.rs").unlink()
+            try:
+                (root / "probe.rs").symlink_to(outside)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest("host cannot create the link needed for the path-boundary check: " + str(error))
+
+            with patch.object(generate_clusters, "ROOT", root), \
+                    patch.object(generate_clusters, "CLUSTERS", {"c1": "kernel-c1"}), \
+                    patch.object(pack_snapshots, "verify_current_metadata"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "(?i)(link|reparse|checkout|outside)"):
+                    generate_clusters.main(["--owner", "test-owner"])
+
+            self.assertEqual(outside.read_bytes(), b"synthetic external payload")
+            self.assertFalse((root / "kernel-c1" / "main.py").exists())
+            self.assertFalse((root / "bundle.json").exists())
+
+    def test_cluster_generator_rejects_probe_hardlink_to_outside_content(self):
+        with tempfile.TemporaryDirectory(prefix="athena-generator-hardlink-input-") as folder:
+            root = Path(folder) / "kaggle_experiments"
+            root.mkdir()
+            outside = Path(folder) / "outside-probe.rs"
+            outside.write_bytes(b"synthetic external payload")
+            self._write_minimal_generator_inputs(root)
+            (root / "probe.rs").unlink()
+            try:
+                os.link(outside, root / "probe.rs")
+            except OSError as error:
+                self.skipTest("host could not create the hard link needed for the path-boundary check: " + str(error))
+
+            with patch.object(generate_clusters, "ROOT", root), \
+                    patch.object(generate_clusters, "CLUSTERS", {"c1": "kernel-c1"}), \
+                    patch.object(pack_snapshots, "verify_current_metadata"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "(?i)(hard.link|link|reparse|checkout|outside)"):
+                    generate_clusters.main(["--owner", "test-owner"])
+
+            self.assertEqual(outside.read_bytes(), b"synthetic external payload")
+            self.assertFalse((root / "kernel-c1" / "main.py").exists())
+            self.assertFalse((root / "bundle.json").exists())
+
+    def test_cluster_generator_rejects_output_directory_link_before_writing(self):
+        with tempfile.TemporaryDirectory(prefix="athena-generator-link-output-") as folder:
+            root = Path(folder) / "kaggle_experiments"
+            root.mkdir()
+            outside = Path(folder) / "outside-kernel-output"
+            outside.mkdir()
+            self._write_minimal_generator_inputs(root)
+            self._create_directory_link(root / "kernel-c1", outside)
+
+            with patch.object(generate_clusters, "ROOT", root), \
+                    patch.object(generate_clusters, "CLUSTERS", {"c1": "kernel-c1"}), \
+                    patch.object(pack_snapshots, "verify_current_metadata"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "(?i)(link|reparse|checkout|outside)"):
+                    generate_clusters.main(["--owner", "test-owner"])
+
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertFalse((root / "bundle.json").exists())
+
+
+class RustupBootstrapControls(unittest.TestCase):
+    def test_toolchain_preparation_rejects_unpinned_bootstrap_before_execution(self):
+        from types import SimpleNamespace
+
+        payload = b"synthetic untrusted rustup installer"
+        commands = []
+
+        def controlled_run(command, **kwargs):
+            commands.append((command, kwargs))
+            if command[0] == sys.executable:
+                self.assertEqual(kwargs, {"timeout": runner.RUSTUP_DOWNLOAD_TIMEOUT_SECONDS,
+                                          "log_output": False})
+                Path(command[4]).write_bytes(payload)
+                return b""
+            raise AssertionError("unchecked rustup installer reached the execution boundary")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=controlled_run)
+            with patch.dict(os.environ, {"PATH": "", "RUSTUP_TOOLCHAIN": "test"}), \
+                    patch.object(runner.shutil, "which", return_value=None), \
+                    patch.object(runner.platform, "machine", return_value="x86_64"):
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    runner.prepare_toolchain(run)
+            self.assertEqual(len(commands), 1, "checksum failure must stop before rustup-init execution")
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_toolchain_preparation_rejects_unrecorded_encoded_flags_before_side_effects(self):
+        from types import SimpleNamespace
+
+        commands = []
+
+        def controlled_run(command, **kwargs):
+            commands.append(command)
+            if command[0] == "rustc":
+                return b"rustc 1.99.1\nrelease: 1.99.1\nhost: x86_64-unknown-linux-gnu\n"
+            if command[0] == "cargo":
+                return b"cargo 1.99.1\n"
+            return b""
+
+        original_read_text = Path.read_text
+
+        def controlled_read_text(path, *args, **kwargs):
+            if str(path).replace("\\", "/") == "/proc/cpuinfo":
+                return "processor: 0\n"
+            return original_read_text(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustflags-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=controlled_run, manifest={})
+            with patch.dict(os.environ, {
+                "PATH": "sentinel-path",
+                "RUSTUP_TOOLCHAIN": "sentinel-toolchain",
+                "CARGO_ENCODED_RUSTFLAGS": "--cfg=unrecorded-experiment-override",
+            }, clear=False), \
+                    patch.object(runner.shutil, "which", return_value="rustup"), \
+                    patch.object(Path, "read_text", autospec=True, side_effect=controlled_read_text):
+                with self.assertRaisesRegex(RuntimeError, "CARGO_ENCODED_RUSTFLAGS"):
+                    runner.prepare_toolchain(run)
+                self.assertEqual(os.environ["PATH"], "sentinel-path")
+                self.assertEqual(os.environ["RUSTUP_TOOLCHAIN"], "sentinel-toolchain")
+            self.assertEqual(commands, [], "unrecorded compiler flags must be rejected before child execution")
+
+    def test_matching_pin_executes_only_verified_temporary_installer(self):
+        import hashlib
+        import runpy
+        from io import BytesIO
+        from types import SimpleNamespace
+
+        target = "x86_64-unknown-linux-gnu"
+        payload = b"synthetic verified rustup installer"
+        digest = hashlib.sha256(payload).hexdigest()
+        expected_url = ("https://static.rust-lang.org/rustup/archive/"
+                        f"{runner.RUSTUP_VERSION}/{target}/rustup-init")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-match-") as folder:
+            def inspect_execution(command, **kwargs):
+                if command[0] == sys.executable:
+                    self.assertEqual(command[1], "-B")
+                    self.assertEqual(Path(command[2]).name, "download-rustup-installer.py")
+                    self.assertEqual(command[3], expected_url)
+                    self.assertEqual(command[5], str(runner.MAX_RUSTUP_INSTALLER_BYTES))
+                    self.assertEqual(kwargs, {"timeout": runner.RUSTUP_DOWNLOAD_TIMEOUT_SECONDS,
+                                              "log_output": False})
+                    script = Path(command[2])
+                    self.assertEqual(script.read_text(encoding="utf-8"),
+                                     runner.RUSTUP_DOWNLOAD_WORKER_SOURCE)
+                    with patch.object(sys, "argv", command[2:]), \
+                            patch("urllib.request.urlopen", return_value=BytesIO(payload)) as download:
+                        runpy.run_path(str(script), run_name="__main__")
+                    download.assert_called_once_with(expected_url, timeout=60)
+                    return b""
+                self.assertEqual(Path(command[0]).read_bytes(), payload)
+                self.assertEqual(command[1:], ["-y", "--profile", "minimal", "--default-toolchain",
+                                               runner.RUSTUP_TOOLCHAIN, "--no-modify-path"])
+                self.assertEqual(kwargs, {"timeout": 600, "log_output": False})
+                if os.name == "posix":
+                    self.assertTrue(Path(command[0]).stat().st_mode & 0o111)
+                return b""
+
+            run = SimpleNamespace(directory=Path(folder), run=inspect_execution)
+            with patch.dict(runner.PINNED_RUSTUP_SHA256, {target: digest}):
+                runner.install_pinned_rustup(run, target=target)
+            self.assertEqual(list(Path(folder).iterdir()), [])
+
+    def test_rustup_download_timeout_uses_supervisor_and_cleans_temporary_files(self):
+        from types import SimpleNamespace
+
+        target = "x86_64-unknown-linux-gnu"
+        expected_url = ("https://static.rust-lang.org/rustup/archive/"
+                        f"{runner.RUSTUP_VERSION}/{target}/rustup-init")
+        calls = []
+
+        def timeout_supervised_download(command, **kwargs):
+            calls.append((command, kwargs))
+            self.assertEqual(command[0], sys.executable)
+            self.assertEqual(command[1], "-B")
+            self.assertEqual(Path(command[2]).name, "download-rustup-installer.py")
+            self.assertEqual(command[3], expected_url)
+            self.assertEqual(command[5], str(runner.MAX_RUSTUP_INSTALLER_BYTES))
+            self.assertEqual(kwargs, {"timeout": 600, "log_output": False})
+            raise TimeoutError("Supervised process timed out")
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-timeout-") as folder:
+            run = SimpleNamespace(directory=Path(folder), run=timeout_supervised_download)
+            with patch.dict(runner.PINNED_RUSTUP_SHA256, {target: "0" * 64}), \
+                    patch.object(runner, "urlopen",
+                                 side_effect=AssertionError("download bypassed process supervision"),
+                                 create=True):
+                with self.assertRaisesRegex(TimeoutError, "Supervised process timed out"):
+                    runner.install_pinned_rustup(run, target=target)
+            self.assertEqual(len(calls), 1, "a timed-out download must never execute rustup-init")
+            self.assertEqual(list(Path(folder).iterdir()), [],
+                             "timed-out installer download must clean its temporary directory")
+
+    def test_rustup_download_worker_preserves_https_and_size_limits(self):
+        import runpy
+        from io import BytesIO
+
+        class Response(BytesIO):
+            def __init__(self, payload, final_url):
+                super().__init__(payload)
+                self.final_url = final_url
+
+            def geturl(self):
+                return self.final_url
+
+        url = "https://static.rust-lang.org/rustup/archive/pinned/target/rustup-init"
+        cases = ((b"small binary", "http://static.rust-lang.org/redirect", 100,
+                  "redirected away from HTTPS"),
+                 (b"four", url, 3, "exceeds the configured byte limit"))
+        for index, (payload, final_url, max_bytes, message) in enumerate(cases):
+            with self.subTest(message=message), tempfile.TemporaryDirectory(
+                    prefix=f"athena-rustup-worker-{index}-") as folder:
+                script = Path(folder) / "download-rustup-installer.py"
+                destination = Path(folder) / "rustup-init"
+                script.write_text(runner.RUSTUP_DOWNLOAD_WORKER_SOURCE, encoding="utf-8")
+                response = Response(payload, final_url)
+                argv = [str(script), url, str(destination), str(max_bytes)]
+                with patch.object(sys, "argv", argv), \
+                        patch("urllib.request.urlopen", return_value=response) as download:
+                    with self.assertRaisesRegex(ValueError, message):
+                        runpy.run_path(str(script), run_name="__main__")
+                download.assert_called_once_with(url, timeout=60)
+
+    def test_unsupported_architecture_fails_before_download(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-rustup-arch-") as folder:
+            run = SimpleNamespace(directory=Path(folder),
+                                  run=lambda *args, **kwargs: self.fail("unexpected download or install"))
+            with self.assertRaisesRegex(ValueError, "Unsupported Linux architecture"):
+                runner.install_pinned_rustup(run, machine="mips64")
+            self.assertEqual(list(Path(folder).iterdir()), [])
 
 
 class StatisticalRegressions(unittest.TestCase):
@@ -227,6 +925,19 @@ class StatisticalRegressions(unittest.TestCase):
 
     def test_analysis_and_combine_keep_raw_identity_and_scoped_hold(self):
         with tempfile.TemporaryDirectory() as directory:
+            bundle_source = Path(directory) / "bundle-source"
+            bundle_source.mkdir()
+            _, trusted_manifest, _ = v2_fixture(bundle_source)
+            bundle_root = Path(directory) / "kaggle_experiments"
+            bundle_root.mkdir()
+            (bundle_root / "bundle.json").write_text(json.dumps({
+                "bundle_id": trusted_manifest["bundle_id"],
+                "specifications": {cluster: trusted_manifest["spec"]
+                                   for cluster in ("c1", "c2", "c3")},
+            }), encoding="utf-8")
+            root_patch = patch.object(verify_statistics, "ROOT", Path(directory) / "kaggle_results")
+            root_patch.start()
+            self.addCleanup(root_patch.stop)
             outputs = []
             for cluster in ("c1", "c2", "c3"):
                 folder = Path(directory) / cluster
@@ -245,7 +956,74 @@ class StatisticalRegressions(unittest.TestCase):
             combined = verify_statistics.combine_reports(outputs)
             self.assertEqual(combined["overall_decision"], "HOLD")
             self.assertEqual(combined["decision_matrix"]["cpu_core"]["decision"], "HOLD")
+            first_raw = Path(directory) / "c1/samples.jsonl"
+            first_manifest = Path(directory) / "c1/manifest.json"
+            first_report = outputs[0]
+            raw_saved, manifest_saved, report_saved = (path.read_bytes() for path in
+                                                         (first_raw, first_manifest, first_report))
+            altered_summary = json.loads(report_saved)
+            interval = altered_summary["cases"]["parse"]["delta_intervals"]["0.5"]
+            altered_summary["cases"]["parse"]["delta_intervals"]["0.5"] = [
+                interval[0] - 0.1, interval[1] + 0.1]
+            try:
+                first_report.write_text(json.dumps(altered_summary), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "raw measurements"):
+                    verify_statistics.combine_reports(outputs)
+            finally:
+                first_report.write_bytes(report_saved)
+            try:
+                rows = [json.loads(line) for line in raw_saved.decode("utf-8").splitlines()]
+                expanded = rows + [dict(row, iteration=1) for row in rows]
+                first_raw.write_text("".join(json.dumps(row) + "\n" for row in expanded), encoding="utf-8")
+                changed_manifest = json.loads(manifest_saved)
+                changed_manifest["spec"]["cases"][0]["iterations"] = 2
+                changed_manifest["artifacts"][first_raw.name] = protocol.sha256_file(first_raw)
+                first_manifest.write_text(json.dumps(changed_manifest), encoding="utf-8")
+                changed_report = json.loads(report_saved)
+                changed_report["inputs"][str(first_raw.resolve())] = protocol.sha256_file(first_raw)
+                changed_report["inputs"][str(first_manifest.resolve())] = protocol.sha256_file(first_manifest)
+                for arm in ("baseline", "candidate"):
+                    changed_report["cases"]["parse"][arm]["samples"] = 4
+                first_report.write_text(json.dumps(changed_report), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "trusted bundle"):
+                    verify_statistics.combine_reports(outputs)
+            finally:
+                first_raw.write_bytes(raw_saved)
+                first_manifest.write_bytes(manifest_saved)
+                first_report.write_bytes(report_saved)
+            originals = [path.read_bytes() for path in outputs]
+            try:
+                for path, content in zip(outputs, originals):
+                    report = json.loads(content)
+                    for case in report["cases"].values():
+                        case["decision"] = "PASS_PERFORMANCE"
+                    path.write_text(json.dumps(report), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "raw measurements"):
+                    verify_statistics.combine_reports(outputs)
+            finally:
+                for path, content in zip(outputs, originals):
+                    path.write_bytes(content)
+            for field, value in (("family_alpha", 0.2), ("seed", 43),
+                                 ("bootstrap_draws", 22999), ("bootstrap_draws", 30001)):
+                with self.subTest(field=field, value=value):
+                    try:
+                        for path, content in zip(outputs, originals):
+                            report = json.loads(content)
+                            report[field] = value
+                            path.write_text(json.dumps(report), encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError, "predeclared analysis setting"):
+                            verify_statistics.combine_reports(outputs)
+                    finally:
+                        for path, content in zip(outputs, originals):
+                            path.write_bytes(content)
             saved = outputs[1].read_bytes()
+            duplicate_decision = saved.replace(b'"decision": "HOLD"',
+                                               b'"decision": "HOLD", "decision": "REJECT"', 1)
+            self.assertNotEqual(duplicate_decision, saved, "fixture must contain a report decision")
+            outputs[1].write_bytes(duplicate_decision)
+            with self.assertRaises(ValueError):
+                verify_statistics.combine_reports(outputs)
+            outputs[1].write_bytes(saved)
             mismatched = json.loads(saved)
             mismatched["analysis_policy"] = "paired-rounds/2.1"
             outputs[1].write_text(json.dumps(mismatched), encoding="utf-8")
@@ -270,6 +1048,55 @@ class StatisticalRegressions(unittest.TestCase):
             raw.write_text(raw.read_text(encoding="utf-8") + "\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 verify_statistics.combine_reports(outputs)
+
+    def test_direct_analysis_requires_manifest_spec_from_trusted_bundle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_root = Path(directory) / "fixture"
+            fixture_root.mkdir()
+            raw, manifest, records = v2_fixture(fixture_root)
+            trusted_root = Path(directory) / "kaggle_experiments"
+            trusted_root.mkdir()
+            trusted_spec = copy.deepcopy(manifest["spec"])
+            bundle_path = trusted_root / "bundle.json"
+            bundle_path.write_text(json.dumps({
+                "bundle_id": manifest["bundle_id"],
+                "specifications": {cluster: trusted_spec for cluster in ("c1", "c2", "c3")},
+            }), encoding="utf-8")
+            manifest_path = fixture_root / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            results_root = Path(directory) / "kaggle_results"
+            with patch.object(verify_statistics, "ROOT", results_root):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    verify_statistics.main(["--input", str(raw), "--manifest", str(manifest_path),
+                                            "--bundle", str(bundle_path),
+                                            "--output", str(fixture_root / "trusted-analysis.json")])
+                boolean_manifest = copy.deepcopy(manifest)
+                boolean_manifest["spec"]["cases"][0]["iterations"] = True
+                manifest_path.write_text(json.dumps(boolean_manifest), encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                        ValueError, "trusted bundle"):
+                    verify_statistics.main(["--input", str(raw), "--manifest", str(manifest_path),
+                                            "--output", str(fixture_root / "boolean-analysis.json")])
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                analyzer = verify_statistics.analyze_measurements
+                with patch.object(verify_statistics, "analyze_measurements", wraps=analyzer) as analyze, \
+                        contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    verify_statistics.main(["--input", str(raw), "--manifest", str(manifest_path),
+                                            "--bundle", str(bundle_path), "--bootstrap", "30001",
+                                            "--output", str(fixture_root / "unplanned-draws.json")])
+                analyze.assert_not_called()
+
+                for row in records:
+                    duplicate = dict(row, iteration=1)
+                    with raw.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(duplicate) + "\n")
+                manifest["spec"]["cases"][0]["iterations"] = 2
+                manifest["artifacts"][raw.name] = protocol.sha256_file(raw)
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(
+                        ValueError, "trusted bundle"):
+                    verify_statistics.main(["--input", str(raw), "--manifest", str(manifest_path),
+                                            "--output", str(fixture_root / "untrusted-analysis.json")])
 
     def test_screening_does_not_become_acceptance_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -300,6 +1127,7 @@ class StatisticalRegressions(unittest.TestCase):
             self.assertEqual(spec.get("simultaneous_family_size"), family)
             self.assertEqual(spec.get("study_revision"), "2.1")
             self.assertEqual(spec.get("analysis_policy"), "paired-rounds/2.1")
+            self.assertEqual(spec.get("limits", {}).get("command_output_bytes"), 8 * 1024 * 1024)
 
     def test_manifest_family_cannot_be_reduced_to_reported_subset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -318,6 +1146,19 @@ class StatisticalRegressions(unittest.TestCase):
                 paths.append(path)
             with self.assertRaises(ValueError):
                 verify_statistics.combine_reports(paths)
+
+    def test_statistics_cli_rejects_duplicate_manifest_members(self):
+        with tempfile.TemporaryDirectory(prefix="athena-duplicate-manifest-") as directory:
+            raw, manifest, _ = v2_fixture(directory)
+            manifest_path, output = Path(directory) / "manifest.json", Path(directory) / "report.json"
+            serialized = json.dumps(manifest)
+            ambiguous = serialized.replace('"status": "COMPLETE"',
+                                           '"status": "INCOMPLETE", "status": "COMPLETE"', 1)
+            self.assertNotEqual(ambiguous, serialized, "fixture must contain manifest status")
+            manifest_path.write_text(ambiguous, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(ValueError):
+                verify_statistics.main(["--input", str(raw), "--manifest", str(manifest_path),
+                                        "--output", str(output)])
 
     def test_complete_manifest_cannot_rename_the_measured_stage(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -348,6 +1189,15 @@ class StatisticalRegressions(unittest.TestCase):
     def test_missing_samples_are_not_zero_latency(self):
         with self.assertRaises(ValueError):
             verify_statistics.quantile([], 0.5)
+
+    def test_duplicate_json_members_cannot_change_a_measurement_after_decoding(self):
+        with tempfile.TemporaryDirectory(prefix="athena-duplicate-sample-member-") as directory:
+            path, _, _ = v2_fixture(directory)
+            lines = path.read_bytes().splitlines()
+            lines[0] = lines[0].replace(b'"value": 1.0', b'"value": 1.0, "value": 9.0', 1)
+            path.write_bytes(b"\n".join(lines) + b"\n")
+            with self.assertRaises(ValueError):
+                protocol.load_measurements(path)
 
     def test_fast_median_does_not_accept_a_regressed_tail(self):
         with tempfile.TemporaryDirectory(prefix="athena-protocol-") as directory:
@@ -480,6 +1330,95 @@ class CorrectnessRegressions(unittest.TestCase):
                 self.assertTrue(execute.call_args.kwargs["check"])
         self.assertEqual(pull_and_analyze.normalized_status({"status": "KernelWorkerStatus.ERROR"}), "ERROR")
 
+    def test_duplicate_bundle_identity_in_downloaded_kaggle_manifest_is_rejected(self):
+        from types import SimpleNamespace
+
+        bundle_id = "a" * 64
+        with tempfile.TemporaryDirectory(prefix="athena-kaggle-manifest-") as folder:
+            root = Path(folder)
+            experiment_root = root / "kaggle_experiments"
+            experiment_root.mkdir()
+            (experiment_root / "bundle.json").write_text(
+                json.dumps({"bundle_id": bundle_id}), encoding="utf-8")
+            for cluster, directory in pull_and_analyze.CLUSTERS.items():
+                kernel_root = experiment_root / directory
+                kernel_root.mkdir()
+                (kernel_root / "kernel-metadata.json").write_text(
+                    json.dumps({"id": "owner/" + cluster}), encoding="utf-8")
+
+            def pull(kernel, destination):
+                destination.mkdir(parents=True, exist_ok=False)
+                cluster = kernel.rsplit("/", 1)[-1]
+                prefix = ('"bundle_id":"' + "0" * 64 + '","bundle_id":"'
+                          + bundle_id + '"') if cluster == "c1" else ('"bundle_id":"' + bundle_id + '"')
+                manifest = ('{' + prefix + ',"protocol":"athena-research/2","cluster":"'
+                            + cluster + '","status":"COMPLETE"}')
+                (destination / "manifest.json").write_text(manifest, encoding="utf-8")
+
+            fake_kaggle = SimpleNamespace(api=SimpleNamespace(
+                kernels_status=lambda _kernel: {"status": "COMPLETE"}))
+            with patch.object(pull_and_analyze, "ROOT", root), \
+                    patch.dict(sys.modules, {"kaggle": fake_kaggle}), \
+                    patch.object(pull_and_analyze, "pull_kernel_output", side_effect=pull):
+                with self.assertRaisesRegex(ValueError, "Duplicate JSON object member"):
+                    pull_and_analyze.main(["--destination", str(root / "evidence")])
+
+    def test_downloaded_kaggle_manifest_must_match_trusted_bundle_spec(self):
+        from types import SimpleNamespace
+
+        bundle_id = "b" * 64
+
+        def run(mutated_cluster=None):
+            with tempfile.TemporaryDirectory(prefix="athena-kaggle-spec-") as folder:
+                root = Path(folder)
+                experiment_root = root / "kaggle_experiments"
+                experiment_root.mkdir()
+                specs = {
+                    cluster: {"cases": [{"id": cluster + "_planned", "rounds": 1}],
+                              "family_alpha": 0.05}
+                    for cluster in pull_and_analyze.CLUSTERS
+                }
+                (experiment_root / "bundle.json").write_text(
+                    json.dumps({"bundle_id": bundle_id, "specifications": specs}), encoding="utf-8")
+                for cluster, directory in pull_and_analyze.CLUSTERS.items():
+                    kernel_root = experiment_root / directory
+                    kernel_root.mkdir()
+                    (kernel_root / "kernel-metadata.json").write_text(
+                        json.dumps({"id": "owner/" + cluster}), encoding="utf-8")
+
+                def pull(kernel, destination):
+                    destination.mkdir(parents=True, exist_ok=False)
+                    cluster = kernel.rsplit("/", 1)[-1]
+                    returned_spec = json.loads(json.dumps(specs[cluster]))
+                    if cluster == "c2" and mutated_cluster == "omit_case":
+                        returned_spec["cases"] = []
+                    if cluster == "c2" and mutated_cluster == "bool_integer":
+                        returned_spec["cases"][0]["rounds"] = True
+                    manifest = {"bundle_id": bundle_id, "protocol": "athena-research/2",
+                                "cluster": cluster, "status": "COMPLETE", "spec": returned_spec}
+                    (destination / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+                fake_kaggle = SimpleNamespace(api=SimpleNamespace(
+                    kernels_status=lambda _kernel: {"status": "COMPLETE"}))
+                with patch.object(pull_and_analyze, "ROOT", root), \
+                        patch.dict(sys.modules, {"kaggle": fake_kaggle}), \
+                        patch.object(pull_and_analyze, "pull_kernel_output", side_effect=pull), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    destination = root / "evidence"
+                    bundle_bytes = (experiment_root / "bundle.json").read_bytes()
+                    pull_and_analyze.main(["--destination", str(destination)])
+                    archived_bundle = destination / "bundle.json"
+                    self.assertTrue(archived_bundle.is_file(), "pulled evidence must preserve the trusted bundle")
+                    self.assertEqual(archived_bundle.read_bytes(), bundle_bytes)
+                    receipt = json.loads((destination / "pull_receipt.json").read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["bundle_file"], "bundle.json")
+                    self.assertEqual(receipt["bundle_sha256"], hashlib.sha256(bundle_bytes).hexdigest())
+
+        run()
+        for mutation in ("omit_case", "bool_integer"):
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, "specification"):
+                run(mutation)
+
     def envelope(self, text="Visible"):
         frames = [
             {"type": "meta", "version": "aae/1", "source_url": "https://example.org/",
@@ -494,6 +1433,33 @@ class CorrectnessRegressions(unittest.TestCase):
         protocol.validate_aae(self.envelope(), expected)
         with self.assertRaises(ValueError):
             protocol.validate_aae(self.envelope("Wrong but valid JSON"), expected)
+
+    def test_aae_validator_accepts_real_source_url_instead_of_fixture_default(self):
+        source_url = "https://shop.example/products/42?campaign=research"
+        frames = self.envelope().splitlines()
+        meta = json.loads(frames[0])
+        meta["source_url"] = source_url
+        frames[0] = json.dumps(meta).encode("utf-8")
+        payload = b"\n".join(frames) + b"\n"
+
+        validated = protocol.validate_aae(payload)
+
+        self.assertEqual(validated[0]["source_url"], source_url)
+        protocol.validate_aae(payload, expected_source_url=source_url)
+        with self.assertRaisesRegex(ValueError, "envelope identity"):
+            protocol.validate_aae(payload, expected_source_url="https://other.example/")
+        meta["source_url"] = "file:///etc/passwd"
+        frames[0] = json.dumps(meta).encode("utf-8")
+        with self.assertRaisesRegex(ValueError, "envelope identity"):
+            protocol.validate_aae(b"\n".join(frames) + b"\n")
+
+    def test_aae_oracle_rejects_duplicate_projection_members(self):
+        expected = {"blocks": [("paragraph", "Visible", [])]}
+        frames = self.envelope().splitlines()
+        frames[1] = frames[1].replace(b'"text": "Visible"',
+                                      b'"text": "Untrusted", "text": "Visible"', 1)
+        with self.assertRaises(ValueError):
+            protocol.validate_aae(b"\n".join(frames) + b"\n", expected)
 
     def test_parity_divergence_and_missing_end_are_fatal(self):
         with self.assertRaises(ValueError):

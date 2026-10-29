@@ -5,14 +5,36 @@ from pathlib import Path
 
 from kaggle_experiments.protocol import (
     PROTOCOL_VERSION, LEGACY_ANALYSIS_POLICY, analyze_measurements, declared_analysis_policy,
-    is_digest, load_measurements, quantile, sha256_file,
+    is_digest, load_measurements, quantile, sha256_file, strict_json_loads,
 )
 
 ROOT = Path(__file__).resolve().parent
 
 
-def combine_reports(paths):
-    reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+def exact_json_match(left, right):
+    return json.dumps(left, sort_keys=True, separators=(",", ":"), allow_nan=False) == \
+        json.dumps(right, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def load_trusted_bundle(path=None):
+    path = Path(path) if path is not None else ROOT.parent / "kaggle_experiments" / "bundle.json"
+    bundle = strict_json_loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(bundle, dict) or not is_digest(bundle.get("bundle_id"))
+            or not isinstance(bundle.get("specifications"), dict)):
+        raise ValueError("Trusted bundle is malformed")
+    return bundle
+
+
+def validate_manifest_bundle(manifest, bundle):
+    specifications = bundle["specifications"]
+    expected = specifications.get(manifest.get("cluster"))
+    if (manifest.get("bundle_id") != bundle["bundle_id"] or not isinstance(expected, dict)
+            or not exact_json_match(manifest.get("spec"), expected)):
+        raise ValueError("Manifest does not match trusted bundle specification")
+
+
+def combine_reports(paths, bundle_path=None):
+    reports = [strict_json_loads(path.read_text(encoding="utf-8")) for path in paths]
     if (len(reports) != 3 or {report.get("cluster") for report in reports} != {"c1", "c2", "c3"}
             or any(report.get("protocol") != PROTOCOL_VERSION or report.get("legacy_input")
                    or not is_digest(report.get("bundle_id")) or not report.get("cases")
@@ -20,6 +42,7 @@ def combine_reports(paths):
             or len({report.get("bundle_id") for report in reports}) != 1
             or len({report.get("analysis_policy", LEGACY_ANALYSIS_POLICY) for report in reports}) != 1):
         raise ValueError("Combine requires c1/c2/c3 v2 reports from one exact bundle")
+    bundle = load_trusted_bundle(bundle_path)
     for report in reports:
         inputs = report.get("inputs", {})
         if not inputs or any(not is_digest(digest) or not Path(path).is_file()
@@ -28,7 +51,8 @@ def combine_reports(paths):
         manifest_path, samples_path = report.get("source_manifest"), report.get("source_samples")
         if manifest_path not in inputs or samples_path not in inputs:
             raise ValueError("Missing raw/manifest analysis input identity")
-        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        manifest = strict_json_loads(Path(manifest_path).read_text(encoding="utf-8"))
+        validate_manifest_bundle(manifest, bundle)
         cases = load_measurements(samples_path, manifest)
         if (manifest["bundle_id"] != report["bundle_id"] or manifest["cluster"] != report["cluster"]
                 or declared_analysis_policy(manifest["spec"]) != report.get("analysis_policy", LEGACY_ANALYSIS_POLICY)
@@ -36,6 +60,13 @@ def combine_reports(paths):
                 or report.get("family_size") != manifest["spec"]["simultaneous_family_size"]
                 or set(cases) != set(report["cases"])):
             raise ValueError("Analysis does not cover its complete confirmatory experiment")
+        draws = report.get("bootstrap_draws")
+        seed = report.get("seed")
+        alpha = manifest["spec"].get("family_alpha")
+        # Current v2.0/v2.1 confirmatory report contract fixes 30,000 draws.
+        if (report.get("family_alpha") != alpha or seed != 42
+                or type(draws) is not int or draws != 30000):
+            raise ValueError("Report does not match the predeclared analysis settings")
         for case_id, case in cases.items():
             result = report["cases"][case_id]
             expected_count = case["spec"]["rounds"] * case["spec"]["iterations"]
@@ -43,6 +74,14 @@ def combine_reports(paths):
                     or any(result.get(arm, {}).get("samples") != expected_count
                            for arm in ("baseline", "candidate"))):
                 raise ValueError("Analysis omitted measurements or quantiles")
+        recomputed = analyze_measurements(
+            cases,
+            draws=draws,
+            seed=seed,
+            alpha=alpha,
+        )
+        if not exact_json_match(report["cases"], recomputed["cases"]):
+            raise ValueError("Stored analysis statistics do not match raw measurements")
     by_cluster = {report["cluster"]: report for report in reports}
     def scoped_decision(clusters):
         decisions = [case["decision"] for cluster in clusters
@@ -76,18 +115,25 @@ def main(argv=None):
     operation.add_argument("--input", type=Path, help="Raw samples.jsonl")
     operation.add_argument("--combine", nargs=3, type=Path, help="Three analyzed c1/c2/c3 reports")
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--bundle", type=Path,
+                        help="Trusted bundle.json; defaults to this checkout's bundle. Historical evidence needs its matching bundle.")
     parser.add_argument("--output", type=Path, required=True, help="New output file; must not exist")
     parser.add_argument("--legacy", action="store_true", help="Inspect old data; cannot approve it")
-    parser.add_argument("--bootstrap", type=int, default=30000)
+    parser.add_argument("--bootstrap", type=int, default=30000,
+                        help="Confirmatory manifests use 30,000 draws under the current policies")
     args = parser.parse_args(argv)
     if args.output.exists():
         parser.error("Output exists; choose a new path to preserve earlier evidence")
     if not args.combine and not args.manifest and not args.legacy:
         parser.error("A v2 manifest is required, or explicitly select --legacy")
     if args.combine:
-        report = combine_reports(args.combine)
+        report = combine_reports(args.combine, args.bundle)
     else:
-        manifest = json.loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else None
+        manifest = strict_json_loads(args.manifest.read_text(encoding="utf-8")) if args.manifest else None
+        if manifest is not None:
+            if manifest.get("spec", {}).get("run_kind") == "confirm" and args.bootstrap != 30000:
+                parser.error("Current confirmatory policies predeclare exactly 30,000 bootstrap draws")
+            validate_manifest_bundle(manifest, load_trusted_bundle(args.bundle))
         cases = load_measurements(args.input, manifest)
         report = analyze_measurements(cases, draws=args.bootstrap, legacy=args.legacy)
         report["source_samples"] = str(args.input.resolve())

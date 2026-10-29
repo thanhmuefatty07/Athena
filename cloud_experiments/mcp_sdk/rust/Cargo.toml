@@ -1,0 +1,15 @@
+[package]
+name = "athena-mcp-rust-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rmcp = { version = "=3.7.0", default-features = false, features = ["macros", "server", "transport-io", "transport-streamable-http-server"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+tokio-util = "0.7"
+

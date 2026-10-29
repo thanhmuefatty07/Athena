@@ -8,14 +8,20 @@ import json
 import platform
 import statistics
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
+    with tempfile.TemporaryDirectory(prefix='athena-rust-benchmark-') as scratch:
+        return _compare_in_scratch(baseline, candidate, rounds, Path(scratch))
+
+
+def _compare_in_scratch(baseline: Path, candidate: Path, rounds: int, scratch: Path) -> dict:
     suffix = '.exe' if platform.system() == 'Windows' else ''
     cases = [('rank', 1000, 40), ('table', 5000, 40), ('parse', 1000, 20),
              ('export', 1000, 20), ('pipeline', 1000, 20)]
-    generated = baseline.parent / 'benchmark-fixture.html'
+    generated = scratch / 'benchmark-fixture.html'
     paragraphs = []
     for i in range(1000):
         term = 'tokio runtime' if i % 17 == 0 else 'unrelated topic'
@@ -23,7 +29,7 @@ def compare(baseline: Path, candidate: Path, rounds: int) -> dict:
                 'ordinary multilingual tài liệu 内容 details and reproducible evidence ' * 8 + term)
         paragraphs.append(f"<p>{text}<a href='/source/{i}'>source</a></p>")
     generated.write_text(''.join(paragraphs), encoding='utf-8')
-    many_links = baseline.parent / 'many-links.html'
+    many_links = scratch / 'many-links.html'
     many_links.write_text('<p>' + ''.join(f"<a href='/a/{i}'>link {i} </a>" for i in range(20_000)) + '</p>',
                           encoding='utf-8')
     equivalent = []

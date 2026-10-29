@@ -1,0 +1,36 @@
+# Dependency policy for Athena's supported local and cloud build targets.
+# Include all optional features and dev dependencies so the candidate graph is visible.
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+all-features = true
+
+[licenses]
+# MPL-2.0 is currently required transitively by scraper's CSS parser/selectors.
+# This permits dependency use; it does not approve modifying or vendoring that source.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+]
+confidence-threshold = 0.8
+include-dev = true
+unused-allowed-license = "deny"
+
+[bans]
+# Keep version duplication visible; dependency consolidation requires evidence.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

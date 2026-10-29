@@ -1,0 +1,12 @@
+{
+  "schema": "athena-mcp-protocol-fixture/1",
+  "protocol_version": "2026-07-28",
+  "tool_name": "athena_fixture",
+  "max_http_request_bytes": 65536,
+  "invalid_arguments": {
+    "missing_required": {},
+    "invalid_enum": {
+      "fixture_case": "not-a-fixture-case"
+    }
+  }
+}

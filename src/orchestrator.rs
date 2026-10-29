@@ -9,13 +9,14 @@ use crate::{
     singleflight::{FlightError, SingleFlight},
 };
 use std::{
+    fmt,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Semaphore;
 use url::Url;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct RequestKey {
     pub url: String,
     pub tenant_partition: String,
@@ -23,6 +24,17 @@ pub struct RequestKey {
     // In production also include response Vary headers, locale, auth/cookie
     // identity, representation, source policy version and freshness mode.
 }
+
+impl fmt::Debug for RequestKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestKey")
+            .field("url", &"[REDACTED]")
+            .field("tenant_partition", &"[REDACTED]")
+            .field("query", &"[REDACTED]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct RepresentationKey {
     request: RequestKey,
@@ -213,6 +225,7 @@ impl Engine {
                                 max_html_bytes: policy.max_body_bytes,
                                 max_text_bytes: policy.max_body_bytes,
                                 max_nodes,
+                                max_parser_nodes: max_nodes,
                                 max_words_per_chunk: 1000,
                                 max_link_bytes: policy.max_body_bytes,
                                 ..projection::ParseLimits::default()
@@ -292,6 +305,19 @@ mod tests {
             tenant_partition: "tenant".into(),
             query: query.into(),
         }
+    }
+    #[test]
+    fn request_key_debug_redacts_url_tenant_and_query() {
+        let secret = "athena-request-secret-sentinel";
+        let key = RequestKey {
+            url: format!("https://example.org/path?token={secret}"),
+            tenant_partition: format!("tenant-{secret}"),
+            query: format!("search-{secret}"),
+        };
+
+        let debug = format!("{key:?}");
+        assert!(debug.contains("RequestKey"));
+        assert!(!debug.contains(secret), "Debug output exposed request data");
     }
     #[tokio::test]
     async fn admitted_cpu_job_waits_for_worker_capacity() {

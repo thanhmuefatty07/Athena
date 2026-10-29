@@ -22,17 +22,47 @@ Các nhánh **chưa có comparator**: TreeSink/lol_html, pooling DNS/TLS, HTML t
 
 ## 2. Chuẩn bị local, chưa chạy Kaggle
 
+**Trạng thái gói hiện tại (25/10/2026):** các `snapshots_meta.json`, `*.b64`
+và ba thư mục kernel được lưu trong repo chưa khớp toàn bộ mã nguồn hiện tại.
+Không push các thư mục kernel đang có lên Kaggle. Sau khi chốt xong thay đổi
+nghiên cứu, chạy tuần tự hai lệnh đóng gói bên dưới; generator sẽ đối chiếu
+commit, danh sách đường dẫn, hash từng tệp và hash archive, rồi từ chối tạo
+notebook nếu snapshot cũ. Kaggle CLI không chạy chốt freshness này nên không
+được bỏ qua bước tạo lại.
+
+Packer và generator cũng từ chối đường dẫn nguồn/đầu ra là symlink, reparse
+point hoặc tệp hard link nhiều tên, hay phân giải ra ngoài repo. Điều này ngăn
+lệnh đóng gói đọc qua liên kết tĩnh hoặc ghi notebook qua một đường dẫn trỏ ra
+ngoài. Nó không chống được tiến trình cục bộ sửa đường dẫn đồng thời ngay sau
+khi kiểm tra. Việc thu thập source và đọc Git `HEAD` cũng không phải một thao
+tác nguyên tử; nếu checkout bị sửa đồng thời, bundle có thể cũ hoặc ghép trạng
+thái từ các thời điểm khác nhau. README này cũng không chặn lệnh Kaggle CLI trực
+tiếp với artifact cũ; hãy đóng gói trên checkout ổn định rồi chỉ push đúng
+bundle vừa tạo và kiểm tra hash.
+
+Snapshot cũng đưa `cloud_experiments/core_probe.rs` vào cả hai nhánh baseline /
+candidate như một control giống nhau, vì `Cargo.toml` khai báo target này.
+Archive lịch sử không chứa `cloud_experiments/`; metadata ghi
+`original_sha256: null` cho control mới này. Vì vậy baseline dùng cùng bytes
+hiện tại của `core_probe.rs`, không bảo toàn phiên bản file lịch sử nếu từng có.
+Cargo metadata chấp nhận target khi nguồn vắng mặt nhưng vẫn liệt kê đường dẫn
+target không tồn tại; snapshot giờ có chính tệp `core_probe.rs` mà manifest
+khai báo. Dependency/toolchain/build closure vẫn cần kiểm tra bằng lệnh build
+đúng trên Linux.
+
 Mở PowerShell tại `C:\Users\ADMIN\Athena`:
 
 ```powershell
-python -B -m unittest kaggle_experiments.test_protocol -v
-python -B -m kaggle_experiments.pack_snapshots
-python -B -m kaggle_experiments.generate_clusters --owner vnthanhphm
+py -3.11 -B -m unittest kaggle_experiments.test_protocol -v
+py -3.11 -B -m kaggle_experiments.pack_snapshots
+py -3.11 -B -m kaggle_experiments.generate_clusters --owner vnthanhphm
 ```
 
 Thay `vnthanhphm` nếu tài khoản Kaggle của bạn khác. Hai lệnh cuối chỉ đóng gói source và tạo script, không upload/run. File nguồn cần sửa là `protocol.py`, `runner.py`, `probe.rs`, `src/bin/bench_core.rs`; ba `main.py` là file sinh tự động. Mọi thay đổi source/spec/harness phải đóng gói và sinh lại **cả ba cụm**; `bundle.json` định danh chung. Giữ bộ local này đến khi tải và phân tích xong; không sinh bộ khác giữa chừng.
 
 Không lấy Python bytecode, `target`, `.git`, credentials hoặc kết quả cũ vào snapshot. Runner kiểm archive SHA-256, từng file, inventory và đường dẫn trước khi build. Đây là kiểm tra toàn vẹn/tái lập, không phải chữ ký chứng minh nguồn đáng tin.
+
+Nếu máy Kaggle chưa có `rustup`, runner tải `rustup-init` 1.29.1 cho Linux x86_64/aarch64 trong tiến trình con có giám sát, giới hạn tối đa 600 giây và tự rút ngắn theo thời gian còn lại của lượt chạy. Worker giới hạn tệp 64 MiB, yêu cầu URL cuối vẫn là HTTPS; tiến trình cha kiểm SHA-256 đã ghim trước khi thực thi installer. Mọi lệnh con trong nghiên cứu giữ tối đa 8 MiB stdout+stderr cộng lại; vượt mức sẽ dừng tiến trình và ghi `OUTPUT_LIMIT`. Lab dịch vụ local dùng giới hạn 4 MiB. Đây là giới hạn dữ liệu output được giữ trong bộ nhớ của runner, không phải hard cap RSS hay dung lượng đĩa của tiến trình con; dừng cả process group chỉ được xác minh trên Linux.
 
 Để kiểm chức năng local, `bench_core export_no_query 10 1 --verify-only` xuất fingerprint và chạy chức năng một lần, bỏ warmup/timer. Đây không phải mẫu benchmark và runner sẽ từ chối packet thiếu raw timing. Giữ regression trong `test_protocol.py`, không tạo nhiều file test tạm trong repo.
 
@@ -54,7 +84,12 @@ Không đưa khóa vào source, Notebook, dataset hoặc log. Việc tên tệp 
 
 ## 3. Bạn tự chạy Kaggle
 
-Các metadata tạo **kernel private mới có hậu tố `-v21`**, CPU, internet bật để tải công cụ/crates trước khoảng đo; giữ kernel `-v2` cũ. Rust phải đúng **1.99.0**, không fallback sang stable. c2 chuẩn bị GNU `/usr/bin/time` bằng `apt-get` nếu thiếu, yêu cầu Linux/root; lưu lệnh/exit, version, hash executable và self-check RSS >0. Thiếu quyền, lỗi cài hoặc RSS không hợp lệ đều dừng; không thay bằng số 0 hay polling. CPU/image/quota thực tế được ghi sau khi chạy.
+Các metadata tạo **kernel private có hậu tố `-v21`**, CPU, internet bật để tải công cụ/crates trước khoảng đo; giữ kernel `-v2` cũ. Rust phải đúng **1.99.1**, không fallback sang stable. c2 chuẩn bị GNU `/usr/bin/time` bằng `apt-get` nếu thiếu, yêu cầu Linux/root; lưu lệnh/exit, version, hash executable và self-check RSS >0. Thiếu quyền, lỗi cài hoặc RSS không hợp lệ đều dừng; không thay bằng số 0 hay polling. CPU/image/quota thực tế được ghi sau khi chạy.
+
+Bộ script/snapshot được tạo lại ngày 19/10 với compiler pin mới và bundle identity
+mới. Baseline và candidate dùng cùng 1.99.1, Cargo.lock và release profile; kết quả
+1.99.0 cũ vẫn giữ nguyên. Không ghép mẫu hai bundle hoặc ghi đè thư mục kết quả
+cũ; đây là chuẩn bị source, chưa upload/chạy Kaggle hay xác nhận Linux build.
 
 **Nên chạy screening trước** để kiểm hai lỗi môi trường/guard đã sửa với chi phí đo nhỏ:
 
@@ -103,13 +138,13 @@ Khi cả ba kernel đều `COMPLETE`, tại đúng thư mục repo và đúng bu
 python -B -m kaggle_results.pull_and_analyze --destination kaggle_results/v21-run-001
 ```
 
-Lệnh này **chỉ tải**. Thư mục đích phải mới; không trộn dữ liệu cũ. Đọc `pull_receipt.json` để lấy chính xác đường dẫn manifest từng cụm. Runner mới xuất vào `c1/athena-v21-c1`, `c2/athena-v21-c2`, `c3/athena-v21-c3`; dùng đường dẫn thực trong receipt nếu khác:
+Lệnh này **chỉ tải**. Thư mục đích phải mới; không trộn dữ liệu cũ. Bộ kéo lưu bản sao nguyên byte của `bundle.json` đã dùng ngay trong thư mục đích và ghi `bundle_sha256` vào `pull_receipt.json`. Đọc receipt để lấy chính xác đường dẫn manifest từng cụm. Runner mới xuất vào `c1/athena-v21-c1`, `c2/athena-v21-c2`, `c3/athena-v21-c3`; dùng đường dẫn thực trong receipt nếu khác. Khi phân tích lịch sử, luôn truyền bundle đã lưu bằng `--bundle`; không lấy bundle hiện hành trong checkout:
 
 ```powershell
-python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c1/athena-v21-c1/samples.jsonl --manifest kaggle_results/v21-run-001/c1/athena-v21-c1/manifest.json --output kaggle_results/v21-run-001/c1-analysis.json
-python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c2/athena-v21-c2/samples.jsonl --manifest kaggle_results/v21-run-001/c2/athena-v21-c2/manifest.json --output kaggle_results/v21-run-001/c2-analysis.json
-python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c3/athena-v21-c3/samples.jsonl --manifest kaggle_results/v21-run-001/c3/athena-v21-c3/manifest.json --output kaggle_results/v21-run-001/c3-analysis.json
-python -B -m kaggle_results.verify_statistics --combine kaggle_results/v21-run-001/c1-analysis.json kaggle_results/v21-run-001/c2-analysis.json kaggle_results/v21-run-001/c3-analysis.json --output kaggle_results/v21-run-001/research-decision.json
+python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c1/athena-v21-c1/samples.jsonl --manifest kaggle_results/v21-run-001/c1/athena-v21-c1/manifest.json --bundle kaggle_results/v21-run-001/bundle.json --output kaggle_results/v21-run-001/c1-analysis.json
+python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c2/athena-v21-c2/samples.jsonl --manifest kaggle_results/v21-run-001/c2/athena-v21-c2/manifest.json --bundle kaggle_results/v21-run-001/bundle.json --output kaggle_results/v21-run-001/c2-analysis.json
+python -B -m kaggle_results.verify_statistics --input kaggle_results/v21-run-001/c3/athena-v21-c3/samples.jsonl --manifest kaggle_results/v21-run-001/c3/athena-v21-c3/manifest.json --bundle kaggle_results/v21-run-001/bundle.json --output kaggle_results/v21-run-001/c3-analysis.json
+python -B -m kaggle_results.verify_statistics --combine kaggle_results/v21-run-001/c1-analysis.json kaggle_results/v21-run-001/c2-analysis.json kaggle_results/v21-run-001/c3-analysis.json --bundle kaggle_results/v21-run-001/bundle.json --output kaggle_results/v21-run-001/research-decision.json
 ```
 
 Các lệnh phân tích chỉ đọc dữ liệu, không chạy benchmark. Mỗi output phải là file mới. Báo cáo dùng đường dẫn tuyệt đối và kiểm lại hash raw/manifest khi combine; di chuyển dữ liệu thì phân tích lại từ vị trí mới. Giữ nguyên ba artifact `manifest.json`, `samples.jsonl`, `run.log`, lockfile RNG mới nếu resolve thành công và receipt. Không chỉ gửi bảng summary.

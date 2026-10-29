@@ -48,6 +48,7 @@ impl Write for Output {
         Ok(())
     }
 }
+
 fn json_line(frame: &Frame<'_>, out: &mut impl Write) -> Result<(), serde_json::Error> {
     serde_json::to_writer(&mut *out, frame)?;
     out.write_all(b"\n").map_err(serde_json::Error::io)?;
@@ -115,37 +116,59 @@ pub fn export_jsonl_with_limit(
         },
         &mut out,
     )?;
-    let highlights = query
-        .map(|q| highlight_indices(&page.chunks, q, highlight_limit))
-        .unwrap_or_default();
-    let mut highlighted = vec![false; page.chunks.len()];
-    for &i in &highlights {
-        highlighted[i] = true;
+
+    if let Some(q) = query {
+        let highlights = highlight_indices(&page.chunks, q, highlight_limit);
+        let mut highlighted = vec![false; page.chunks.len()];
+        for &i in &highlights {
+            highlighted[i] = true;
+        }
+        let ordering = highlights
+            .iter()
+            .copied()
+            .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
+        for i in ordering {
+            let chunk = &page.chunks[i];
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(chunk.role.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(chunk.text.as_bytes());
+            // Disambiguate repeated identical strings within the same snapshot.
+            hasher.update(&(i as u64).to_le_bytes());
+            let hash = hasher.finalize().to_hex().to_string();
+            json_line(
+                &Frame::Block {
+                    id: hash,
+                    role: chunk.role,
+                    text: &chunk.text,
+                    links: &chunk.links,
+                    highlight: highlighted[i],
+                },
+                &mut out,
+            )?;
+        }
+    } else {
+        for (i, chunk) in page.chunks.iter().enumerate() {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(chunk.role.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(chunk.text.as_bytes());
+            // Disambiguate repeated identical strings within the same snapshot.
+            hasher.update(&(i as u64).to_le_bytes());
+            let hash = hasher.finalize().to_hex().to_string();
+            json_line(
+                &Frame::Block {
+                    id: hash,
+                    role: chunk.role,
+                    text: &chunk.text,
+                    links: &chunk.links,
+                    highlight: false,
+                },
+                &mut out,
+            )?;
+        }
     }
-    let ordering = highlights
-        .iter()
-        .copied()
-        .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
-    for i in ordering {
-        let chunk = &page.chunks[i];
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(chunk.role.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(chunk.text.as_bytes());
-        // Disambiguate repeated identical strings within the same snapshot.
-        hasher.update(&(i as u64).to_le_bytes());
-        let hash = hasher.finalize().to_hex().to_string();
-        json_line(
-            &Frame::Block {
-                id: hash,
-                role: chunk.role,
-                text: &chunk.text,
-                links: &chunk.links,
-                highlight: highlighted[i],
-            },
-            &mut out,
-        )?;
-    }
+
     for (i, target) in page.links.iter().enumerate() {
         json_line(
             &Frame::Link {
@@ -163,8 +186,8 @@ pub fn export_jsonl_with_limit(
     )?;
     let out = out
         .into_inner()
-        .map_err(|e| serde_json::Error::io(e.into_error()))?;
-    String::from_utf8(out.bytes).map_err(|e| serde_json::Error::io(io::Error::other(e)))
+        .map_err(|error| serde_json::Error::io(error.into_error()))?;
+    String::from_utf8(out.bytes).map_err(|error| serde_json::Error::io(io::Error::other(error)))
 }
 
 #[cfg(test)]
@@ -190,6 +213,7 @@ mod tests {
             assert!(export_jsonl_with_limit(&page, &base, 17, None, 0, 0).is_err());
         }
     }
+
     #[test]
     fn incremental_content_hash_preserves_joined_text_contract() {
         let base = Url::parse("https://example.org/").unwrap();

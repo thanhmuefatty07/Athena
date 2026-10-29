@@ -4,6 +4,7 @@ import json
 import math
 from pathlib import Path
 import random
+from urllib.parse import urlsplit
 
 PROTOCOL_VERSION = "athena-research/2"
 STUDY_REVISION = "2.1"
@@ -20,6 +21,25 @@ REQUIRED_CHECKS = {
     "c3": ("environment", "source_integrity", "build_candidate", "build_rng-upgrade",
            "core_oracles", "singleflight", "ip_classifier", "engine_resource_regressions", "rng_distribution"),
 }
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON object member")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value):
+    raise ValueError("Non-finite JSON number: " + value)
+
+
+def strict_json_loads(data):
+    """Decode JSON evidence without ambiguous members or non-standard numbers."""
+    return json.loads(data, object_pairs_hook=_unique_json_object,
+                      parse_constant=_reject_json_constant)
 
 
 def declared_analysis_policy(spec):
@@ -121,7 +141,7 @@ def load_measurements(path, manifest=None):
     groups, identifiers, records, fingerprints = {}, set(), 0, {}
     with path.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
-            record = json.loads(line)
+            record = strict_json_loads(line)
             case_id = record.get("case_id", record.get("stage"))
             arm = record.get("candidate")
             round_id, iteration = record.get("round"), record.get("iteration")
@@ -344,14 +364,24 @@ def analyze_measurements(cases, draws=30000, seed=42, alpha=0.05, legacy=False, 
     return report
 
 
-def validate_aae(payload, expected=None):
+def validate_aae(payload, expected=None, *, expected_source_url=None):
     if not payload.endswith(b"\n"):
         raise ValueError("Missing final JSONL newline")
-    frames = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+    frames = [strict_json_loads(line) for line in payload.decode("utf-8").splitlines()]
     if len(frames) < 2 or frames[0].get("type") != "meta" or frames[-1].get("type") != "end":
         raise ValueError("Missing meta/end framing")
     meta = frames[0]
-    if meta.get("version") != "aae/1" or meta.get("source_url") != "https://example.org/":
+    source_url = meta.get("source_url")
+    try:
+        source = urlsplit(source_url) if isinstance(source_url, str) else None
+        if source is not None:
+            source.port
+    except ValueError:
+        source = None
+    if (meta.get("version") != "aae/1" or source is None
+            or source.scheme not in ("http", "https") or not source.hostname
+            or source.username is not None or source.password is not None
+            or (expected_source_url is not None and source_url != expected_source_url)):
         raise ValueError("Unexpected envelope identity")
     if not is_digest(meta.get("content_hash")):
         raise ValueError("Missing content hash")
