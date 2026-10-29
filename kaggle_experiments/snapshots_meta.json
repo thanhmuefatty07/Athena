@@ -1,7 +1,7 @@
 {
   "protocol": "athena-research/2",
   "baseline_commit": "8de5709e6c47fd57713ca821131579b2e8c25a36",
-  "candidate_commit": "13c7b25f8fc387ab85938dda2ebcd091ac41265d",
+  "candidate_commit": "d7f82e971ec993d52ab3f83888eff5a1aed9bd68",
   "comparison": "source-only; identical dependency graph, toolchain, release profile and benchmark harness",
   "baseline_controls": {
     "Cargo.toml": {

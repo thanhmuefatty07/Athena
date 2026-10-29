@@ -359,9 +359,11 @@ pub fn expand_with_slot_limit(
     if rows.len() > max_rows || max_cols == 0 { return Err(GridError::TooLarge); }
     if rows.windows(2).any(|pair| pair[0].group > pair[1].group) { return Err(GridError::InvalidGroupOrder); }
     let mut occupied = vec![std::collections::BTreeMap::<usize, usize>::new(); rows.len()];
-    let mut cells = Vec::with_capacity(rows.iter().map(|row| row.cells.len()).sum());
+    let mut row_widths = vec![0usize; rows.len()];
+    let mut cells = Vec::new();
     let mut width = 0;
     let mut group_end = 0;
+    let mut initialized_slots = 0usize;
     for (r, row) in rows.iter().enumerate() {
         if r == group_end { group_end = (r + 1..rows.len()).find(|&i| rows[i].group != row.group).unwrap_or(rows.len()); }
         let mut c = 0usize;
@@ -371,9 +373,17 @@ pub fn expand_with_slot_limit(
             let dr = if cell.rowspan == 0 { group_end - r } else { cell.rowspan.min(65_534).min(group_end - r) };
             let end_col = c.checked_add(dc).ok_or(GridError::TooLarge)?;
             if end_col > max_cols { return Err(GridError::TooLarge); }
-            if dc.checked_mul(dr).is_none_or(|span| span > max_slots) { return Err(GridError::TooManySlots); }
             let index = cells.len();
-            for line in occupied.iter_mut().take(r + dr).skip(r) {
+            for (line, row_width) in occupied.iter_mut().zip(row_widths.iter_mut()).take(r + dr).skip(r) {
+                if *row_width < end_col {
+                    initialized_slots = initialized_slots
+                        .checked_add(end_col - *row_width)
+                        .ok_or(GridError::TooManySlots)?;
+                    if initialized_slots > max_slots {
+                        return Err(GridError::TooManySlots);
+                    }
+                    *row_width = end_col;
+                }
                 for col in c..end_col {
                     if line.insert(col, index).is_some() { return Err(GridError::Overlap); }
                 }
@@ -591,6 +601,7 @@ def transform(files, variant_id):
 def _self_test():
     import unittest
     from pathlib import Path
+    from cloud_experiments import research
 
     class Contracts(unittest.TestCase):
         def test_real_rivals_and_composition_reject_unknown_or_conflicting_factors(self):
@@ -600,6 +611,17 @@ def _self_test():
                 transform({}, "not-registered")
             with self.assertRaises(ValueError):
                 transform({}, "rank-linear+rank-binary")
+            composed = research.compose_finalist([
+                "aae-direct", "rank-select", "prepared", "projection-fused", "links-btree", "table-sparse", "build-native"
+            ])
+            self.assertEqual(
+                composed,
+                "aae-direct+rank-select+prepared+projection-fused+links-btree+table-sparse+build-native",
+            )
+            self.assertEqual(
+                metadata(composed)["decisions"],
+                ["H01", "H02", "H03", "H04", "H05", "H06", "H10"],
+            )
 
         def test_unreviewed_source_is_rejected_before_transformation(self):
             source = (Path(__file__).resolve().parents[1] / "src/aae.rs").read_bytes()
@@ -607,6 +629,9 @@ def _self_test():
                 transform({"src/aae.rs": source + b"\n// controlled unreviewed change\n"}, "aae-direct")
 
         def test_baseline_preserves_bytes_and_composition_does_not_mutate_input(self):
+            import shutil
+            import subprocess
+            import tempfile
             root = Path(__file__).resolve().parents[1]
             source = {name: (root / name).read_bytes() for name in ["src/aae.rs", "src/rank.rs", "src/projection.rs", "src/table.rs", "Cargo.toml", "Cargo.lock"]}
             before = dict(source)
@@ -616,6 +641,36 @@ def _self_test():
             self.assertEqual(changed["Cargo.toml"], before["Cargo.toml"])
             self.assertEqual(changed["Cargo.lock"], before["Cargo.lock"])
             self.assertTrue(all(changed[name] != before[name] for name in ["src/aae.rs", "src/rank.rs", "src/projection.rs", "src/table.rs"]))
+            self.assertIn(b"let mut row_widths = vec![0usize; rows.len()];", changed["src/table.rs"])
+            rustc = shutil.which("rustc")
+            if rustc is not None:
+                extra_test = (
+                    "    #[test]\n"
+                    "    fn slot_limit_takes_precedence_over_later_overlap() {\n"
+                    "        let rows = [\n"
+                    "            Row {\n"
+                    "                group: 0,\n"
+                    "                cells: vec![cell(\"a\", 2, 1), cell(\"b\", 1, 1), cell(\"c\", 2, 1)],\n"
+                    "            },\n"
+                    "            Row {\n"
+                    "                group: 0,\n"
+                    "                cells: vec![cell(\"d\", 1, 3)],\n"
+                    "            },\n"
+                    "        ];\n"
+                    "        assert_eq!(expand_with_slot_limit(&rows, 2, 4, 6), Err(GridError::TooManySlots));\n"
+                    "    }\n"
+                )
+                table_rs = changed["src/table.rs"].decode("utf-8").replace(
+                    "    #[test]\n    fn sparse_grid",
+                    extra_test + "    #[test]\n    fn sparse_grid",
+                    1,
+                )
+                with tempfile.TemporaryDirectory(prefix="athena-sparse-table-test-") as folder:
+                    src_path = Path(folder) / "table_test.rs"
+                    bin_path = Path(folder) / ("table_test.exe" if Path(rustc).suffix.lower() == ".exe" else "table_test")
+                    src_path.write_text(table_rs, encoding="utf-8")
+                    subprocess.run([rustc, "--edition=2024", "--test", str(src_path), "-o", str(bin_path)], check=True)
+                    subprocess.run([str(bin_path)], check=True, stdout=subprocess.DEVNULL)
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(Contracts)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
