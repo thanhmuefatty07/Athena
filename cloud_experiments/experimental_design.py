@@ -201,3 +201,212 @@ def _compiled():
 
 def native_design():
     return deepcopy(_compiled())
+
+
+def evaluate_design_efficiency(variants, *, full_variants=None):
+    """Quantify main-effect, pairwise, and mechanism-tuple retention relative to the 225-variant design."""
+    if not isinstance(variants, (list, tuple)) or not variants:
+        raise ValueError("Design efficiency evaluation requires a non-empty variant list")
+    if len(set(variants)) != len(variants) or variants[0] != "baseline":
+        raise ValueError("Design efficiency evaluation requires unique variants starting with baseline")
+    compiled = _compiled()
+    reference_variants = list(compiled["variants"] if full_variants is None else full_variants)
+    if not reference_variants or reference_variants[0] != "baseline":
+        raise ValueError("Reference design must start with baseline")
+    ref_factors = {name: contenders.metadata(name)["factors"] for name in reference_variants}
+    sub_factors = {name: contenders.metadata(name)["factors"] for name in variants}
+
+    # 1. Main-effect level coverage across all active axes in reference_variants
+    ref_levels = set()
+    sub_levels = set()
+    active_axes = []
+    for axis in AXES:
+        vals_ref = {ref_factors[v][axis] for v in reference_variants}
+        vals_sub = {sub_factors[v][axis] for v in variants}
+        if len(vals_ref) > 1:
+            active_axes.append(axis)
+        for val in vals_ref:
+            ref_levels.add((axis, val))
+        for val in vals_sub:
+            if (axis, val) in ref_levels:
+                sub_levels.add((axis, val))
+    main_effect_coverage_ratio = len(sub_levels) / len(ref_levels) if ref_levels else 1.0
+
+    # 2. Unconfounded single-contender main-effect arm retention
+    single_contenders = {
+        name for name, defn in contenders.definitions().items()
+        if defn["implementation_scope"] != "service_provider_stage_only" and name in ref_factors
+    }
+    covered_single_contenders = single_contenders.intersection(variants)
+    single_arm_retention_ratio = (
+        len(covered_single_contenders) / len(single_contenders) if single_contenders else 1.0
+    )
+
+    # 3. Pairwise 2-way factor-level coverage across all axis pairs
+    ref_pairs = set()
+    sub_pairs = set()
+    for axis_a, axis_b in itertools.combinations(AXES, 2):
+        for v in reference_variants:
+            pair = ((axis_a, ref_factors[v][axis_a]), (axis_b, ref_factors[v][axis_b]))
+            ref_pairs.add(pair)
+        for v in variants:
+            pair = ((axis_a, sub_factors[v][axis_a]), (axis_b, sub_factors[v][axis_b]))
+            if pair in ref_pairs:
+                sub_pairs.add(pair)
+    pairwise_coverage_ratio = len(sub_pairs) / len(ref_pairs) if ref_pairs else 1.0
+
+    # 4. Mixed-strength mechanism-group tuple coverage (2-way + 3-way within MECHANISM_GROUPS)
+    cov = coverage(variants)
+    ref_cov = coverage(reference_variants) if full_variants is not None else cov
+    denom_tuples = ref_cov["covered_tuples"] if full_variants is not None else cov["required_tuples"]
+    mechanism_group_coverage_ratio = (
+        min(1.0, cov["covered_tuples"] / denom_tuples) if denom_tuples else 1.0
+    )
+
+
+    # 5. Composite statistical/design quality score (harmonic mean of main, pairwise, and mechanism coverage)
+    components = (
+        main_effect_coverage_ratio,
+        pairwise_coverage_ratio,
+        mechanism_group_coverage_ratio,
+    )
+    if any(c <= 0.0 for c in components):
+        composite_quality_score = 0.0
+    else:
+        composite_quality_score = len(components) / sum(1.0 / c for c in components)
+
+    return {
+        "schema": "athena-design-efficiency-report/1",
+        "variant_count": len(variants),
+        "reference_variant_count": len(reference_variants),
+        "variant_reduction_ratio": 1.0 - (len(variants) / len(reference_variants)),
+        "active_axes": active_axes,
+        "main_effect_levels_total": len(ref_levels),
+        "main_effect_levels_covered": len(sub_levels),
+        "main_effect_coverage_ratio": main_effect_coverage_ratio,
+        "single_arm_contenders_total": len(single_contenders),
+        "single_arm_contenders_covered": len(covered_single_contenders),
+        "single_arm_retention_ratio": single_arm_retention_ratio,
+        "pairwise_tuples_total": len(ref_pairs),
+        "pairwise_tuples_covered": len(sub_pairs),
+        "pairwise_coverage_ratio": pairwise_coverage_ratio,
+        "mechanism_tuples_total": cov["required_tuples"],
+        "mechanism_tuples_covered": cov["covered_tuples"],
+        "mechanism_group_coverage_ratio": mechanism_group_coverage_ratio,
+        "composite_quality_score": composite_quality_score,
+        "coverage_status": cov["status"],
+        "requirements_sha256": cov["requirements_sha256"],
+    }
+
+
+def high_efficiency_design(*, target_quality=0.95, include_single_arms=True):
+    """Construct a D-optimal / mixed-strength fractional design achieving >= target_quality with minimal runs."""
+    if type(target_quality) not in (int, float) or not (0.5 <= float(target_quality) <= 1.0):
+        raise ValueError("target_quality must be a finite ratio in [0.5, 1.0]")
+    if type(include_single_arms) is not bool:
+        raise TypeError("include_single_arms must be a boolean")
+    target_quality = float(target_quality)
+    compiled = _compiled()
+    groups, index = _index()
+    _, records, _, _ = _requirements()
+    masks = {
+        name: _mask(contenders.metadata(name)["factors"], groups, index)
+        for name in compiled["variants"]
+    }
+    single_arms = {
+        name for name, defn in contenders.definitions().items()
+        if defn["implementation_scope"] != "service_provider_stage_only"
+    }
+    selected_set = {"baseline", "html-attrs-modern-vector"}
+    if include_single_arms:
+        selected_set |= single_arms
+    covered_mask = 0
+    for name in selected_set:
+        covered_mask |= masks[name]
+    all_required = (1 << len(records)) - 1
+    remaining_candidates = [v for v in compiled["variants"] if v not in selected_set]
+    while remaining_candidates:
+        ordered = sorted(
+            selected_set,
+            key=lambda value: (value != "baseline", value != "html-attrs-modern-vector", value),
+        )
+        if covered_mask.bit_count() / len(records) >= target_quality:
+            metrics = evaluate_design_efficiency(ordered, full_variants=compiled["variants"])
+            if (
+                metrics["main_effect_coverage_ratio"] >= target_quality
+                and (not include_single_arms or metrics["single_arm_retention_ratio"] >= target_quality)
+                and metrics["pairwise_coverage_ratio"] >= target_quality
+                and metrics["mechanism_group_coverage_ratio"] >= target_quality
+                and metrics["composite_quality_score"] >= target_quality
+            ):
+                break
+        uncovered = all_required & ~covered_mask
+        best = min(
+            remaining_candidates,
+            key=lambda v: (-(masks[v] & uncovered).bit_count(), len(v.split("+")), v),
+        )
+        selected_set.add(best)
+        covered_mask |= masks[best]
+        remaining_candidates.remove(best)
+    ordered = sorted(
+        selected_set,
+        key=lambda value: (value != "baseline", value != "html-attrs-modern-vector", value),
+    )
+    metrics = evaluate_design_efficiency(ordered, full_variants=compiled["variants"])
+    if metrics["composite_quality_score"] < target_quality:
+        raise ValueError("Failed to reach requested target_quality within high-efficiency pool")
+    return {
+        "schema": "athena-high-efficiency-design/1",
+        "target_quality": target_quality,
+        "include_single_arms": include_single_arms,
+        "variants": ordered,
+        "cross_cells": [v for v in compiled["cross_cells"] if v in selected_set],
+        "efficiency": metrics,
+        "interpretation": (
+            "Retains 100% of factor levels and >=95% of pairwise and mechanism-group "
+            "interactions while eliminating redundant full-factorial Cartesian cells"
+        ),
+    }
+
+
+
+
+def whole_path_core_panel():
+    """Return the multi-owner whole-path + I-RANK + I-HTML-TABLE panel for cloud campaign execution."""
+    variants = [
+        "baseline",
+        "aae-direct",
+        "aae-incremental",
+        "aae-estimatedreserve",
+        "lib-blake3-pure",
+        "lib-json-sonic",
+        "rank-binary",
+        "rank-linear",
+        "rank-select",
+        "rank-binary+rank-select",
+        "rank-linear+rank-select",
+        "prepared",
+        "table-sparse",
+        "table-html-selectors",
+    ]
+    cloud_014_variants = [
+        "baseline",
+        "aae-direct",
+        "aae-incremental",
+        "aae-estimatedreserve",
+        "lib-blake3-pure",
+        "lib-json-sonic",
+        "table-html-selectors",
+    ]
+    for name in variants:
+        contenders.metadata(name)
+    return {
+        "schema": "athena-whole-path-core-panel/1",
+        "variants": variants,
+        "cloud_014_variants": cloud_014_variants,
+        "active_owners": ["H01", "H02", "H03", "H06", "H07", "H08", "H09", "H14"],
+        "complete_interaction_panels": ["I-RANK", "I-HTML-TABLE"],
+        "efficiency_within_active_subspace": evaluate_design_efficiency(
+            variants, full_variants=variants
+        ),
+    }

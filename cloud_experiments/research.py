@@ -335,7 +335,7 @@ def interaction_contrast(cells):
     return math.fsum(values) / len(values)
 
 
-def bounded_bootstrap(rounds, probabilities, draws, seed, batch_size=64):
+def bounded_bootstrap(rounds, probabilities, draws, seed, batch_size=256):
     outputs = {q: [] for q in probabilities}
     for deltas in _bootstrap_batches(rounds, probabilities, draws, seed, batch_size):
         for q, values in deltas.items():
@@ -345,7 +345,7 @@ def bounded_bootstrap(rounds, probabilities, draws, seed, batch_size=64):
     return outputs
 
 
-def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=64, *, deadline=None):
+def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=256, *, deadline=None):
     if not positive(tail) or tail > .5 or type(draws) is not int or draws < 1:
         raise ValueError("Invalid bootstrap interval tail")
     lower_count = math.floor((draws - 1) * tail) + 1
@@ -355,15 +355,17 @@ def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=64,
     low, high = {q: [] for q in probabilities}, {q: [] for q in probabilities}
     for deltas in _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline):
         for q, values in deltas.items():
+            low_q = low[q]
+            high_q = high[q]
             for value in values:
-                if len(low[q]) < lower_count:
-                    heapq.heappush(low[q], -value)
-                elif value < -low[q][0]:
-                    heapq.heapreplace(low[q], -value)
-                if len(high[q]) < upper_count:
-                    heapq.heappush(high[q], value)
-                elif value > high[q][0]:
-                    heapq.heapreplace(high[q], value)
+                if len(low_q) < lower_count:
+                    heapq.heappush(low_q, -value)
+                elif value < -low_q[0]:
+                    heapq.heapreplace(low_q, -value)
+                if len(high_q) < upper_count:
+                    heapq.heappush(high_q, value)
+                elif value > high_q[0]:
+                    heapq.heapreplace(high_q, value)
     return {q: [-low[q][0], high[q][0]] for q in probabilities}
 
 
@@ -381,6 +383,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
     except ImportError:
         np = None
     count, rng = len(rounds), random.Random(seed)
+    randrange = rng.randrange
     if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
         raise ValueError("Invalid bootstrap deadline")
     arrays = {}
@@ -402,6 +405,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                 np.cumsum(prefix, axis=0, out=prefix)
             arrays[arm] = values, groups, prefix
     positions = [round(q * (len(rounds) * next(iter(sizes)) - 1)) for q in probabilities]
+    pos_array = np.asarray(positions, dtype=np.int32) if np is not None else None
     for start in range(0, draws, batch_size):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
@@ -409,32 +413,40 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         for _ in range(min(batch_size, draws - start)):
             row = [0] * count
             for _ in range(count):
-                row[rng.randrange(count)] += 1
+                row[randrange(count)] += 1
             weights.append(row)
-        sampled = {}
-        for arm, (values, groups, prefix) in arrays.items():
-            if np is not None:
-                weight_array = np.asarray(weights, dtype=np.int64)
+        if np is not None:
+            weight_array = np.asarray(weights, dtype=np.int32)
+            sampled_np = {}
+            for arm, (values, groups, prefix) in arrays.items():
                 if prefix is None:
                     cumulative = weight_array[:, groups].cumsum(axis=1)
-                    sampled[arm] = np.stack([values[(cumulative > p).argmax(axis=1)] for p in positions], axis=1).tolist()
+                    sampled_np[arm] = np.stack(
+                        [values[(cumulative > p).argmax(axis=1)] for p in positions], axis=1
+                    )
                 else:
-                    low = np.zeros((len(weights), len(positions)), dtype=np.int64)
+                    low = np.zeros((len(weights), len(positions)), dtype=np.int32)
                     high = np.full_like(low, len(values) - 1)
-                    while np.any(low < high):
-                        middle = (low + high) // 2
-                        mass = np.einsum("bqk,bk->bq", prefix[middle + 1], weight_array, dtype=np.int64)
-                        found = mass > np.asarray(positions)
+                    for _ in range((len(values) - 1).bit_length()):
+                        middle = (low + high) >> 1
+                        mass = np.einsum("bqk,bk->bq", prefix[middle + 1], weight_array)
+                        found = mass > pos_array
                         high = np.where(found, middle, high)
                         low = np.where(found, low, middle + 1)
-                    sampled[arm] = values[low].tolist()
-            else:
-                sampled[arm] = [protocol._weighted_quantiles(values, groups, row, probabilities) for row in weights]
-        deltas = {q: [] for q in probabilities}
-        for baseline, candidate in zip(sampled["baseline"], sampled["candidate"]):
-            for i, q in enumerate(probabilities):
-                deltas[q].append(candidate[i] - baseline[i])
-        yield deltas
+                    sampled_np[arm] = values[low]
+            diff = sampled_np["candidate"] - sampled_np["baseline"]
+            yield {q: diff[:, i].tolist() for i, q in enumerate(probabilities)}
+        else:
+            sampled = {
+                arm: [protocol._weighted_quantiles(values, groups, row, probabilities) for row in weights]
+                for arm, (values, groups, _) in arrays.items()
+            }
+            deltas = {q: [] for q in probabilities}
+            for baseline, candidate in zip(sampled["baseline"], sampled["candidate"]):
+                for i, q in enumerate(probabilities):
+                    deltas[q].append(candidate[i] - baseline[i])
+            yield deltas
+
 
 
 def synthetic_cases(split):
@@ -1638,16 +1650,39 @@ def profile_analysis(rounds, settings, draws=512):
 def forecast_native(variants, phases, design, pilot, profile):
     from cloud_experiments import contenders, service_lab, service_study
     owner_cases = {}
+    variant_case_counts = []
+    any_build_factor = False
     for variant in variants:
         if variant == "baseline":
             continue
+        meta = contenders.metadata(variant)
         count = len(_variant_cases(variant, phases["confirm"]))
-        for owner in contenders.metadata(variant)["decisions"]:
+        owners = meta["decisions"]
+        if count > 0 and owners:
+            variant_case_counts.append(count)
+            if "build_factor" in meta["implementation_scopes"]:
+                any_build_factor = True
+        for owner in owners:
             owner_cases[owner] = max(owner_cases.get(owner, 0), count)
-    maximum_cases = min(sum(owner_cases.values()) * design["selection"]["slots_per_owner"],
-                        (len(variants) - 1) * len(phases["confirm"]))
-    # A predeclared combined finalist adds a full affected path; do not budget only individual winners.
-    joint_cases = len(phases["confirm"]) if len(owner_cases) > 1 else 0
+    variant_case_counts.sort(reverse=True)
+    max_individual_finalists = min(
+        len(variant_case_counts),
+        len(owner_cases) * design["selection"]["slots_per_owner"],
+    )
+    maximum_cases = min(
+        sum(owner_cases.values()) * design["selection"]["slots_per_owner"],
+        sum(variant_case_counts[:max_individual_finalists]),
+        (len(variants) - 1) * len(phases["confirm"]),
+    )
+    # A predeclared combined finalist adds its affected path; bound by the union of active owners.
+    if len(owner_cases) > 1 and len(variant_case_counts) > 1:
+        if any_build_factor:
+            joint_cases = len(phases["confirm"])
+        else:
+            all_owners = set(owner_cases)
+            joint_cases = len([c for c in phases["confirm"] if all_owners.intersection(c["owners"])])
+    else:
+        joint_cases = 0
     maximum_cases += joint_cases
     if maximum_cases < 1 or profile.get("not_scientific_samples") is not True:
         raise ValueError("Resource forecast requires actual contender scopes and resource-only full-shape profile")
@@ -1657,8 +1692,54 @@ def forecast_native(variants, phases, design, pilot, profile):
                               cross_cells=design.get("native_design", {}).get("cross_cells", []))["assignments"]
     screen_pairs = sum(len(ids) for v, ids in assignments.items() if v != "baseline")
     denominator = len(phases["screen"]) * 2 * 13
-    scale = (screen_pairs * design["screen"]["blocks"] * (design["screen"]["iterations"] + 10)
-             + maximum_cases * design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10)) / denominator
+    case_pilot_ns = pilot.get("case_pilot_ns")
+    if isinstance(case_pilot_ns, dict) and case_pilot_ns and positive(pilot.get("wall_seconds")):
+        pilot_iter_s = {
+            cid: max(0.0, float(ns)) * (13.0 / 3.0) / 1e9
+            for cid, ns in case_pilot_ns.items()
+        }
+        spawn_4_s = max(0.0, float(pilot["wall_seconds"]) - sum(pilot_iter_s.values())) / max(1, len(phases["screen"]))
+        screen_iter_mult = design["screen"]["blocks"] * (design["screen"]["iterations"] + 10) / 26.0
+        screen_spawn_mult = design["screen"]["blocks"] / 2.0
+        screen_wall_s = sum(
+            pilot_iter_s.get(cid, 0.0) * screen_iter_mult + spawn_4_s * screen_spawn_mult
+            for v, ids in assignments.items() if v != "baseline"
+            for cid in ids
+        )
+        confirm_iter_mult = design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10) / 26.0
+        confirm_spawn_mult = float(design["confirm"]["blocks"])
+        candidate_confirm_costs = []
+        for variant in variants:
+            if variant == "baseline":
+                continue
+            meta = contenders.metadata(variant)
+            if not meta["decisions"]:
+                continue
+            v_screen_cases = _variant_cases(variant, phases["screen"])
+            if not v_screen_cases:
+                continue
+            v_cost = sum(
+                pilot_iter_s.get(c["id"], 0.0) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
+                for c in v_screen_cases
+            )
+            candidate_confirm_costs.append(v_cost)
+        candidate_confirm_costs.sort(reverse=True)
+        confirm_wall_s = sum(candidate_confirm_costs[:max_individual_finalists])
+        if joint_cases > 0:
+            if any_build_factor:
+                joint_screen_cases = phases["screen"]
+            else:
+                all_owners = set(owner_cases)
+                joint_screen_cases = [c for c in phases["screen"] if all_owners.intersection(c["owners"])]
+            confirm_wall_s += sum(
+                pilot_iter_s.get(c["id"], 0.0) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
+                for c in joint_screen_cases
+            )
+        scale = (screen_wall_s + confirm_wall_s) / float(pilot["wall_seconds"])
+    else:
+        scale = (screen_pairs * design["screen"]["blocks"] * (design["screen"]["iterations"] + 10)
+                 + maximum_cases * design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10)) / denominator
+
     limits = design["limits"]
     h07_profile = pilot.get("service_analysis_resource_profile")
     h07_reserve = (None if h07_profile is None else service_study.execution_reserve(
@@ -2927,12 +3008,23 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
             pilot_wall = sum(receipt["collection_wall_seconds"] for receipt in run.collection.commits.values()
                              if receipt["descriptor"]["channel"] == "pilot:baseline")
             analysis_profile = profile_analysis(next(iter(pilot_groups.values())), design["confirm"])
+            case_pilot_ns = {
+                cid: sum(
+                    int(val)
+                    for block in blocks
+                    for arm in ("baseline", "candidate")
+                    for val in block.get(arm, ())
+                )
+                for cid, blocks in pilot_groups.items()
+            }
             pilot = {"status": "COMPLETE", "phase": "pilot", "wall_seconds": pilot_wall,
+                     "case_pilot_ns": case_pilot_ns,
                      "baseline_build_wall_seconds": build_wall, "analysis_resource_profile": analysis_profile,
                      "peak_memory_bytes": max(lifecycle.memory_peak_bytes() or 0, run.manifest.get("sampled_process_tree_rss_bytes", 0)),
                      "memory_scope": "Kernel cgroup peak when available plus sampled child tree and parent peak; sampling can miss brief spikes",
                      "precision_status": "PLANNED_NOT_GUARANTEED", "admitted": False,
                      "limits": "Two blocks/three iterations pilot estimates overhead only; not tail precision or host variance"}
+
         from cloud_experiments import service_study
         service_profile = pilot.get("service_analysis_resource_profile")
         if service_profile is None:

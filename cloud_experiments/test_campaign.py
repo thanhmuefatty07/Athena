@@ -4583,5 +4583,80 @@ class AgentPanelAggregationControls(unittest.TestCase):
                 merge(inputs, root / "json-out.json", split="screen")
 
 
+class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
+    def test_high_efficiency_design_retains_above_95_percent_quality_with_fractional_runs(self):
+        design = research.experimental_design.high_efficiency_design(target_quality=0.95)
+        self.assertEqual(design["schema"], "athena-high-efficiency-design/1")
+        metrics = design["efficiency"]
+        self.assertEqual(metrics["schema"], "athena-design-efficiency-report/1")
+        self.assertEqual(metrics["reference_variant_count"], 225)
+        self.assertLessEqual(metrics["variant_count"], 90)
+        self.assertGreaterEqual(metrics["variant_reduction_ratio"], 0.60)
+        self.assertEqual(metrics["main_effect_coverage_ratio"], 1.0)
+        self.assertEqual(metrics["single_arm_retention_ratio"], 1.0)
+        self.assertGreaterEqual(metrics["pairwise_coverage_ratio"], 0.95)
+        self.assertGreaterEqual(metrics["mechanism_group_coverage_ratio"], 0.95)
+        self.assertGreaterEqual(metrics["composite_quality_score"], 0.95)
+        compact = research.experimental_design.high_efficiency_design(
+            target_quality=0.95, include_single_arms=False
+        )
+        compact_metrics = compact["efficiency"]
+        self.assertLessEqual(compact_metrics["variant_count"], 58)
+        self.assertGreaterEqual(compact_metrics["variant_reduction_ratio"], 0.74)
+        self.assertEqual(compact_metrics["main_effect_coverage_ratio"], 1.0)
+        self.assertGreaterEqual(compact_metrics["pairwise_coverage_ratio"], 0.95)
+        self.assertGreaterEqual(compact_metrics["mechanism_group_coverage_ratio"], 0.95)
+        self.assertGreaterEqual(compact_metrics["composite_quality_score"], 0.95)
+        core = research.experimental_design.whole_path_core_panel()
+        self.assertEqual(core["schema"], "athena-whole-path-core-panel/1")
+        self.assertEqual(core["efficiency_within_active_subspace"]["composite_quality_score"], 1.0)
+
+
+    def test_forecast_native_deduplicates_owner_confirm_cases_and_weights_by_case_pilot_ns(self):
+        design = research.manifest_design()
+        phases = {split: research.synthetic_cases(split) for split in ("screen", "confirm")}
+        panel = ["baseline", "prepared", "table-sparse", "table-html-selectors"]
+        case_pilot_ns = {
+            c["id"]: (500_000_000 if c["id"].startswith("attribute-heavy-") else 100_000)
+            for c in phases["screen"]
+        }
+        pilot = {
+            "wall_seconds": 85.0,
+            "case_pilot_ns": case_pilot_ns,
+            "baseline_build_wall_seconds": 60.0,
+            "peak_memory_bytes": 64 * 1024 ** 2,
+        }
+        profile = {"not_scientific_samples": True, "seconds_per_case_draw_max": 0.0001}
+        forecast = research.forecast_native(panel, phases, design, pilot, profile)
+        uniform_forecast = research.forecast_native(
+            panel,
+            phases,
+            design,
+            {k: v for k, v in pilot.items() if k != "case_pilot_ns"},
+            profile,
+        )
+        self.assertEqual(forecast["maximum_confirm_cases"], 18)
+        self.assertEqual(forecast["maximum_family"], 72)
+        self.assertEqual(forecast["maximum_bootstrap_draws"], 288000)
+        self.assertLess(
+            forecast["wall_seconds"] - forecast["finalist_service_gate_seconds_reserve"],
+            2500,
+        )
+        self.assertLess(forecast["wall_seconds"], uniform_forecast["wall_seconds"])
+
+
+    def test_bootstrap_intervals_batch_size_256_matches_64_bit_for_bit(self):
+        rounds = [
+            {
+                "baseline": [100 + b * 3 + i for i in range(12)],
+                "candidate": [95 + b * 3 + (i % 5) for i in range(12)],
+            }
+            for b in range(6)
+        ]
+        b64 = research.bootstrap_intervals(rounds, [0.5, 0.95, 0.99], 2048, 938201, 0.025, batch_size=64)
+        b256 = research.bootstrap_intervals(rounds, [0.5, 0.95, 0.99], 2048, 938201, 0.025, batch_size=256)
+        self.assertEqual(b64, b256)
+
+
 if __name__ == "__main__":
     unittest.main()
