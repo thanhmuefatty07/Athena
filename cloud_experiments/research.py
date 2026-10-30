@@ -383,7 +383,9 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
     except ImportError:
         np = None
     count, rng = len(rounds), random.Random(seed)
-    randrange = rng.randrange
+    getrandbits = rng.getrandbits
+    k_bits = (count - 1).bit_length()
+    is_pow2 = (count & (count - 1)) == 0
     if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
         raise ValueError("Invalid bootstrap deadline")
     arrays = {}
@@ -396,30 +398,41 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
             arrays[arm] = values, groups, None
         else:
             values, groups = np.asarray(values), np.asarray(groups)
-            prefix = None
+            prefix_off = None
             if len(values) > 256:
                 # Weighted order statistics need only group counts at queried ranks.
                 # Avoid a draws x observations cumulative matrix for every batch.
                 prefix = np.zeros((len(values) + 1, count), dtype=np.int32)
                 prefix[np.arange(1, len(values) + 1), groups] = 1
                 np.cumsum(prefix, axis=0, out=prefix)
-            arrays[arm] = values, groups, prefix
+                prefix_off = np.ascontiguousarray(prefix[1:])
+            arrays[arm] = values, groups, prefix_off
     positions = [round(q * (len(rounds) * next(iter(sizes)) - 1)) for q in probabilities]
     pos_array = np.asarray(positions, dtype=np.int32) if np is not None else None
     for start in range(0, draws, batch_size):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
         weights = []
-        for _ in range(min(batch_size, draws - start)):
-            row = [0] * count
-            for _ in range(count):
-                row[randrange(count)] += 1
-            weights.append(row)
+        if is_pow2:
+            for _ in range(min(batch_size, draws - start)):
+                row = [0] * count
+                for _ in range(count):
+                    row[getrandbits(k_bits)] += 1
+                weights.append(row)
+        else:
+            for _ in range(min(batch_size, draws - start)):
+                row = [0] * count
+                for _ in range(count):
+                    v = getrandbits(k_bits)
+                    while v >= count:
+                        v = getrandbits(k_bits)
+                    row[v] += 1
+                weights.append(row)
         if np is not None:
             weight_array = np.asarray(weights, dtype=np.int32)
             sampled_np = {}
-            for arm, (values, groups, prefix) in arrays.items():
-                if prefix is None:
+            for arm, (values, groups, prefix_off) in arrays.items():
+                if prefix_off is None:
                     cumulative = weight_array[:, groups].cumsum(axis=1)
                     sampled_np[arm] = np.stack(
                         [values[(cumulative > p).argmax(axis=1)] for p in positions], axis=1
@@ -429,7 +442,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                     high = np.full_like(low, len(values) - 1)
                     for _ in range((len(values) - 1).bit_length()):
                         middle = (low + high) >> 1
-                        mass = np.einsum("bqk,bk->bq", prefix[middle + 1], weight_array)
+                        mass = np.einsum("bqk,bk->bq", prefix_off[middle], weight_array)
                         found = mass > pos_array
                         high = np.where(found, middle, high)
                         low = np.where(found, low, middle + 1)
@@ -1693,21 +1706,31 @@ def forecast_native(variants, phases, design, pilot, profile):
     screen_pairs = sum(len(ids) for v, ids in assignments.items() if v != "baseline")
     denominator = len(phases["screen"]) * 2 * 13
     case_pilot_ns = pilot.get("case_pilot_ns")
-    if isinstance(case_pilot_ns, dict) and case_pilot_ns and positive(pilot.get("wall_seconds")):
-        pilot_iter_s = {
-            cid: max(0.0, float(ns)) * (13.0 / 3.0) / 1e9
+    pilot_iter_s = (
+        {
+            cid: float(ns) * (13.0 / 3.0) / 1e9
             for cid, ns in case_pilot_ns.items()
+            if positive(ns)
         }
-        spawn_4_s = max(0.0, float(pilot["wall_seconds"]) - sum(pilot_iter_s.values())) / max(1, len(phases["screen"]))
+        if isinstance(case_pilot_ns, dict)
+        else {}
+    )
+    if pilot_iter_s and positive(pilot.get("wall_seconds")):
+        fallback_iter_s = sum(pilot_iter_s.values()) / len(pilot_iter_s)
+        total_pilot_iter_s = sum(
+            pilot_iter_s.get(c["id"], fallback_iter_s) for c in phases["screen"]
+        )
+        spawn_4_s = max(0.0, float(pilot["wall_seconds"]) - total_pilot_iter_s) / max(1, len(phases["screen"]))
         screen_iter_mult = design["screen"]["blocks"] * (design["screen"]["iterations"] + 10) / 26.0
         screen_spawn_mult = design["screen"]["blocks"] / 2.0
         screen_wall_s = sum(
-            pilot_iter_s.get(cid, 0.0) * screen_iter_mult + spawn_4_s * screen_spawn_mult
+            pilot_iter_s.get(cid, fallback_iter_s) * screen_iter_mult + spawn_4_s * screen_spawn_mult
             for v, ids in assignments.items() if v != "baseline"
             for cid in ids
         )
         confirm_iter_mult = design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10) / 26.0
         confirm_spawn_mult = float(design["confirm"]["blocks"])
+        owner_confirm_costs = {}
         candidate_confirm_costs = []
         for variant in variants:
             if variant == "baseline":
@@ -1719,12 +1742,17 @@ def forecast_native(variants, phases, design, pilot, profile):
             if not v_screen_cases:
                 continue
             v_cost = sum(
-                pilot_iter_s.get(c["id"], 0.0) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
+                pilot_iter_s.get(c["id"], fallback_iter_s) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
                 for c in v_screen_cases
             )
             candidate_confirm_costs.append(v_cost)
+            for owner in meta["decisions"]:
+                owner_confirm_costs[owner] = max(owner_confirm_costs.get(owner, 0.0), v_cost)
         candidate_confirm_costs.sort(reverse=True)
-        confirm_wall_s = sum(candidate_confirm_costs[:max_individual_finalists])
+        confirm_wall_s = min(
+            sum(owner_confirm_costs.values()) * design["selection"]["slots_per_owner"],
+            sum(candidate_confirm_costs[:max_individual_finalists]),
+        )
         if joint_cases > 0:
             if any_build_factor:
                 joint_screen_cases = phases["screen"]
@@ -1732,7 +1760,7 @@ def forecast_native(variants, phases, design, pilot, profile):
                 all_owners = set(owner_cases)
                 joint_screen_cases = [c for c in phases["screen"] if all_owners.intersection(c["owners"])]
             confirm_wall_s += sum(
-                pilot_iter_s.get(c["id"], 0.0) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
+                pilot_iter_s.get(c["id"], fallback_iter_s) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
                 for c in joint_screen_cases
             )
         scale = (screen_wall_s + confirm_wall_s) / float(pilot["wall_seconds"])

@@ -255,14 +255,43 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
                 sub_pairs.add(pair)
     pairwise_coverage_ratio = len(sub_pairs) / len(ref_pairs) if ref_pairs else 1.0
 
-    # 4. Mixed-strength mechanism-group tuple coverage (2-way + 3-way within MECHANISM_GROUPS)
+    # 4. Mixed-strength mechanism-group tuple coverage (2-way + 3/4-way within MECHANISM_GROUPS)
     cov = coverage(variants)
-    ref_cov = coverage(reference_variants) if full_variants is not None else cov
-    denom_tuples = ref_cov["covered_tuples"] if full_variants is not None else cov["required_tuples"]
+    groups, index = _index()
+    _, records, _, _ = _requirements()
+    higher_order_bits = 0
+    for idx, rec in enumerate(records):
+        if len(rec["axes"]) >= 3:
+            higher_order_bits |= 1 << idx
+    ref_mask = 0
+    for v in reference_variants:
+        ref_mask |= _mask(ref_factors[v], groups, index)
+    sub_mask = 0
+    for v in variants:
+        sub_mask |= _mask(sub_factors[v], groups, index)
+    denom_tuples = ref_mask.bit_count() if full_variants is not None else cov["required_tuples"]
+    covered_tuples = (sub_mask & ref_mask).bit_count() if full_variants is not None else cov["covered_tuples"]
     mechanism_group_coverage_ratio = (
-        min(1.0, cov["covered_tuples"] / denom_tuples) if denom_tuples else 1.0
+        min(1.0, covered_tuples / denom_tuples) if denom_tuples else 1.0
     )
-
+    ref_ho_mask = ref_mask & higher_order_bits
+    sub_ho_mask = sub_mask & ref_ho_mask
+    higher_order_tuples_total = ref_ho_mask.bit_count()
+    higher_order_tuples_covered = sub_ho_mask.bit_count()
+    higher_order_coverage_ratio = (
+        higher_order_tuples_covered / higher_order_tuples_total
+        if higher_order_tuples_total
+        else 1.0
+    )
+    panel_cells = {
+        cell
+        for panel in compiled["factorial_panels"].values()
+        for cell in panel
+    } & set(reference_variants)
+    covered_panel_cells = panel_cells.intersection(variants)
+    panel_corner_retention_ratio = (
+        len(covered_panel_cells) / len(panel_cells) if panel_cells else 1.0
+    )
 
     # 5. Composite statistical/design quality score (harmonic mean of main, pairwise, and mechanism coverage)
     components = (
@@ -290,25 +319,39 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
         "pairwise_tuples_total": len(ref_pairs),
         "pairwise_tuples_covered": len(sub_pairs),
         "pairwise_coverage_ratio": pairwise_coverage_ratio,
-        "mechanism_tuples_total": cov["required_tuples"],
-        "mechanism_tuples_covered": cov["covered_tuples"],
+        "mechanism_tuples_total": denom_tuples,
+        "mechanism_tuples_covered": covered_tuples,
         "mechanism_group_coverage_ratio": mechanism_group_coverage_ratio,
+        "higher_order_tuples_total": higher_order_tuples_total,
+        "higher_order_tuples_covered": higher_order_tuples_covered,
+        "higher_order_coverage_ratio": higher_order_coverage_ratio,
+        "panel_corners_total": len(panel_cells),
+        "panel_corners_covered": len(covered_panel_cells),
+        "panel_corner_retention_ratio": panel_corner_retention_ratio,
         "composite_quality_score": composite_quality_score,
         "coverage_status": cov["status"],
         "requirements_sha256": cov["requirements_sha256"],
     }
 
 
-def high_efficiency_design(*, target_quality=0.95, include_single_arms=True):
+def high_efficiency_design(
+    *, target_quality=0.95, include_single_arms=True, enforce_higher_order=False
+):
     """Construct a D-optimal / mixed-strength fractional design achieving >= target_quality with minimal runs."""
     if type(target_quality) not in (int, float) or not (0.5 <= float(target_quality) <= 1.0):
         raise ValueError("target_quality must be a finite ratio in [0.5, 1.0]")
     if type(include_single_arms) is not bool:
         raise TypeError("include_single_arms must be a boolean")
+    if type(enforce_higher_order) is not bool:
+        raise TypeError("enforce_higher_order must be a boolean")
     target_quality = float(target_quality)
     compiled = _compiled()
     groups, index = _index()
     _, records, _, _ = _requirements()
+    higher_order_bits = 0
+    for idx, rec in enumerate(records):
+        if len(rec["axes"]) >= 3:
+            higher_order_bits |= 1 << idx
     masks = {
         name: _mask(contenders.metadata(name)["factors"], groups, index)
         for name in compiled["variants"]
@@ -330,21 +373,43 @@ def high_efficiency_design(*, target_quality=0.95, include_single_arms=True):
             selected_set,
             key=lambda value: (value != "baseline", value != "html-attrs-modern-vector", value),
         )
-        if covered_mask.bit_count() / len(records) >= target_quality:
+        if covered_mask.bit_count() / len(records) >= target_quality and (
+            not enforce_higher_order
+            or (covered_mask & higher_order_bits).bit_count() / higher_order_bits.bit_count()
+            >= target_quality
+        ):
             metrics = evaluate_design_efficiency(ordered, full_variants=compiled["variants"])
             if (
                 metrics["main_effect_coverage_ratio"] >= target_quality
                 and (not include_single_arms or metrics["single_arm_retention_ratio"] >= target_quality)
                 and metrics["pairwise_coverage_ratio"] >= target_quality
                 and metrics["mechanism_group_coverage_ratio"] >= target_quality
+                and (not enforce_higher_order or metrics["higher_order_coverage_ratio"] >= target_quality)
                 and metrics["composite_quality_score"] >= target_quality
             ):
                 break
         uncovered = all_required & ~covered_mask
-        best = min(
-            remaining_candidates,
-            key=lambda v: (-(masks[v] & uncovered).bit_count(), len(v.split("+")), v),
-        )
+        uncovered_ho = uncovered & higher_order_bits
+        if enforce_higher_order and (
+            (covered_mask & higher_order_bits).bit_count() / higher_order_bits.bit_count()
+            < target_quality
+        ):
+            best = min(
+                remaining_candidates,
+                key=lambda v: (
+                    -(
+                        (masks[v] & uncovered_ho).bit_count() * 4
+                        + (masks[v] & uncovered).bit_count()
+                    ),
+                    len(v.split("+")),
+                    v,
+                ),
+            )
+        else:
+            best = min(
+                remaining_candidates,
+                key=lambda v: (-(masks[v] & uncovered).bit_count(), len(v.split("+")), v),
+            )
         selected_set.add(best)
         covered_mask |= masks[best]
         remaining_candidates.remove(best)
@@ -359,6 +424,7 @@ def high_efficiency_design(*, target_quality=0.95, include_single_arms=True):
         "schema": "athena-high-efficiency-design/1",
         "target_quality": target_quality,
         "include_single_arms": include_single_arms,
+        "enforce_higher_order": enforce_higher_order,
         "variants": ordered,
         "cross_cells": [v for v in compiled["cross_cells"] if v in selected_set],
         "efficiency": metrics,

@@ -177,7 +177,6 @@ impl io::Write for BoundedSink {
 
 def _writer(text, kind):
     if kind == "direct":
-        text = _replace(text, "use std::io::{self, BufWriter, Write};", "use std::io::{self, Write};")
         text = _replace(text, '''    let mut out = BufWriter::with_capacity(
         8192,
         Output {
@@ -221,7 +220,6 @@ impl Write for ReusableOutput {
 }
 '''
         text = _region(text, "struct Output {", "fn json_line(frame: &Frame<'_>, out: &mut impl Write)", "")
-        text = _replace(text, "use std::io::{self, BufWriter, Write};", "use std::io::{self, Write};")
         text = _replace(text, "fn json_line(frame: &Frame<'_>, out: &mut impl Write)", reusable + "fn json_line(frame: &Frame<'_>, out: &mut impl Write)")
         text = _replace(text, '''    out.write_all(b"\\n").map_err(serde_json::Error::io)?;
     Ok(())''', '''    out.write_all(b"\\n").map_err(serde_json::Error::io)?;
@@ -536,6 +534,19 @@ def transform(files, variant_id):
         edit("src/aae.rs", lambda text: _hash_source(text, factors["hash"]))
     if "reserve" in factors:
         edit("src/aae.rs", lambda text: _reserve_source(text, factors["reserve"]))
+    if "src/aae.rs" in affected:
+        edit(
+            "src/aae.rs",
+            lambda text: (
+                text
+                if "BufWriter::" in text
+                else _replace(
+                    text,
+                    "use std::io::{self, BufWriter, Write};",
+                    "use std::io::{self, Write};",
+                )
+            ),
+        )
     if "lookup" in factors:
         def lookup(text):
             text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
@@ -601,7 +612,7 @@ def transform(files, variant_id):
 def _self_test():
     import unittest
     from pathlib import Path
-    from cloud_experiments import research
+    from cloud_experiments import experimental_design, research
 
     class Contracts(unittest.TestCase):
         def test_real_rivals_and_composition_reject_unknown_or_conflicting_factors(self):
@@ -633,7 +644,18 @@ def _self_test():
             import subprocess
             import tempfile
             root = Path(__file__).resolve().parents[1]
-            source = {name: (root / name).read_bytes() for name in ["src/aae.rs", "src/rank.rs", "src/projection.rs", "src/table.rs", "Cargo.toml", "Cargo.lock"]}
+            names = [
+                "src/aae.rs",
+                "src/rank.rs",
+                "src/projection.rs",
+                "src/table.rs",
+                "cloud_experiments/core_probe.rs",
+                "Cargo.toml",
+                "Cargo.lock",
+            ]
+            source = {name: (root / name).read_bytes() for name in names}
+            for lock_path in (root / "cloud_experiments/locks").glob("*.lock"):
+                source[f"cloud_experiments/locks/{lock_path.name}"] = lock_path.read_bytes()
             before = dict(source)
             self.assertEqual(transform(source, "baseline"), before)
             changed = transform(source, "aae-reuse+aae-batched4096+rank-linear+rank-select+projection-fused+links-btree+table-sparse")
@@ -642,6 +664,14 @@ def _self_test():
             self.assertEqual(changed["Cargo.lock"], before["Cargo.lock"])
             self.assertTrue(all(changed[name] != before[name] for name in ["src/aae.rs", "src/rank.rs", "src/projection.rs", "src/table.rs"]))
             self.assertIn(b"let mut row_widths = vec![0usize; rows.len()];", changed["src/table.rs"])
+            for variant_id in experimental_design.native_design()["variants"]:
+                out = transform(source, variant_id)
+                aae_txt = out["src/aae.rs"].decode("utf-8")
+                self.assertEqual("BufWriter::" in aae_txt, "use std::io::{self, BufWriter, Write};" in aae_txt, variant_id)
+                rank_txt = out["src/rank.rs"].decode("utf-8")
+                self.assertEqual("HashMap<" in rank_txt, "use std::collections::{HashMap, HashSet};" in rank_txt, variant_id)
+                proj_txt = out["src/projection.rs"].decode("utf-8")
+                self.assertEqual("BTreeMap<" in proj_txt, "use std::collections::{BTreeMap, HashMap};" in proj_txt, variant_id)
             rustc = shutil.which("rustc")
             if rustc is not None:
                 extra_test = (

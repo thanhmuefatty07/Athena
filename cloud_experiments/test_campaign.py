@@ -4590,27 +4590,59 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         metrics = design["efficiency"]
         self.assertEqual(metrics["schema"], "athena-design-efficiency-report/1")
         self.assertEqual(metrics["reference_variant_count"], 225)
-        self.assertLessEqual(metrics["variant_count"], 90)
+        self.assertEqual(metrics["variant_count"], 88)
         self.assertGreaterEqual(metrics["variant_reduction_ratio"], 0.60)
+        self.assertEqual(metrics["main_effect_levels_covered"], 36)
+        self.assertEqual(metrics["main_effect_levels_total"], 36)
         self.assertEqual(metrics["main_effect_coverage_ratio"], 1.0)
+        self.assertEqual(metrics["single_arm_contenders_covered"], 36)
+        self.assertEqual(metrics["single_arm_contenders_total"], 36)
         self.assertEqual(metrics["single_arm_retention_ratio"], 1.0)
-        self.assertGreaterEqual(metrics["pairwise_coverage_ratio"], 0.95)
+        self.assertEqual(metrics["pairwise_tuples_covered"], 591)
+        self.assertEqual(metrics["pairwise_tuples_total"], 591)
+        self.assertEqual(metrics["pairwise_coverage_ratio"], 1.0)
+        self.assertEqual(metrics["mechanism_tuples_covered"], 828)
+        self.assertEqual(metrics["mechanism_tuples_total"], 871)
         self.assertGreaterEqual(metrics["mechanism_group_coverage_ratio"], 0.95)
-        self.assertGreaterEqual(metrics["composite_quality_score"], 0.95)
+        self.assertEqual(metrics["higher_order_tuples_covered"], 237)
+        self.assertEqual(metrics["higher_order_tuples_total"], 280)
+        self.assertEqual(metrics["panel_corners_covered"], 41)
+        self.assertEqual(metrics["panel_corners_total"], 139)
+        self.assertGreaterEqual(metrics["composite_quality_score"], 0.98)
+
         compact = research.experimental_design.high_efficiency_design(
             target_quality=0.95, include_single_arms=False
         )
         compact_metrics = compact["efficiency"]
-        self.assertLessEqual(compact_metrics["variant_count"], 58)
-        self.assertGreaterEqual(compact_metrics["variant_reduction_ratio"], 0.74)
+        self.assertEqual(compact_metrics["variant_count"], 54)
+        self.assertGreaterEqual(compact_metrics["variant_reduction_ratio"], 0.75)
         self.assertEqual(compact_metrics["main_effect_coverage_ratio"], 1.0)
-        self.assertGreaterEqual(compact_metrics["pairwise_coverage_ratio"], 0.95)
+        self.assertEqual(compact_metrics["pairwise_coverage_ratio"], 1.0)
         self.assertGreaterEqual(compact_metrics["mechanism_group_coverage_ratio"], 0.95)
-        self.assertGreaterEqual(compact_metrics["composite_quality_score"], 0.95)
+        self.assertGreaterEqual(compact_metrics["composite_quality_score"], 0.98)
+
+        strict_ho = research.experimental_design.high_efficiency_design(
+            target_quality=0.95, include_single_arms=True, enforce_higher_order=True
+        )
+        self.assertEqual(strict_ho["efficiency"]["variant_count"], 116)
+        self.assertEqual(strict_ho["efficiency"]["higher_order_tuples_covered"], 266)
+        self.assertEqual(strict_ho["efficiency"]["higher_order_tuples_total"], 280)
+        self.assertGreaterEqual(strict_ho["efficiency"]["higher_order_coverage_ratio"], 0.95)
+
+        full_cov = research.experimental_design.high_efficiency_design(
+            target_quality=1.0, include_single_arms=True, enforce_higher_order=True
+        )
+        self.assertEqual(full_cov["efficiency"]["variant_count"], 130)
+        self.assertEqual(full_cov["efficiency"]["mechanism_tuples_covered"], 871)
+        self.assertEqual(full_cov["efficiency"]["higher_order_tuples_covered"], 280)
+        self.assertEqual(full_cov["efficiency"]["coverage_status"], "COVERED")
+
         core = research.experimental_design.whole_path_core_panel()
         self.assertEqual(core["schema"], "athena-whole-path-core-panel/1")
-        self.assertEqual(core["efficiency_within_active_subspace"]["composite_quality_score"], 1.0)
-
+        core_eff = core["efficiency_within_active_subspace"]
+        self.assertEqual(core_eff["composite_quality_score"], 1.0)
+        self.assertEqual(core_eff["mechanism_tuples_covered"], core_eff["mechanism_tuples_total"])
+        self.assertEqual(core_eff["higher_order_tuples_covered"], core_eff["higher_order_tuples_total"])
 
     def test_forecast_native_deduplicates_owner_confirm_cases_and_weights_by_case_pilot_ns(self):
         design = research.manifest_design()
@@ -4644,6 +4676,59 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         )
         self.assertLess(forecast["wall_seconds"], uniform_forecast["wall_seconds"])
 
+        # Partial case_pilot_ns must fall back to mean per-case duration rather than 0.0
+        partial_pilot = dict(pilot)
+        partial_pilot["case_pilot_ns"] = {"attribute-heavy-1": 500_000_000}
+        partial_forecast = research.forecast_native(panel, phases, design, partial_pilot, profile)
+        self.assertGreater(
+            partial_forecast["wall_seconds"] - partial_forecast["finalist_service_gate_seconds_reserve"],
+            forecast["wall_seconds"] - forecast["finalist_service_gate_seconds_reserve"],
+        )
+
+        # Multi-owner panel with multiple candidates per owner must bound confirm_wall_s by owner slots
+        h02_heavy_panel = [
+            "baseline",
+            "rank-binary",
+            "rank-linear",
+            "rank-select",
+            "rank-binary+rank-select",
+            "rank-linear+rank-select",
+            "prepared",
+        ]
+        single_h02_panel = ["baseline", "rank-binary", "prepared"]
+        uniform_pilot = {
+            "wall_seconds": 85.0,
+            "case_pilot_ns": {c["id"]: 5_000_000 for c in phases["screen"]},
+            "baseline_build_wall_seconds": 60.0,
+            "peak_memory_bytes": 64 * 1024 ** 2,
+        }
+        f_multi = research.forecast_native(h02_heavy_panel, phases, design, uniform_pilot, profile)
+        f_single = research.forecast_native(single_h02_panel, phases, design, uniform_pilot, profile)
+        self.assertEqual(f_multi["maximum_confirm_cases"], f_single["maximum_confirm_cases"])
+
+    def test_contenders_all_225_native_variants_preserve_valid_rust_imports(self):
+        from cloud_experiments import contenders
+        root = Path(__file__).resolve().parents[1]
+        names = [
+            "src/aae.rs",
+            "src/rank.rs",
+            "src/projection.rs",
+            "src/table.rs",
+            "cloud_experiments/core_probe.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+        ]
+        source = {name: (root / name).read_bytes() for name in names}
+        for lock_path in (root / "cloud_experiments/locks").glob("*.lock"):
+            source[f"cloud_experiments/locks/{lock_path.name}"] = lock_path.read_bytes()
+        for variant_id in research.experimental_design.native_design()["variants"]:
+            out = contenders.transform(source, variant_id)
+            aae_txt = out["src/aae.rs"].decode("utf-8")
+            self.assertEqual(
+                "BufWriter::" in aae_txt,
+                "use std::io::{self, BufWriter, Write};" in aae_txt,
+                variant_id,
+            )
 
     def test_bootstrap_intervals_batch_size_256_matches_64_bit_for_bit(self):
         rounds = [
