@@ -4639,6 +4639,25 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
 
         core = research.experimental_design.whole_path_core_panel()
         self.assertEqual(core["schema"], "athena-whole-path-core-panel/1")
+        self.assertEqual(
+            core["cloud_015_variants"],
+            [
+                "baseline",
+                "aae-direct",
+                "aae-reuse",
+                "aae-buffered",
+                "aae-smallreserve",
+                "aae-batched4096",
+                "aae-batched16384",
+                "rank-binary",
+                "rank-linear",
+                "rank-select",
+                "rank-binary+rank-select",
+                "rank-linear+rank-select",
+                "table-html-selectors",
+            ],
+        )
+        self.assertTrue(set(core["cloud_015_variants"]).issubset(core["variants"]))
         core_eff = core["efficiency_within_active_subspace"]
         self.assertEqual(core_eff["composite_quality_score"], 1.0)
         self.assertEqual(core_eff["mechanism_tuples_covered"], core_eff["mechanism_tuples_total"])
@@ -4706,6 +4725,28 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         f_single = research.forecast_native(single_h02_panel, phases, design, uniform_pilot, profile)
         self.assertEqual(f_multi["maximum_confirm_cases"], f_single["maximum_confirm_cases"])
 
+        rounds = [{"baseline": [100 + b * 7 + (i % 13) for i in range(10)], "candidate": [98 + b * 7 + (i % 11) for i in range(10)]} for b in range(6)]
+        real_profile = research.profile_analysis(rounds, design["confirm"], draws=512)
+        cloud_015_panel = research.experimental_design.whole_path_core_panel()["cloud_015_variants"]
+        f_015 = research.forecast_native(cloud_015_panel, phases, design, pilot, real_profile)
+        self.assertEqual(f_015["maximum_confirm_cases"], 223)
+        self.assertLess(
+            f_015["wall_seconds"] + f_015["analysis_seconds"] + f_015["export_seconds"] + f_015["shutdown_seconds"],
+            design["limits"]["wall_seconds"],
+        )
+        full_rounds = [
+            {
+                "baseline": [100 + b * 7 + (i % 13) for i in range(design["confirm"]["iterations"])],
+                "candidate": [98 + b * 7 + (i % 11) for i in range(design["confirm"]["iterations"])],
+            }
+            for b in range(design["confirm"]["blocks"])
+        ]
+        self.assertEqual(
+            research.bootstrap_intervals(full_rounds, [0.5, 0.95, 0.99], 600, 938201, 0.25, batch_size=256),
+            research.bootstrap_intervals(full_rounds, [0.5, 0.95, 0.99], 600, 938201, 0.25, batch_size=64),
+        )
+
+
     def test_contenders_all_225_native_variants_preserve_valid_rust_imports(self):
         from cloud_experiments import contenders
         root = Path(__file__).resolve().parents[1]
@@ -4741,6 +4782,29 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         b64 = research.bootstrap_intervals(rounds, [0.5, 0.95, 0.99], 2048, 938201, 0.025, batch_size=64)
         b256 = research.bootstrap_intervals(rounds, [0.5, 0.95, 0.99], 2048, 938201, 0.025, batch_size=256)
         self.assertEqual(b64, b256)
+
+        for n_blocks, n_iters in ((2, 256), (2, 257), (4, 192)):
+            shape_rounds = [
+                {
+                    "baseline": [100 + b * 17 + (i % 29) for i in range(n_iters)],
+                    "candidate": [97 + b * 13 + (i % 31) for i in range(n_iters)],
+                }
+                for b in range(n_blocks)
+            ]
+            probs = [0.0, 0.5, 0.95, 0.99, 1.0]
+            got_batches = list(research._bootstrap_batches(shape_rounds, probs, 64, 98765, 32))
+            flat_got = {q: [x for batch in got_batches for x in batch[q]] for q in probs}
+            w_rng = research.random.Random(98765)
+            vb, gb = zip(*sorted((x, g) for g, b in enumerate(shape_rounds) for x in b["baseline"]))
+            vc, gc = zip(*sorted((x, g) for g, b in enumerate(shape_rounds) for x in b["candidate"]))
+            for draw_i in range(64):
+                row = [0] * n_blocks
+                for _ in range(n_blocks):
+                    row[w_rng.randrange(n_blocks)] += 1
+                qb = research.protocol._weighted_quantiles(vb, gb, row, probs)
+                qc = research.protocol._weighted_quantiles(vc, gc, row, probs)
+                for qi, q in enumerate(probs):
+                    self.assertEqual(flat_got[q][draw_i], qc[qi] - qb[qi])
 
 
 if __name__ == "__main__":

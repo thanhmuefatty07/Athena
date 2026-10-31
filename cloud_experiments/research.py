@@ -369,6 +369,9 @@ def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=256
     return {q: [-low[q][0], high[q][0]] for q in probabilities}
 
 
+_WEIGHT_CACHE = {"key": None, "rng_state": None, "batches": []}
+
+
 def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=None):
     """Same paired-block estimand/seed as native/1, bounded temporary weight batches."""
     if (type(draws) is not int or draws < 1 or not 1 <= batch_size <= 256
@@ -384,8 +387,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         np = None
     count, rng = len(rounds), random.Random(seed)
     getrandbits = rng.getrandbits
-    k_bits = (count - 1).bit_length()
-    is_pow2 = (count & (count - 1)) == 0
+    k_bits = count.bit_length()
     if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
         raise ValueError("Invalid bootstrap deadline")
     arrays = {}
@@ -395,10 +397,11 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
             raise ValueError("Invalid bootstrap observation")
         values, groups = zip(*pairs)
         if np is None:
-            arrays[arm] = values, groups, None
+            arrays[arm] = values, groups, None, None
         else:
             values, groups = np.asarray(values), np.asarray(groups)
             prefix_off = None
+            coarse_T = None
             if len(values) > 256:
                 # Weighted order statistics need only group counts at queried ranks.
                 # Avoid a draws x observations cumulative matrix for every batch.
@@ -406,21 +409,32 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                 prefix[np.arange(1, len(values) + 1), groups] = 1
                 np.cumsum(prefix, axis=0, out=prefix)
                 prefix_off = np.ascontiguousarray(prefix[1:])
-            arrays[arm] = values, groups, prefix_off
+                if 512 < len(values) <= 16_777_216:
+                    coarse_idx = np.append(np.arange(255, len(values) - 1, 256), len(values) - 1)
+                    coarse_T = np.ascontiguousarray(prefix_off[coarse_idx].T, dtype=np.float32)
+            arrays[arm] = values, groups, prefix_off, coarse_T
     positions = [round(q * (len(rounds) * next(iter(sizes)) - 1)) for q in probabilities]
     pos_array = np.asarray(positions, dtype=np.int32) if np is not None else None
-    for start in range(0, draws, batch_size):
+    use_cache = np is not None and count <= 255
+    cache_key = (count, seed, batch_size) if use_cache else None
+    if use_cache:
+        if _WEIGHT_CACHE["key"] != cache_key:
+            _WEIGHT_CACHE["key"] = cache_key
+            _WEIGHT_CACHE["rng_state"] = rng.getstate()
+            _WEIGHT_CACHE["batches"] = []
+        cached_batches = _WEIGHT_CACHE["batches"]
+    for batch_idx, start in enumerate(range(0, draws, batch_size)):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
-        weights = []
-        if is_pow2:
-            for _ in range(min(batch_size, draws - start)):
-                row = [0] * count
-                for _ in range(count):
-                    row[getrandbits(k_bits)] += 1
-                weights.append(row)
+        cur_batch = min(batch_size, draws - start)
+        weight_u8 = None
+        if use_cache and batch_idx < len(cached_batches):
+            weight_u8 = cached_batches[batch_idx][:cur_batch]
         else:
-            for _ in range(min(batch_size, draws - start)):
+            if use_cache and batch_idx == len(cached_batches):
+                rng.setstate(_WEIGHT_CACHE["rng_state"])
+            weights = []
+            for _ in range(cur_batch):
                 row = [0] * count
                 for _ in range(count):
                     v = getrandbits(k_bits)
@@ -428,17 +442,37 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                         v = getrandbits(k_bits)
                     row[v] += 1
                 weights.append(row)
+            if use_cache:
+                weight_u8 = np.asarray(weights, dtype=np.uint8)
+                if cur_batch == batch_size and batch_idx == len(cached_batches) and batch_idx < 16384:
+                    cached_batches.append(weight_u8)
+                    _WEIGHT_CACHE["rng_state"] = rng.getstate()
         if np is not None:
-            weight_array = np.asarray(weights, dtype=np.int32)
+            weight_array = weight_u8.astype(np.int32) if weight_u8 is not None else np.asarray(weights, dtype=np.int32)
+            weight_f32 = None
             sampled_np = {}
-            for arm, (values, groups, prefix_off) in arrays.items():
+            for arm, (values, groups, prefix_off, coarse_T) in arrays.items():
                 if prefix_off is None:
                     cumulative = weight_array[:, groups].cumsum(axis=1)
                     sampled_np[arm] = np.stack(
                         [values[(cumulative > p).argmax(axis=1)] for p in positions], axis=1
                     )
+                elif coarse_T is not None:
+                    if weight_f32 is None:
+                        weight_f32 = weight_array.astype(np.float32)
+                    coarse_mass = weight_f32 @ coarse_T
+                    c_idx = (coarse_mass[:, None, :] > pos_array[None, :, None]).argmax(axis=2).astype(np.int32)
+                    low = c_idx << 8
+                    high = np.minimum(low + 255, len(values) - 1)
+                    for _ in range(8):
+                        middle = (low + high) >> 1
+                        mass = np.einsum("bqk,bk->bq", prefix_off[middle], weight_array)
+                        found = mass > pos_array
+                        high = np.where(found, middle, high)
+                        low = np.where(found, low, middle + 1)
+                    sampled_np[arm] = values[low]
                 else:
-                    low = np.zeros((len(weights), len(positions)), dtype=np.int32)
+                    low = np.zeros((cur_batch, len(positions)), dtype=np.int32)
                     high = np.full_like(low, len(values) - 1)
                     for _ in range((len(values) - 1).bit_length()):
                         middle = (low + high) >> 1
@@ -452,13 +486,14 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         else:
             sampled = {
                 arm: [protocol._weighted_quantiles(values, groups, row, probabilities) for row in weights]
-                for arm, (values, groups, _) in arrays.items()
+                for arm, (values, groups, _, _) in arrays.items()
             }
             deltas = {q: [] for q in probabilities}
             for baseline, candidate in zip(sampled["baseline"], sampled["candidate"]):
                 for i, q in enumerate(probabilities):
                     deltas[q].append(candidate[i] - baseline[i])
             yield deltas
+
 
 
 
@@ -1643,18 +1678,31 @@ def profile_analysis(rounds, settings, draws=512):
     full = [{arm: [rounds[b % len(rounds)][arm][i % len(rounds[b % len(rounds)][arm])]
                    for i in range(iterations)] for arm in ("baseline", "candidate")} for b in range(blocks)]
     peaks = [{arm: [values[arm][0]] for arm in ("baseline", "candidate")} for values in full]
+    span_draws = min(4096, max(draws, 4096))
+    bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, .25)
+    bootstrap_intervals(peaks, [.5], span_draws, 938201, .25)
     setup_start = time.perf_counter()
     bootstrap_intervals(full, [.5, .95, .99], 2, 938201, .25)
     bootstrap_intervals(peaks, [.5], 2, 938201, .25)
     setup_seconds = time.perf_counter() - setup_start
     durations = []
-    for repeat in range(3):
+    for _ in range(3):
         start = time.perf_counter()
-        bootstrap_intervals(full, [.5, .95, .99], draws, 938201 + repeat, .25)
-        bootstrap_intervals(peaks, [.5], draws, 938201 + repeat, .25)
+        bootstrap_intervals(full, [.5, .95, .99], draws, 938201, .25)
+        bootstrap_intervals(peaks, [.5], draws, 938201, .25)
         durations.append(time.perf_counter() - start)
+    span_durations = []
+    for _ in range(2):
+        span_start = time.perf_counter()
+        bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, .25)
+        bootstrap_intervals(peaks, [.5], span_draws, 938201, .25)
+        span_durations.append(time.perf_counter() - span_start)
+    marginal_per_draw = max(
+        min(durations) / max(1, draws * 8),
+        (min(span_durations) - min(setup_seconds, min(durations))) / max(1, span_draws - 2),
+    )
     return {"blocks": blocks, "iterations": iterations, "draws_per_repeat": draws,
-            "setup_wall_seconds": setup_seconds, "repeat_wall_seconds": durations, "seconds_per_case_draw_max": max(durations) / draws,
+            "setup_wall_seconds": setup_seconds, "repeat_wall_seconds": durations, "seconds_per_case_draw_max": marginal_per_draw,
             "interval_backend": "exact-order-statistic-tails/1", "resource_only_tail": .25,
             "not_scientific_samples": True,
             "scope": "Expanded pilot integers profile actual CPU+RSS analyzer shape only; no extra independent timing observations or precision proof"}
@@ -1763,7 +1811,7 @@ def forecast_native(variants, phases, design, pilot, profile):
                 pilot_iter_s.get(c["id"], fallback_iter_s) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
                 for c in joint_screen_cases
             )
-        scale = (screen_wall_s + confirm_wall_s) / float(pilot["wall_seconds"])
+        scale = (screen_wall_s + confirm_wall_s) / (3.0 * float(pilot["wall_seconds"]))
     else:
         scale = (screen_pairs * design["screen"]["blocks"] * (design["screen"]["iterations"] + 10)
                  + maximum_cases * design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10)) / denominator
@@ -1828,7 +1876,7 @@ def forecast_native(variants, phases, design, pilot, profile):
             "h07_resource_profile_seconds_included": h07_profile_seconds,
             "h07_service_study_evidence_bytes_included": h07_bytes,
             "analysis_seconds": max(1, math.ceil(2 * (profile["seconds_per_case_draw_max"] * draws * maximum_cases
-                          + profile.get("setup_wall_seconds", 0) * len(owner_cases)))),
+                          + profile.get("setup_wall_seconds", 0) * maximum_cases))),
             "export_seconds": export_seconds, "shutdown_seconds": 600,
             "export_seconds_scope": "Planning reserve at 1 MiB/s encoded archive output plus ten-minute shutdown; replace with measured pilot throughput, not a guaranteed lower bound",
             "evidence_bytes": design["limits"]["evidence_bytes"], "build_bytes": design["limits"]["build_bytes"],
