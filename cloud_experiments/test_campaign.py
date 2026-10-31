@@ -4590,8 +4590,8 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         metrics = design["efficiency"]
         self.assertEqual(metrics["schema"], "athena-design-efficiency-report/1")
         self.assertEqual(metrics["reference_variant_count"], 225)
-        self.assertEqual(metrics["variant_count"], 88)
-        self.assertGreaterEqual(metrics["variant_reduction_ratio"], 0.60)
+        self.assertEqual(metrics["variant_count"], 91)
+        self.assertGreaterEqual(metrics["variant_reduction_ratio"], 0.59)
         self.assertEqual(metrics["main_effect_levels_covered"], 36)
         self.assertEqual(metrics["main_effect_levels_total"], 36)
         self.assertEqual(metrics["main_effect_coverage_ratio"], 1.0)
@@ -4601,25 +4601,26 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(metrics["pairwise_tuples_covered"], 591)
         self.assertEqual(metrics["pairwise_tuples_total"], 591)
         self.assertEqual(metrics["pairwise_coverage_ratio"], 1.0)
-        self.assertEqual(metrics["mechanism_tuples_covered"], 828)
+        self.assertEqual(metrics["mechanism_tuples_covered"], 832)
         self.assertEqual(metrics["mechanism_tuples_total"], 871)
         self.assertGreaterEqual(metrics["mechanism_group_coverage_ratio"], 0.95)
-        self.assertEqual(metrics["higher_order_tuples_covered"], 237)
+        self.assertEqual(metrics["higher_order_tuples_covered"], 241)
         self.assertEqual(metrics["higher_order_tuples_total"], 280)
-        self.assertEqual(metrics["panel_corners_covered"], 41)
+        self.assertEqual(metrics["panel_corners_covered"], 42)
         self.assertEqual(metrics["panel_corners_total"], 139)
-        self.assertGreaterEqual(metrics["composite_quality_score"], 0.98)
+        self.assertGreaterEqual(metrics["composite_quality_score"], 0.95)
+        self.assertEqual(metrics["composite_quality_score"], metrics["higher_order_composite_quality_score"])
 
         compact = research.experimental_design.high_efficiency_design(
             target_quality=0.95, include_single_arms=False
         )
         compact_metrics = compact["efficiency"]
-        self.assertEqual(compact_metrics["variant_count"], 54)
-        self.assertGreaterEqual(compact_metrics["variant_reduction_ratio"], 0.75)
+        self.assertEqual(compact_metrics["variant_count"], 58)
+        self.assertGreaterEqual(compact_metrics["variant_reduction_ratio"], 0.74)
         self.assertEqual(compact_metrics["main_effect_coverage_ratio"], 1.0)
         self.assertEqual(compact_metrics["pairwise_coverage_ratio"], 1.0)
         self.assertGreaterEqual(compact_metrics["mechanism_group_coverage_ratio"], 0.95)
-        self.assertGreaterEqual(compact_metrics["composite_quality_score"], 0.98)
+        self.assertGreaterEqual(compact_metrics["composite_quality_score"], 0.95)
 
         strict_ho = research.experimental_design.high_efficiency_design(
             target_quality=0.95, include_single_arms=True, enforce_higher_order=True
@@ -4628,6 +4629,7 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(strict_ho["efficiency"]["higher_order_tuples_covered"], 266)
         self.assertEqual(strict_ho["efficiency"]["higher_order_tuples_total"], 280)
         self.assertGreaterEqual(strict_ho["efficiency"]["higher_order_coverage_ratio"], 0.95)
+        self.assertGreaterEqual(strict_ho["efficiency"]["composite_quality_score"], 0.98)
 
         full_cov = research.experimental_design.high_efficiency_design(
             target_quality=1.0, include_single_arms=True, enforce_higher_order=True
@@ -4668,8 +4670,8 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(full_eff["reference_variant_count"], 225)
         self.assertEqual(full_eff["variant_count"], len(core["variants"]))
         self.assertLess(full_eff["composite_quality_score"], 1.0)
-        self.assertLess(full_eff["higher_order_composite_quality_score"], full_eff["composite_quality_score"])
-        self.assertGreaterEqual(strict_ho["efficiency"]["higher_order_composite_quality_score"], 0.95)
+        self.assertEqual(full_eff["higher_order_composite_quality_score"], full_eff["composite_quality_score"])
+        self.assertGreaterEqual(strict_ho["efficiency"]["higher_order_composite_quality_score"], 0.98)
         self.assertEqual(full_cov["efficiency"]["higher_order_composite_quality_score"], 1.0)
 
     def test_forecast_native_deduplicates_owner_confirm_cases_and_weights_by_case_pilot_ns(self):
@@ -4836,10 +4838,11 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         rank_bin_txt = contenders.transform(source, "rank-binary+rank-select")["src/rank.rs"].decode("utf-8")
         self.assertIn("if !(min_len..=max_len).contains(&word.len()) && word.is_ascii()", rank_bin_txt)
         self.assertIn("first_mask[(bytes[0] >> 6) as usize]", rank_bin_txt)
-        self.assertIn("(terms.len() > 8 && chunks.len() > 1)", rank_bin_txt)
+        self.assertIn("(terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64))", rank_bin_txt)
         probe_txt = (root / "cloud_experiments/core_probe.rs").read_text(encoding="utf-8")
         self.assertIn("fn parse_projection_and_table_cells(", probe_txt)
         self.assertIn("table_cells: Option<Vec<Value>>,", probe_txt)
+        self.assertIn("Vec::with_capacity(document.tree.nodes().count())", probe_txt)
 
     def test_service_study_positive_log_supports_subunit_and_subnormal_values(self):
         from cloud_experiments import service_study

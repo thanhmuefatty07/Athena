@@ -1614,7 +1614,7 @@ fn is_skipped_projection_subtree(name: &str) -> bool {
 }
 
 fn scraper_projection_nodes(document: &Html) -> Vec<ResearchNode> {
-    let mut nodes = Vec::new();
+    let mut nodes = Vec::with_capacity(document.tree.nodes().count());
     let mut stack = vec![(document.tree.root(), None)];
     while let Some((node, parent)) = stack.pop() {
         let mut next_parent = parent;

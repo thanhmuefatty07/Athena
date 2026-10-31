@@ -567,7 +567,7 @@ def transform(files, variant_id):
             )
             if factors["lookup"] == "binary":
                 setup += (
-                    "    let term_ids: Option<HashMap<&str, usize>> = (terms.len() > 8 && chunks.len() > 1)\n"
+                    "    let term_ids: Option<HashMap<&str, usize>> = (terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64))\n"
                     "        .then(|| terms.iter().enumerate().map(|(i, term)| (term.as_ref(), i)).collect());\n"
                 )
             setup += (
@@ -742,7 +742,8 @@ def _self_test():
                     rank_extra_test = (
                         "    #[test]\n"
                         "    fn lookup_bloom_and_adaptive_hashmap_preserve_exact_scores_and_utf8_folding() {\n"
-                        "        let single = [chunk(\"term0 term15 term127 İB evidence\")];\n"
+                        "        let single_tiny = [chunk(\"term0 term15 term127 İB evidence\")];\n"
+                        "        let single_large = [chunk(&format!(\"term0 term15 term31 term64 term127 İB {}\", \"fillerword \".repeat(32)))];\n"
                         "        let multi = [\n"
                         "            chunk(\"term0 term1 term8 term31 term127 alpha beta\"),\n"
                         "            chunk(\"term2 term8 term15 term64 İB delta\"),\n"
@@ -752,7 +753,8 @@ def _self_test():
                         "        let q32 = (0..32).map(|i| format!(\"term{i}\")).collect::<Vec<_>>().join(\" \");\n"
                         "        let q128 = (0..128).map(|i| format!(\"term{i}\")).collect::<Vec<_>>().join(\" \");\n"
                         "        for q in [q3.as_str(), q32.as_str(), q128.as_str()] {\n"
-                        "            assert!(!bm25(&single, q, 1.2, 0.75).is_empty());\n"
+                        "            assert!(!bm25(&single_tiny, q, 1.2, 0.75).is_empty());\n"
+                        "            assert!(!bm25(&single_large, q, 1.2, 0.75).is_empty());\n"
                         "            assert!(!bm25(&multi, q, 1.2, 0.75).is_empty());\n"
                         "            assert!(!highlight_indices(&multi, q, 2).is_empty());\n"
                         "        }\n"

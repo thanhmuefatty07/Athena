@@ -293,30 +293,19 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
         len(covered_panel_cells) / len(panel_cells) if panel_cells else 1.0
     )
 
-    # 5. Composite statistical/design quality score (harmonic mean of main, pairwise, and mechanism coverage,
-    #    plus explicit 4-component harmonic mean including 3/4-way higher-order mechanism tuple coverage)
+    # 5. Composite statistical/design quality score (4-component harmonic mean of main,
+    #    pairwise, mechanism-group, and 3/4-way higher-order mechanism tuple coverage)
     components = (
-        main_effect_coverage_ratio,
-        pairwise_coverage_ratio,
-        mechanism_group_coverage_ratio,
-    )
-    if any(c <= 0.0 for c in components):
-        composite_quality_score = 0.0
-    else:
-        composite_quality_score = len(components) / sum(1.0 / c for c in components)
-
-    ho_components = (
         main_effect_coverage_ratio,
         pairwise_coverage_ratio,
         mechanism_group_coverage_ratio,
         higher_order_coverage_ratio,
     )
-    if any(c <= 0.0 for c in ho_components):
-        higher_order_composite_quality_score = 0.0
+    if any(c <= 0.0 for c in components):
+        composite_quality_score = 0.0
     else:
-        higher_order_composite_quality_score = len(ho_components) / sum(
-            1.0 / c for c in ho_components
-        )
+        composite_quality_score = len(components) / sum(1.0 / c for c in components)
+    higher_order_composite_quality_score = composite_quality_score
 
     return {
         "schema": "athena-design-efficiency-report/1",
@@ -429,7 +418,12 @@ def high_efficiency_design(
         else:
             best = min(
                 remaining_candidates,
-                key=lambda v: (-(masks[v] & uncovered).bit_count(), len(v.split("+")), v),
+                key=lambda v: (
+                    -(masks[v] & uncovered).bit_count(),
+                    -(masks[v] & uncovered_ho).bit_count(),
+                    len(v.split("+")),
+                    v,
+                ),
             )
         selected_set.add(best)
         covered_mask |= masks[best]
