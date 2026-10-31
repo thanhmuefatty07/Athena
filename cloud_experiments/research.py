@@ -369,7 +369,7 @@ def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=256
     return {q: [-low[q][0], high[q][0]] for q in probabilities}
 
 
-_WEIGHT_CACHE = {"key": None, "rng_state": None, "batches": []}
+_WEIGHT_CACHE = {}
 
 
 def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=None):
@@ -417,12 +417,17 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
     pos_array = np.asarray(positions, dtype=np.int32) if np is not None else None
     use_cache = np is not None and count <= 255
     cache_key = (count, seed, batch_size) if use_cache else None
+    cache_entry = None
+    cached_batches = None
+    rng_synced = True
     if use_cache:
-        if _WEIGHT_CACHE["key"] != cache_key:
-            _WEIGHT_CACHE["key"] = cache_key
-            _WEIGHT_CACHE["rng_state"] = rng.getstate()
-            _WEIGHT_CACHE["batches"] = []
-        cached_batches = _WEIGHT_CACHE["batches"]
+        cache_entry = _WEIGHT_CACHE.get(cache_key)
+        if cache_entry is None:
+            if len(_WEIGHT_CACHE) >= 8:
+                _WEIGHT_CACHE.clear()
+            cache_entry = {"rng_state": rng.getstate(), "batches": []}
+            _WEIGHT_CACHE[cache_key] = cache_entry
+        cached_batches = cache_entry["batches"]
     for batch_idx, start in enumerate(range(0, draws, batch_size)):
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
@@ -430,9 +435,11 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         weight_u8 = None
         if use_cache and batch_idx < len(cached_batches):
             weight_u8 = cached_batches[batch_idx][:cur_batch]
+            rng_synced = False
         else:
-            if use_cache and batch_idx == len(cached_batches):
-                rng.setstate(_WEIGHT_CACHE["rng_state"])
+            if use_cache and not rng_synced and batch_idx == len(cached_batches):
+                rng.setstate(cache_entry["rng_state"])
+                rng_synced = True
             weights = []
             for _ in range(cur_batch):
                 row = [0] * count
@@ -446,7 +453,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                 weight_u8 = np.asarray(weights, dtype=np.uint8)
                 if cur_batch == batch_size and batch_idx == len(cached_batches) and batch_idx < 16384:
                     cached_batches.append(weight_u8)
-                    _WEIGHT_CACHE["rng_state"] = rng.getstate()
+                    cache_entry["rng_state"] = rng.getstate()
         if np is not None:
             weight_array = weight_u8.astype(np.int32) if weight_u8 is not None else np.asarray(weights, dtype=np.int32)
             weight_f32 = None
@@ -1678,24 +1685,25 @@ def profile_analysis(rounds, settings, draws=512):
     full = [{arm: [rounds[b % len(rounds)][arm][i % len(rounds[b % len(rounds)][arm])]
                    for i in range(iterations)] for arm in ("baseline", "candidate")} for b in range(blocks)]
     peaks = [{arm: [values[arm][0]] for arm in ("baseline", "candidate")} for values in full]
-    span_draws = min(4096, max(draws, 4096))
-    bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, .25)
-    bootstrap_intervals(peaks, [.5], span_draws, 938201, .25)
+    span_draws = max(draws, 4096)
+    tail = min(.25, 1024 / max(1, span_draws))
+    bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, tail)
+    bootstrap_intervals(peaks, [.5], span_draws, 938201, tail)
     setup_start = time.perf_counter()
-    bootstrap_intervals(full, [.5, .95, .99], 2, 938201, .25)
-    bootstrap_intervals(peaks, [.5], 2, 938201, .25)
+    bootstrap_intervals(full, [.5, .95, .99], 2, 938201, tail)
+    bootstrap_intervals(peaks, [.5], 2, 938201, tail)
     setup_seconds = time.perf_counter() - setup_start
     durations = []
     for _ in range(3):
         start = time.perf_counter()
-        bootstrap_intervals(full, [.5, .95, .99], draws, 938201, .25)
-        bootstrap_intervals(peaks, [.5], draws, 938201, .25)
+        bootstrap_intervals(full, [.5, .95, .99], draws, 938201, tail)
+        bootstrap_intervals(peaks, [.5], draws, 938201, tail)
         durations.append(time.perf_counter() - start)
     span_durations = []
     for _ in range(2):
         span_start = time.perf_counter()
-        bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, .25)
-        bootstrap_intervals(peaks, [.5], span_draws, 938201, .25)
+        bootstrap_intervals(full, [.5, .95, .99], span_draws, 938201, tail)
+        bootstrap_intervals(peaks, [.5], span_draws, 938201, tail)
         span_durations.append(time.perf_counter() - span_start)
     marginal_per_draw = max(
         min(durations) / max(1, draws * 8),
@@ -1703,7 +1711,7 @@ def profile_analysis(rounds, settings, draws=512):
     )
     return {"blocks": blocks, "iterations": iterations, "draws_per_repeat": draws,
             "setup_wall_seconds": setup_seconds, "repeat_wall_seconds": durations, "seconds_per_case_draw_max": marginal_per_draw,
-            "interval_backend": "exact-order-statistic-tails/1", "resource_only_tail": .25,
+            "interval_backend": "exact-order-statistic-tails/1", "resource_only_tail": tail,
             "not_scientific_samples": True,
             "scope": "Expanded pilot integers profile actual CPU+RSS analyzer shape only; no extra independent timing observations or precision proof"}
 

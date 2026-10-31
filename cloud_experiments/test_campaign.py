@@ -4783,7 +4783,7 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         b256 = research.bootstrap_intervals(rounds, [0.5, 0.95, 0.99], 2048, 938201, 0.025, batch_size=256)
         self.assertEqual(b64, b256)
 
-        for n_blocks, n_iters in ((2, 256), (2, 257), (4, 192)):
+        for n_blocks, n_iters in ((2, 256), (2, 257), (3, 192), (4, 192), (6, 96), (8, 64), (24, 25)):
             shape_rounds = [
                 {
                     "baseline": [100 + b * 17 + (i % 29) for i in range(n_iters)],
@@ -4805,6 +4805,31 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
                 qc = research.protocol._weighted_quantiles(vc, gc, row, probs)
                 for qi, q in enumerate(probs):
                     self.assertEqual(flat_got[q][draw_i], qc[qi] - qb[qi])
+
+        research._WEIGHT_CACHE.clear()
+        ref_a = list(research._bootstrap_batches(rounds, [0.5, 0.95], 64, 111, 16))
+        ref_b = list(research._bootstrap_batches(rounds, [0.5, 0.95], 64, 222, 16))
+        research._WEIGHT_CACHE.clear()
+        gen_a = research._bootstrap_batches(rounds, [0.5, 0.95], 64, 111, 16)
+        gen_b = research._bootstrap_batches(rounds, [0.5, 0.95], 64, 222, 16)
+        interleaved_a, interleaved_b = [], []
+        for _ in range(4):
+            interleaved_a.append(next(gen_a))
+            interleaved_b.append(next(gen_b))
+        self.assertEqual(interleaved_a, ref_a)
+        self.assertEqual(interleaved_b, ref_b)
+
+        research._WEIGHT_CACHE.clear()
+        gen_partial = research._bootstrap_batches(rounds, [0.5, 0.95], 24, 111, 16)
+        gen_full = research._bootstrap_batches(rounds, [0.5, 0.95], 64, 111, 16)
+        self.assertEqual(next(gen_partial), ref_a[0])
+        self.assertEqual(next(gen_full), ref_a[0])
+        _ = next(gen_partial)
+        self.assertEqual([next(gen_full), next(gen_full), next(gen_full)], ref_a[1:])
+
+        prof = research.profile_analysis(rounds, {"blocks": 4, "iterations": 8}, draws=4608)
+        self.assertEqual(prof["draws_per_repeat"], 4608)
+        self.assertGreaterEqual(prof["seconds_per_case_draw_max"], 0.0)
 
 
 if __name__ == "__main__":
