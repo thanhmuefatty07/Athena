@@ -1777,15 +1777,15 @@ def forecast_native(variants, phases, design, pilot, profile):
             pilot_iter_s.get(c["id"], fallback_iter_s) for c in phases["screen"]
         )
         spawn_4_s = max(0.0, float(pilot["wall_seconds"]) - total_pilot_iter_s) / max(1, len(phases["screen"]))
-        screen_iter_mult = design["screen"]["blocks"] * (design["screen"]["iterations"] + 10) / 26.0
+        screen_iter_mult = design["screen"]["blocks"] * (design["screen"]["iterations"] + 10) / 52.0
         screen_spawn_mult = design["screen"]["blocks"] / 2.0
         screen_wall_s = sum(
             pilot_iter_s.get(cid, fallback_iter_s) * screen_iter_mult + spawn_4_s * screen_spawn_mult
             for v, ids in assignments.items() if v != "baseline"
             for cid in ids
         )
-        confirm_iter_mult = design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10) / 26.0
-        confirm_spawn_mult = float(design["confirm"]["blocks"])
+        confirm_iter_mult = design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10) / 52.0
+        confirm_spawn_mult = design["confirm"]["blocks"] / 2.0
         owner_confirm_costs = {}
         candidate_confirm_costs = []
         for variant in variants:

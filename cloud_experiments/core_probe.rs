@@ -4,8 +4,8 @@ use athena_core_v2::{
     aae::export_jsonl_with_limit,
     arena::Tag,
     projection::{
-        Chunk, ParseLimits, Projection, parse_html, parse_html_document_with_node_limit,
-        parse_html_with_limits,
+        Chunk, ParseLimits, Projection, ResearchNode, ResearchNodeKind, parse_html,
+        parse_html_document_with_node_limit, parse_html_with_limits, project_research_nodes,
     },
     rank::{bm25, highlight_indices},
     table::{Cell, Grid, GridError, Row, expand, expand_with_slot_limit},
@@ -1149,6 +1149,7 @@ struct Fixture {
     observed: u64,
     limits: ParseLimits,
     page: Option<Projection>,
+    table_cells: Option<Vec<Value>>,
     frames: Vec<Frame>,
     queries: Vec<String>,
     rows: Vec<Row>,
@@ -1256,34 +1257,6 @@ impl Fixture {
                 })
                 .collect()
         };
-        let mut page = if matches!(
-            stage,
-            "parser" | "parse" | "projection" | "pipeline" | "table" | "html-table" | "controls"
-        ) {
-            None
-        } else {
-            Some(parse_html_with_limits(&html, &url, limits).map_err(str::to_string)?)
-        };
-        if stage == "budget" {
-            let bytes = number(&input, "oversized_text_bytes", 2 * 1024 * 1024)?;
-            require(bytes <= 32 * 1024 * 1024, "oversized fixture admission")?;
-            let chunk = page
-                .as_mut()
-                .and_then(|p| p.chunks.first_mut())
-                .ok_or("budget stage requires a content chunk")?;
-            chunk.text = "\"".repeat(bytes);
-        }
-        let frames = if stage == "serialization" {
-            make_frames(
-                page.as_ref().ok_or("serialization page missing")?,
-                &url,
-                observed,
-                input["query"].as_str(),
-                highlight_limit,
-            )
-        } else {
-            vec![]
-        };
         let mut rows = Vec::new();
         if stage == "table" {
             for row in input["rows"].as_array().ok_or("table rows missing")? {
@@ -1334,6 +1307,43 @@ impl Fixture {
                     .is_some_and(|n| n <= 1_000_000),
             "table shape exceeds hard probe admission",
         )?;
+        let (mut page, table_cells) = if matches!(
+            stage,
+            "parser" | "parse" | "projection" | "pipeline" | "table" | "html-table" | "controls"
+        ) {
+            (None, None)
+        } else {
+            let include_table_cells =
+                stage == "export" && input["include_table_cells"].as_bool() == Some(true);
+            let (projection, extracted_cells) = parse_projection_and_table_cells(
+                &html,
+                &url,
+                limits,
+                &table_limits,
+                include_table_cells,
+            )?;
+            (Some(projection), extracted_cells)
+        };
+        if stage == "budget" {
+            let bytes = number(&input, "oversized_text_bytes", 2 * 1024 * 1024)?;
+            require(bytes <= 32 * 1024 * 1024, "oversized fixture admission")?;
+            let chunk = page
+                .as_mut()
+                .and_then(|p| p.chunks.first_mut())
+                .ok_or("budget stage requires a content chunk")?;
+            chunk.text = "\"".repeat(bytes);
+        }
+        let frames = if stage == "serialization" {
+            make_frames(
+                page.as_ref().ok_or("serialization page missing")?,
+                &url,
+                observed,
+                input["query"].as_str(),
+                highlight_limit,
+            )
+        } else {
+            vec![]
+        };
         let revision = format!(
             "{}/{}",
             input["policy_revision"].as_str().unwrap_or("policy/1"),
@@ -1350,6 +1360,7 @@ impl Fixture {
             observed,
             limits,
             page,
+            table_cells,
             frames,
             queries,
             rows,
@@ -1423,7 +1434,7 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
         parse_html_with_limits(black_box(&input.html), &input.url, input.limits)
             .map_err(str::to_string)
     };
-    let export = |page: &Projection| {
+    let export = |page: &Projection, table_cells: Option<&[Value]>| {
         let mut bytes = export_jsonl_with_limit(
             page,
             &input.url,
@@ -1434,8 +1445,8 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
         )
         .map(String::into_bytes)
         .map_err(|e| e.to_string())?;
-        if input.input["include_table_cells"].as_bool() == Some(true) {
-            append_table_cells_to_aae(&mut bytes, &input.html, &input.table_limits, input.limit)?;
+        if let Some(cells) = table_cells {
+            append_table_cells_to_aae(&mut bytes, cells, input.limit)?;
         }
         Ok(bytes)
     };
@@ -1450,8 +1461,17 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
             }
         }
         "parse" | "projection" => parse().map(Output::Projection),
-        "export" => export(page()?).map(Output::Bytes),
-        "pipeline" => export(&parse()?).map(Output::Bytes),
+        "export" => export(page()?, input.table_cells.as_deref()).map(Output::Bytes),
+        "pipeline" => {
+            let (projection, table_cells) = parse_projection_and_table_cells(
+                black_box(&input.html),
+                &input.url,
+                input.limits,
+                &input.table_limits,
+                input.input["include_table_cells"].as_bool() == Some(true),
+            )?;
+            export(&projection, table_cells.as_deref()).map(Output::Bytes)
+        }
         "rank" => Ok(Output::Rank(bm25(
             &page()?.chunks,
             input.input["query"].as_str().unwrap_or(""),
@@ -1580,15 +1600,118 @@ fn parse_cell_value_and_unit(raw: &str) -> (String, Option<String>) {
     (rhs.to_owned(), None)
 }
 
+fn has_html_table_tag(html: &str) -> bool {
+    html.as_bytes()
+        .windows(6)
+        .any(|window| window.eq_ignore_ascii_case(b"<table"))
+}
+
+fn is_skipped_projection_subtree(name: &str) -> bool {
+    matches!(
+        name,
+        "script" | "style" | "template" | "noscript" | "svg" | "canvas" | "iframe"
+    )
+}
+
+fn scraper_projection_nodes(document: &Html) -> Vec<ResearchNode> {
+    let mut nodes = Vec::new();
+    let mut stack = vec![(document.tree.root(), None)];
+    while let Some((node, parent)) = stack.pop() {
+        let mut next_parent = parent;
+        let mut visit_children = true;
+        match node.value() {
+            scraper::Node::Element(el) => {
+                if is_skipped_projection_subtree(el.name()) {
+                    visit_children = false;
+                } else {
+                    let index = nodes.len();
+                    let attributes = if el.name() == "a" {
+                        el.attr("href")
+                            .into_iter()
+                            .map(|v| ("href".to_owned(), v.to_owned()))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    nodes.push(ResearchNode {
+                        parent,
+                        kind: ResearchNodeKind::Element,
+                        name: el.name().to_owned(),
+                        text: String::new(),
+                        attributes,
+                    });
+                    next_parent = Some(index);
+                }
+            }
+            scraper::Node::Text(content) => {
+                nodes.push(ResearchNode {
+                    parent,
+                    kind: ResearchNodeKind::Text,
+                    name: String::new(),
+                    text: content.text.to_string(),
+                    attributes: Vec::new(),
+                });
+                visit_children = false;
+            }
+            _ => {}
+        }
+        if visit_children {
+            for child in node.children().rev() {
+                stack.push((child, next_parent));
+            }
+        }
+    }
+    nodes
+}
+
+fn parse_projection_and_table_cells(
+    html: &str,
+    url: &Url,
+    limits: ParseLimits,
+    table_limits: &HtmlTableLimits,
+    include_table_cells: bool,
+) -> Result<(Projection, Option<Vec<Value>>), String> {
+    if !include_table_cells || !has_html_table_tag(html) {
+        let projection = parse_html_with_limits(html, url, limits).map_err(str::to_string)?;
+        return Ok((projection, include_table_cells.then(Vec::new)));
+    }
+    if html.len() > ParseLimits::default().max_html_bytes
+        || limits.max_parser_nodes != table_limits.max_nodes
+    {
+        let projection = parse_html_with_limits(html, url, limits).map_err(str::to_string)?;
+        let cells = extract_structured_table_cells(html, table_limits)?;
+        return Ok((projection, Some(cells)));
+    }
+    if limits.max_nodes == 0
+        || limits.max_parser_nodes == 0
+        || limits.max_words_per_chunk == 0
+        || html.len() > limits.max_html_bytes
+        || html.len() > u32::MAX as usize
+        || table_limits.max_html_bytes == 0
+        || table_limits.max_html_bytes > 4 * 1024 * 1024
+        || html.len() > table_limits.max_html_bytes
+        || table_limits.max_nodes == 0
+        || table_limits.max_nodes > 250_000
+        || table_limits.max_text_bytes == 0
+        || table_limits.max_text_bytes > 4 * 1024 * 1024
+    {
+        return Err("invalid resource budget".into());
+    }
+    let (document, parse_warnings) =
+        parse_html_document_with_node_limit(html, limits.max_parser_nodes)
+            .map_err(str::to_owned)?;
+    let nodes = scraper_projection_nodes(&document);
+    let projection = project_research_nodes(html.len(), &nodes, url, limits, parse_warnings)
+        .map_err(str::to_string)?;
+    let cells = extract_structured_table_cells_from_document(&document, table_limits)?;
+    Ok((projection, Some(cells)))
+}
+
 fn extract_structured_table_cells(
     html: &str,
     limits: &HtmlTableLimits,
 ) -> Result<Vec<Value>, String> {
-    if !html
-        .as_bytes()
-        .windows(6)
-        .any(|window| window.eq_ignore_ascii_case(b"<table"))
-    {
+    if !has_html_table_tag(html) {
         return Ok(Vec::new());
     }
     if limits.max_html_bytes == 0
@@ -1603,6 +1726,13 @@ fn extract_structured_table_cells(
     }
     let (document, _) =
         parse_html_document_with_node_limit(html, limits.max_nodes).map_err(str::to_owned)?;
+    extract_structured_table_cells_from_document(&document, limits)
+}
+
+fn extract_structured_table_cells_from_document(
+    document: &Html,
+    limits: &HtmlTableLimits,
+) -> Result<Vec<Value>, String> {
     let tables = document
         .root_element()
         .descendent_elements()
@@ -1787,11 +1917,9 @@ fn extract_structured_table_cells(
 
 fn append_table_cells_to_aae(
     bytes: &mut Vec<u8>,
-    html: &str,
-    limits: &HtmlTableLimits,
+    cells: &[Value],
     max_bytes: usize,
 ) -> Result<(), String> {
-    let cells = extract_structured_table_cells(html, limits)?;
     if cells.is_empty() || bytes.is_empty() {
         return Ok(());
     }
@@ -2384,6 +2512,22 @@ mod tests {
             task_expand(&[b' '; 4097]).unwrap_err(),
             "SCOPED_TASK_REQUEST_INVALID"
         );
+
+        let table_fixture_json = json!({
+            "html": "<table><thead><tr><th rowspan='2'>Region</th><th colspan='2'>Mass</th></tr><tr><th>Net (kg)</th><th>Gross (kg)</th></tr></thead><tbody><tr><th>North</th><td>12.5</td><td>12.7</td></tr></tbody></table><p><a href='https://example.org/ref'>link</a></p><template><table><tr><td>ignored</td></tr></table></template>",
+            "url": "https://example.org/table",
+            "query": "North",
+            "observed_at_unix_ms": 1_792_195_200_000_u64,
+            "limit": 131_072,
+            "include_table_cells": true,
+        });
+        let export_fixture = Fixture::new(table_fixture_json.clone(), "export").unwrap();
+        assert_eq!(export_fixture.table_cells.as_ref().unwrap().len(), 2);
+        let pipeline_fixture = Fixture::new(table_fixture_json, "pipeline").unwrap();
+        assert!(pipeline_fixture.table_cells.is_none());
+        let export_bytes = canonical(&execute("export", &export_fixture).unwrap()).unwrap();
+        let pipeline_bytes = canonical(&execute("pipeline", &pipeline_fixture).unwrap()).unwrap();
+        assert_eq!(export_bytes, pipeline_bytes);
     }
 
     #[test]

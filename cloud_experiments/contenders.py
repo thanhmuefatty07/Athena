@@ -549,17 +549,42 @@ def transform(files, variant_id):
         )
     if "lookup" in factors:
         def lookup(text):
-            text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
+            if factors["lookup"] != "binary":
+                text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
             text = _replace(text, "    let mut terms: Vec<_> = words(query).map(str::to_lowercase).collect();", "    let mut terms: Vec<_> = words(query).map(lowercase).collect();")
+            setup = (
+                "    let mut min_len = usize::MAX;\n"
+                "    let mut max_len = 0usize;\n"
+                "    let mut first_mask = [0u64; 4];\n"
+                "    let mut last_mask = [0u64; 4];\n"
+                "    for term in &terms {\n"
+                "        let bytes = term.as_bytes();\n"
+                "        min_len = min_len.min(bytes.len());\n"
+                "        max_len = max_len.max(bytes.len());\n"
+                "        first_mask[(bytes[0] >> 6) as usize] |= 1u64 << (bytes[0] & 63);\n"
+                "        last_mask[(bytes[bytes.len() - 1] >> 6) as usize] |= 1u64 << (bytes[bytes.len() - 1] & 63);\n"
+                "    }\n"
+            )
+            if factors["lookup"] == "binary":
+                setup += (
+                    "    let term_ids: Option<HashMap<&str, usize>> = (terms.len() > 8 && chunks.len() > 1)\n"
+                    "        .then(|| terms.iter().enumerate().map(|(i, term)| (term.as_ref(), i)).collect());\n"
+                )
+            setup += (
+                "    let mut postings = vec![Vec::<(usize, usize)>::new(); terms.len()];\n"
+                "    let mut lengths = Vec::with_capacity(chunks.len());\n"
+            )
             text = _region(
                 text,
                 "    let term_ids: HashMap<_, _> = terms",
                 "    for (i, chunk) in chunks.iter().enumerate() {",
-                "    let (min_len, max_len) = terms.iter().fold((usize::MAX, 0usize), |(lo, hi), term| (lo.min(term.len()), hi.max(term.len())));\n"
-                "    let mut postings = vec![Vec::<(usize, usize)>::new(); terms.len()];\n"
-                "    let mut lengths = Vec::with_capacity(chunks.len());\n",
+                setup,
             )
-            operation = "if let Ok(term) = terms.binary_search_by(|term| term.as_ref().cmp(key.as_ref())) {" if factors["lookup"] == "binary" else "if let Some(term) = terms.iter().position(|term| term.as_ref() == key.as_ref()) {"
+            operation = (
+                "if let Some(term) = term_ids.as_ref().map_or_else(|| terms.binary_search_by(|term| term.as_ref().cmp(key.as_ref())).ok(), |ids| ids.get(key.as_ref()).copied()) {"
+                if factors["lookup"] == "binary"
+                else "if let Some(term) = terms.iter().position(|term| term.as_ref() == key.as_ref()) {"
+            )
             return _replace(
                 text,
                 "            if let Some(&term) = term_ids.get(lowercase(word).as_ref()) {\n"
@@ -574,11 +599,15 @@ def transform(files, variant_id):
                 "            postings[term].push((i, counts[term]));\n"
                 "            counts[term] = 0;\n"
                 "        }",
-                "            if word.is_ascii() && !(min_len..=max_len).contains(&word.len()) {\n"
+                "            if !(min_len..=max_len).contains(&word.len()) && word.is_ascii() {\n"
                 "                continue;\n"
                 "            }\n"
                 "            let key = lowercase(word);\n"
-                "            if !(min_len..=max_len).contains(&key.len()) {\n"
+                "            let bytes = key.as_bytes();\n"
+                "            if !(min_len..=max_len).contains(&bytes.len())\n"
+                "                || (first_mask[(bytes[0] >> 6) as usize] & (1u64 << (bytes[0] & 63))) == 0\n"
+                "                || (last_mask[(bytes[bytes.len() - 1] >> 6) as usize] & (1u64 << (bytes[bytes.len() - 1] & 63))) == 0\n"
+                "            {\n"
                 "                continue;\n"
                 "            }\n"
                 "            " + operation + "\n"
@@ -701,6 +730,54 @@ def _self_test():
                     src_path.write_text(table_rs, encoding="utf-8")
                     subprocess.run([rustc, "--edition=2024", "--test", str(src_path), "-o", str(bin_path)], check=True)
                     subprocess.run([str(bin_path)], check=True, stdout=subprocess.DEVNULL)
+                    chunk_stub = (
+                        "#[derive(Debug, Clone, PartialEq, Eq)]\n"
+                        "pub struct Chunk {\n"
+                        "    pub node: u32,\n"
+                        "    pub role: &'static str,\n"
+                        "    pub text: String,\n"
+                        "    pub links: Vec<u32>,\n"
+                        "}\n"
+                    )
+                    rank_extra_test = (
+                        "    #[test]\n"
+                        "    fn lookup_bloom_and_adaptive_hashmap_preserve_exact_scores_and_utf8_folding() {\n"
+                        "        let single = [chunk(\"term0 term15 term127 İB evidence\")];\n"
+                        "        let multi = [\n"
+                        "            chunk(\"term0 term1 term8 term31 term127 alpha beta\"),\n"
+                        "            chunk(\"term2 term8 term15 term64 İB delta\"),\n"
+                        "            chunk(\"term0 term31 term64 term127 epsilon\"),\n"
+                        "        ];\n"
+                        "        let q3 = \"term0 term8 i\\u{307}b\";\n"
+                        "        let q32 = (0..32).map(|i| format!(\"term{i}\")).collect::<Vec<_>>().join(\" \");\n"
+                        "        let q128 = (0..128).map(|i| format!(\"term{i}\")).collect::<Vec<_>>().join(\" \");\n"
+                        "        for q in [q3.as_str(), q32.as_str(), q128.as_str()] {\n"
+                        "            assert!(!bm25(&single, q, 1.2, 0.75).is_empty());\n"
+                        "            assert!(!bm25(&multi, q, 1.2, 0.75).is_empty());\n"
+                        "            assert!(!highlight_indices(&multi, q, 2).is_empty());\n"
+                        "        }\n"
+                        "    }\n"
+                    )
+                    for rank_variant in ("rank-binary+rank-select", "rank-linear+rank-select"):
+                        rank_rs = (
+                            transform(source, rank_variant)["src/rank.rs"]
+                            .decode("utf-8")
+                            .replace("use crate::projection::Chunk;", chunk_stub, 1)
+                            .replace(
+                                "    #[test]\n    fn bm25_orders",
+                                rank_extra_test + "    #[test]\n    fn bm25_orders",
+                                1,
+                            )
+                        )
+                        rank_src = Path(folder) / f"{rank_variant.replace('+', '_')}.rs"
+                        rank_bin = Path(folder) / (
+                            f"{rank_variant.replace('+', '_')}.exe"
+                            if Path(rustc).suffix.lower() == ".exe"
+                            else rank_variant.replace("+", "_")
+                        )
+                        rank_src.write_text(rank_rs, encoding="utf-8")
+                        subprocess.run([rustc, "--edition=2024", "--test", str(rank_src), "-o", str(rank_bin)], check=True)
+                        subprocess.run([str(rank_bin)], check=True, stdout=subprocess.DEVNULL)
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(Contracts)
     result = unittest.TextTestRunner(verbosity=2).run(suite)

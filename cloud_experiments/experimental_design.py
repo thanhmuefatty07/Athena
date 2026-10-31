@@ -293,7 +293,8 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
         len(covered_panel_cells) / len(panel_cells) if panel_cells else 1.0
     )
 
-    # 5. Composite statistical/design quality score (harmonic mean of main, pairwise, and mechanism coverage)
+    # 5. Composite statistical/design quality score (harmonic mean of main, pairwise, and mechanism coverage,
+    #    plus explicit 4-component harmonic mean including 3/4-way higher-order mechanism tuple coverage)
     components = (
         main_effect_coverage_ratio,
         pairwise_coverage_ratio,
@@ -303,6 +304,19 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
         composite_quality_score = 0.0
     else:
         composite_quality_score = len(components) / sum(1.0 / c for c in components)
+
+    ho_components = (
+        main_effect_coverage_ratio,
+        pairwise_coverage_ratio,
+        mechanism_group_coverage_ratio,
+        higher_order_coverage_ratio,
+    )
+    if any(c <= 0.0 for c in ho_components):
+        higher_order_composite_quality_score = 0.0
+    else:
+        higher_order_composite_quality_score = len(ho_components) / sum(
+            1.0 / c for c in ho_components
+        )
 
     return {
         "schema": "athena-design-efficiency-report/1",
@@ -329,6 +343,7 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
         "panel_corners_covered": len(covered_panel_cells),
         "panel_corner_retention_ratio": panel_corner_retention_ratio,
         "composite_quality_score": composite_quality_score,
+        "higher_order_composite_quality_score": higher_order_composite_quality_score,
         "coverage_status": cov["status"],
         "requirements_sha256": cov["requirements_sha256"],
     }
@@ -384,7 +399,13 @@ def high_efficiency_design(
                 and (not include_single_arms or metrics["single_arm_retention_ratio"] >= target_quality)
                 and metrics["pairwise_coverage_ratio"] >= target_quality
                 and metrics["mechanism_group_coverage_ratio"] >= target_quality
-                and (not enforce_higher_order or metrics["higher_order_coverage_ratio"] >= target_quality)
+                and (
+                    not enforce_higher_order
+                    or (
+                        metrics["higher_order_coverage_ratio"] >= target_quality
+                        and metrics["higher_order_composite_quality_score"] >= target_quality
+                    )
+                )
                 and metrics["composite_quality_score"] >= target_quality
             ):
                 break
@@ -496,5 +517,5 @@ def whole_path_core_panel():
         "efficiency_within_active_subspace": evaluate_design_efficiency(
             variants, full_variants=variants
         ),
+        "efficiency_vs_full_design": evaluate_design_efficiency(variants),
     }
-

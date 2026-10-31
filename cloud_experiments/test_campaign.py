@@ -4659,9 +4659,18 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         )
         self.assertTrue(set(core["cloud_015_variants"]).issubset(core["variants"]))
         core_eff = core["efficiency_within_active_subspace"]
+        self.assertEqual(core_eff["reference_variant_count"], len(core["variants"]))
         self.assertEqual(core_eff["composite_quality_score"], 1.0)
+        self.assertEqual(core_eff["higher_order_composite_quality_score"], 1.0)
         self.assertEqual(core_eff["mechanism_tuples_covered"], core_eff["mechanism_tuples_total"])
         self.assertEqual(core_eff["higher_order_tuples_covered"], core_eff["higher_order_tuples_total"])
+        full_eff = core["efficiency_vs_full_design"]
+        self.assertEqual(full_eff["reference_variant_count"], 225)
+        self.assertEqual(full_eff["variant_count"], len(core["variants"]))
+        self.assertLess(full_eff["composite_quality_score"], 1.0)
+        self.assertLess(full_eff["higher_order_composite_quality_score"], full_eff["composite_quality_score"])
+        self.assertGreaterEqual(strict_ho["efficiency"]["higher_order_composite_quality_score"], 0.95)
+        self.assertEqual(full_cov["efficiency"]["higher_order_composite_quality_score"], 1.0)
 
     def test_forecast_native_deduplicates_owner_confirm_cases_and_weights_by_case_pilot_ns(self):
         design = research.manifest_design()
@@ -4691,7 +4700,7 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(forecast["maximum_bootstrap_draws"], 288000)
         self.assertLess(
             forecast["wall_seconds"] - forecast["finalist_service_gate_seconds_reserve"],
-            2500,
+            2000,
         )
         self.assertLess(forecast["wall_seconds"], uniform_forecast["wall_seconds"])
 
@@ -4730,10 +4739,58 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         cloud_015_panel = research.experimental_design.whole_path_core_panel()["cloud_015_variants"]
         f_015 = research.forecast_native(cloud_015_panel, phases, design, pilot, real_profile)
         self.assertEqual(f_015["maximum_confirm_cases"], 223)
+        self.assertEqual(f_015["maximum_family"], 892)
         self.assertLess(
             f_015["wall_seconds"] + f_015["analysis_seconds"] + f_015["export_seconds"] + f_015["shutdown_seconds"],
             design["limits"]["wall_seconds"],
         )
+
+        # Verify RT-NEW-02 algebra on zero-spawn pure-iteration pilot:
+        # 52 executions per case in pilot (2 blocks x 2 arms x 13 runs)
+        zero_spawn_pilot = {
+            "wall_seconds": len(phases["screen"]) * (13.0 / 3.0),
+            "case_pilot_ns": {c["id"]: 1_000_000_000 for c in phases["screen"]},
+            "baseline_build_wall_seconds": 0.0,
+            "peak_memory_bytes": 64 * 1024 ** 2,
+        }
+        f_pure = research.forecast_native(["baseline", "prepared"], phases, design, zero_spawn_pilot, profile)
+        prepared_cases = len(research._variant_cases("prepared", phases["screen"]))
+        expected_exec_s = prepared_cases * (13.0 / 3.0) * (
+            design["screen"]["blocks"] * (design["screen"]["iterations"] + 10) / 52.0
+            + design["confirm"]["blocks"] * (design["confirm"]["iterations"] + 10) / 52.0
+        )
+        self.assertEqual(
+            f_pure["wall_seconds"] - f_pure["finalist_service_gate_seconds_reserve"],
+            math.ceil(2.0 * expected_exec_s),
+        )
+
+        # Verify RT-05: combined_finalist appended by _complete_finalist_selection is included in freeze_confirmation family_size
+        selected = ["aae-direct", "rank-binary+rank-select"]
+        joint = research.compose_finalist(selected)
+        self.assertEqual(joint, "aae-direct+rank-binary+rank-select")
+        selected_with_joint = [*selected, joint]
+        confirmation_design = research.copy.deepcopy(design)
+        confirmation_design["source_sha256"] = "0" * 64
+        confirmation_design["confirm_assignments"] = {
+            v: [c["id"] for c in research._variant_cases(v, phases["confirm"])]
+            for v in selected_with_joint
+        }
+        admitted_pilot = {
+            **pilot,
+            "status": "COMPLETE",
+            "phase": "pilot",
+            "admitted": True,
+            "precision_status": "PLANNED_NOT_GUARANTEED",
+        }
+        frozen = research.freeze_confirmation(
+            confirmation_design,
+            selected_with_joint,
+            admitted_pilot,
+            {split: research.fixture_inventory(phases[split], split) for split in ("screen", "confirm")},
+        )
+        self.assertEqual(frozen["family_size"], f_015["maximum_family"])
+        self.assertEqual(frozen["family_size"], 892)
+
         full_rounds = [
             {
                 "baseline": [100 + b * 7 + (i % 13) for i in range(design["confirm"]["iterations"])],
@@ -4770,6 +4827,37 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
                 "use std::io::{self, BufWriter, Write};" in aae_txt,
                 variant_id,
             )
+            rank_txt = out["src/rank.rs"].decode("utf-8")
+            self.assertEqual(
+                "HashMap<" in rank_txt,
+                "use std::collections::{HashMap, HashSet};" in rank_txt,
+                variant_id,
+            )
+        rank_bin_txt = contenders.transform(source, "rank-binary+rank-select")["src/rank.rs"].decode("utf-8")
+        self.assertIn("if !(min_len..=max_len).contains(&word.len()) && word.is_ascii()", rank_bin_txt)
+        self.assertIn("first_mask[(bytes[0] >> 6) as usize]", rank_bin_txt)
+        self.assertIn("(terms.len() > 8 && chunks.len() > 1)", rank_bin_txt)
+        probe_txt = (root / "cloud_experiments/core_probe.rs").read_text(encoding="utf-8")
+        self.assertIn("fn parse_projection_and_table_cells(", probe_txt)
+        self.assertIn("table_cells: Option<Vec<Value>>,", probe_txt)
+
+    def test_service_study_positive_log_supports_subunit_and_subnormal_values(self):
+        from cloud_experiments import service_study
+        for value in (5e-324, 2.2250738585072014e-308, 1e-12, 0.1, 0.36787944117144233, 1.0, 1e9):
+            logged = service_study._positive_log(value)
+            self.assertGreater(logged, 0.0)
+            self.assertTrue(math.isfinite(logged))
+        sub_rounds = [
+            {
+                "baseline": [service_study._positive_log(0.05 * (b + 1)) for _ in range(4)],
+                "candidate": [service_study._positive_log(0.10 * (b + 1)) for _ in range(4)],
+            }
+            for b in range(4)
+        ]
+        intervals = research.bootstrap_intervals(sub_rounds, [0.5, 0.95], 256, 42, 0.05)
+        ratio = service_study._ratio_interval(intervals[0.5])
+        self.assertAlmostEqual(ratio[0], 2.0, places=12)
+        self.assertAlmostEqual(ratio[1], 2.0, places=12)
 
     def test_bootstrap_intervals_batch_size_256_matches_64_bit_for_bit(self):
         rounds = [

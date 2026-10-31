@@ -205,7 +205,7 @@ def validate_observation_grid(design, schedule, observations):
 def _positive_log(value):
     if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
         raise ValueError("H07 paired analysis requires positive finite measurements")
-    return math.log(value) + 1.0
+    return math.log(value) + 1024.0
 
 
 def _quantile(values, probability):
