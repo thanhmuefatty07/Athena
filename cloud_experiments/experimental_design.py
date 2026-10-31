@@ -499,6 +499,15 @@ def whole_path_core_panel():
         "rank-linear+rank-select",
         "table-html-selectors",
     ]
+    cloud_016_variants = [
+        "baseline",
+        "rank-binary",
+        "rank-linear",
+        "rank-select",
+        "rank-binary+rank-select",
+        "rank-linear+rank-select",
+        "table-html-selectors",
+    ]
     for name in variants:
         contenders.metadata(name)
     return {
@@ -506,6 +515,7 @@ def whole_path_core_panel():
         "variants": variants,
         "cloud_014_variants": cloud_014_variants,
         "cloud_015_variants": cloud_015_variants,
+        "cloud_016_variants": cloud_016_variants,
         "active_owners": ["H01", "H02", "H03", "H06", "H07", "H08", "H09", "H14"],
         "complete_interaction_panels": ["I-RANK", "I-HTML-TABLE"],
         "efficiency_within_active_subspace": evaluate_design_efficiency(

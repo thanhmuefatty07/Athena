@@ -307,19 +307,12 @@ def _reserve_source(text, kind):
     return _replace(text, "bytes: Vec::new(),", "bytes: Vec::with_capacity(reserve.min(max_output_bytes)),")
 
 
-_HEAP_SELECTION = r'''#[derive(Debug)]
-struct Ranked { index: usize, score: f64 }
-impl PartialEq for Ranked { fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() } }
-impl Eq for Ranked {}
-impl PartialOrd for Ranked { fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) } }
-impl Ord for Ranked {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.score.total_cmp(&other.score).then_with(|| other.index.cmp(&self.index))
-    }
-}
+_HEAP_SELECTION = r'''#[inline(never)]
 pub fn highlight_indices(chunks: &[Chunk], query: &str, limit: usize) -> Vec<usize> {
-    if limit == 0 { return Vec::new(); }
-    let scores = score_chunks(chunks, query, 1.2, 0.75);
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut scores = score_chunks(chunks, query, 1.2, 0.75);
     if limit == 1 {
         return scores
             .into_iter()
@@ -328,15 +321,33 @@ pub fn highlight_indices(chunks: &[Chunk], query: &str, limit: usize) -> Vec<usi
             .map(|(index, _)| vec![index])
             .unwrap_or_default();
     }
-    let mut heap = std::collections::BinaryHeap::from(scores.into_iter()
-        .filter(|(_, score)| *score > 0.0)
-        .map(|(index, score)| Ranked { index, score }).collect::<Vec<_>>());
-    let cap = limit.min(heap.len());
+    scores.retain(|(_, score)| *score > 0.0);
+    if scores.is_empty() {
+        return Vec::new();
+    }
+    let cmp = |(a, sa): &(usize, f64), (b, sb): &(usize, f64)| sb.total_cmp(sa).then_with(|| a.cmp(b));
+    let cap = limit.min(scores.len());
+    if scores.len() > cap {
+        scores.select_nth_unstable_by(cap - 1, cmp);
+    }
+    scores[..cap].sort_unstable_by(cmp);
     let mut selected = Vec::with_capacity(cap);
     let mut seen = HashSet::<Cow<'_, str>>::with_capacity(cap);
-    while let Some(Ranked { index, .. }) = heap.pop() {
-        if seen.insert(lowercase(&chunks[index].text)) { selected.push(index); }
-        if selected.len() == limit { break; }
+    for &(index, _) in &scores[..cap] {
+        if seen.insert(lowercase(&chunks[index].text)) {
+            selected.push(index);
+        }
+    }
+    if selected.len() < limit && scores.len() > cap {
+        scores[cap..].sort_unstable_by(cmp);
+        for &(index, _) in &scores[cap..] {
+            if seen.insert(lowercase(&chunks[index].text)) {
+                selected.push(index);
+                if selected.len() == limit {
+                    break;
+                }
+            }
+        }
     }
     selected
 }
@@ -549,8 +560,7 @@ def transform(files, variant_id):
         )
     if "lookup" in factors:
         def lookup(text):
-            if factors["lookup"] != "binary":
-                text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
+            text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
             text = _replace(text, "    let mut terms: Vec<_> = words(query).map(str::to_lowercase).collect();", "    let mut terms: Vec<_> = words(query).map(lowercase).collect();")
             setup = (
                 "    let mut min_len = usize::MAX;\n"
@@ -561,16 +571,37 @@ def transform(files, variant_id):
                 "        let bytes = term.as_bytes();\n"
                 "        min_len = min_len.min(bytes.len());\n"
                 "        max_len = max_len.max(bytes.len());\n"
-                "        first_mask[(bytes[0] >> 6) as usize] |= 1u64 << (bytes[0] & 63);\n"
-                "        last_mask[(bytes[bytes.len() - 1] >> 6) as usize] |= 1u64 << (bytes[bytes.len() - 1] & 63);\n"
+                "        for b0 in [bytes[0], bytes[0].to_ascii_uppercase()] {\n"
+                "            first_mask[(b0 >> 6) as usize] |= 1u64 << (b0 & 63);\n"
+                "        }\n"
+                "        let last = bytes[bytes.len() - 1];\n"
+                "        for b1 in [last, last.to_ascii_uppercase()] {\n"
+                "            last_mask[(b1 >> 6) as usize] |= 1u64 << (b1 & 63);\n"
+                "        }\n"
                 "    }\n"
             )
             if factors["lookup"] == "binary":
                 setup += (
-                    "    let term_ids: Option<HashMap<&str, usize>> = (terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64))\n"
-                    "        .then(|| terms.iter().enumerate().map(|(i, term)| (term.as_ref(), i)).collect());\n"
+                    "    let mut hash_slots = Vec::new();\n"
+                    "    if terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64) {\n"
+                    "        let cap = (terms.len() * 4).next_power_of_two();\n"
+                    "        let mask = cap - 1;\n"
+                    "        hash_slots.resize(cap, usize::MAX);\n"
+                    "        for (idx, term) in terms.iter().enumerate() {\n"
+                    "            let mut h = term.len();\n"
+                    "            for &byte in term.as_bytes() {\n"
+                    "                h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(byte as usize);\n"
+                    "            }\n"
+                    "            let mut slot = (h ^ (h >> 16)) & mask;\n"
+                    "            while hash_slots[slot] != usize::MAX {\n"
+                    "                slot = (slot + 1) & mask;\n"
+                    "            }\n"
+                    "            hash_slots[slot] = idx;\n"
+                    "        }\n"
+                    "    }\n"
                 )
             setup += (
+                "    let reserve_cap = (chunks.len() >> 2).clamp(2, 64);\n"
                 "    let mut postings = vec![Vec::<(usize, usize)>::new(); terms.len()];\n"
                 "    let mut lengths = Vec::with_capacity(chunks.len());\n"
             )
@@ -581,11 +612,33 @@ def transform(files, variant_id):
                 setup,
             )
             operation = (
-                "if let Some(term) = term_ids.as_ref().map_or_else(|| terms.binary_search_by(|term| term.as_ref().cmp(key.as_ref())).ok(), |ids| ids.get(key.as_ref()).copied()) {"
+                "            let matched = if hash_slots.is_empty() {\n"
+                "                terms\n"
+                "                    .binary_search_by(|term| term.as_ref().cmp(key.as_ref()))\n"
+                "                    .ok()\n"
+                "            } else {\n"
+                "                let mask = hash_slots.len() - 1;\n"
+                "                let mut h = bytes.len();\n"
+                "                for &byte in bytes {\n"
+                "                    h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(byte as usize);\n"
+                "                }\n"
+                "                let mut slot = (h ^ (h >> 16)) & mask;\n"
+                "                loop {\n"
+                "                    let idx = hash_slots[slot];\n"
+                "                    if idx == usize::MAX {\n"
+                "                        break None;\n"
+                "                    }\n"
+                "                    if terms[idx].as_ref() == key.as_ref() {\n"
+                "                        break Some(idx);\n"
+                "                    }\n"
+                "                    slot = (slot + 1) & mask;\n"
+                "                }\n"
+                "            };\n"
+                "            if let Some(term) = matched {"
                 if factors["lookup"] == "binary"
-                else "if let Some(term) = terms.iter().position(|term| term.as_ref() == key.as_ref()) {"
+                else "            if let Some(term) = terms.iter().position(|term| term.as_ref() == key.as_ref()) {"
             )
-            return _replace(
+            text = _replace(
                 text,
                 "            if let Some(&term) = term_ids.get(lowercase(word).as_ref()) {\n"
                 "                if counts[term] == 0 {\n"
@@ -599,7 +652,11 @@ def transform(files, variant_id):
                 "            postings[term].push((i, counts[term]));\n"
                 "            counts[term] = 0;\n"
                 "        }",
-                "            if !(min_len..=max_len).contains(&word.len()) && word.is_ascii() {\n"
+                "            let raw = word.as_bytes();\n"
+                "            if (raw[0] < 128 && (first_mask[(raw[0] >> 6) as usize] & (1u64 << (raw[0] & 63))) == 0)\n"
+                "                || (raw[raw.len() - 1] < 128 && (last_mask[(raw[raw.len() - 1] >> 6) as usize] & (1u64 << (raw[raw.len() - 1] & 63))) == 0)\n"
+                "                || (!(min_len..=max_len).contains(&raw.len()) && word.is_ascii())\n"
+                "            {\n"
                 "                continue;\n"
                 "            }\n"
                 "            let key = lowercase(word);\n"
@@ -610,23 +667,31 @@ def transform(files, variant_id):
                 "            {\n"
                 "                continue;\n"
                 "            }\n"
-                "            " + operation + "\n"
-                "                if let Some((last, count)) = postings[term].last_mut()\n"
+                + operation + "\n"
+                "                let list = &mut postings[term];\n"
+                "                if list.is_empty() {\n"
+                "                    list.reserve(reserve_cap);\n"
+                "                    list.push((i, 1));\n"
+                "                } else if let Some((last, count)) = list.last_mut()\n"
                 "                    && *last == i\n"
                 "                {\n"
                 "                    *count += 1;\n"
                 "                } else {\n"
-                "                    postings[term].push((i, 1));\n"
+                "                    list.push((i, 1));\n"
                 "                }\n"
                 "            }\n"
                 "        }\n"
                 "        lengths.push(length);",
             )
+            if "selection" not in factors:
+                text = _replace(text, "pub fn bm25(", "#[inline(never)]\npub fn bm25(")
+                text = _replace(text, "pub fn highlight_indices(", "#[inline(never)]\npub fn highlight_indices(")
+            return text
         edit("src/rank.rs", lookup)
     if "selection" in factors:
         def select(text):
             text = _replace(text, "pub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {", "fn score_chunks(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {")
-            text = _replace(text, "    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}", "    scores\n}\npub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {\n    let mut scores = score_chunks(chunks, query, k1, b);\n    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}")
+            text = _replace(text, "    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}", "    scores\n}\n#[inline(never)]\npub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {\n    let mut scores = score_chunks(chunks, query, k1, b);\n    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}")
             return _region(text, "pub fn highlight_indices(", "#[cfg(test)]", _HEAP_SELECTION)
         edit("src/rank.rs", select)
     if "projection" in factors:

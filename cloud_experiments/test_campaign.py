@@ -4660,6 +4660,19 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             ],
         )
         self.assertTrue(set(core["cloud_015_variants"]).issubset(core["variants"]))
+        self.assertEqual(
+            core["cloud_016_variants"],
+            [
+                "baseline",
+                "rank-binary",
+                "rank-linear",
+                "rank-select",
+                "rank-binary+rank-select",
+                "rank-linear+rank-select",
+                "table-html-selectors",
+            ],
+        )
+        self.assertTrue(set(core["cloud_016_variants"]).issubset(core["variants"]))
         core_eff = core["efficiency_within_active_subspace"]
         self.assertEqual(core_eff["reference_variant_count"], len(core["variants"]))
         self.assertEqual(core_eff["composite_quality_score"], 1.0)
@@ -4746,6 +4759,11 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             f_015["wall_seconds"] + f_015["analysis_seconds"] + f_015["export_seconds"] + f_015["shutdown_seconds"],
             design["limits"]["wall_seconds"],
         )
+        cloud_016_panel = research.experimental_design.whole_path_core_panel()["cloud_016_variants"]
+        f_016 = research.forecast_native(cloud_016_panel, phases, design, pilot, real_profile)
+        self.assertEqual(f_016["maximum_confirm_cases"], 73)
+        self.assertEqual(f_016["maximum_family"], 292)
+        self.assertEqual(f_016["maximum_bootstrap_draws"], 1168000)
 
         # Verify RT-NEW-02 algebra on zero-spawn pure-iteration pilot:
         # 52 executions per case in pilot (2 blocks x 2 arms x 13 runs)
@@ -4836,9 +4854,11 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
                 variant_id,
             )
         rank_bin_txt = contenders.transform(source, "rank-binary+rank-select")["src/rank.rs"].decode("utf-8")
-        self.assertIn("if !(min_len..=max_len).contains(&word.len()) && word.is_ascii()", rank_bin_txt)
+        self.assertIn("(!(min_len..=max_len).contains(&raw.len()) && word.is_ascii())", rank_bin_txt)
         self.assertIn("first_mask[(bytes[0] >> 6) as usize]", rank_bin_txt)
-        self.assertIn("(terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64))", rank_bin_txt)
+        self.assertIn("if terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64)", rank_bin_txt)
+        self.assertIn("scores.select_nth_unstable_by(cap - 1, cmp);", rank_bin_txt)
+        self.assertIn("#[inline(never)]", rank_bin_txt)
         probe_txt = (root / "cloud_experiments/core_probe.rs").read_text(encoding="utf-8")
         self.assertIn("fn parse_projection_and_table_cells(", probe_txt)
         self.assertIn("table_cells: Option<Vec<Value>>,", probe_txt)

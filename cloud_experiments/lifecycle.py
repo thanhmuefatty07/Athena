@@ -346,22 +346,30 @@ def memory_limit_bytes(cgroup_proc="/proc/self/cgroup", cgroup_root="/sys/fs/cgr
 
 def tree_bytes(folder):
     folder = Path(folder)
-    if not folder.exists():
+    if not folder.exists() and not folder.is_symlink():
         return 0
     total, entries, pending = 0, 0, [folder]
     while pending:
         path = pending.pop()
-        if path.is_symlink():
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
             raise ValueError("Resource tree contains a linked entry")
-        if path.is_dir():
-            with os.scandir(path) as stream:
-                for entry in stream:
-                    pending.append(Path(entry.path))
-                    entries += 1
-                    if entries > 200000:
-                        raise ValueError("Resource tree entry bound exceeded")
-        elif path.is_file():
-            total += path.stat().st_size
+        if stat.S_ISDIR(metadata.st_mode):
+            try:
+                with os.scandir(path) as stream:
+                    for entry in stream:
+                        pending.append(Path(entry.path))
+                        entries += 1
+                        if entries > 200000:
+                            raise ValueError("Resource tree entry bound exceeded")
+            except FileNotFoundError:
+                continue
+        elif stat.S_ISREG(metadata.st_mode):
+            total += metadata.st_size
     return total
 
 
@@ -383,14 +391,17 @@ def reusable_storage_bytes(paths, *, device, deadline):
         if metadata.st_dev != device:
             raise ValueError("Reusable storage crossed a filesystem boundary")
         if stat.S_ISDIR(metadata.st_mode):
-            with os.scandir(path) as stream:
-                for entry in stream:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("Reusable storage scan exceeded its deadline")
-                    entries += 1
-                    if entries > 200000:
-                        raise ValueError("Reusable storage entry bound exceeded")
-                    pending.append(Path(entry.path))
+            try:
+                with os.scandir(path) as stream:
+                    for entry in stream:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("Reusable storage scan exceeded its deadline")
+                        entries += 1
+                        if entries > 200000:
+                            raise ValueError("Reusable storage entry bound exceeded")
+                        pending.append(Path(entry.path))
+            except FileNotFoundError:
+                continue
         elif stat.S_ISREG(metadata.st_mode):
             key = (metadata.st_dev, metadata.st_ino)
             if key in seen:

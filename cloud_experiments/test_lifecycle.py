@@ -1284,6 +1284,23 @@ with research._analysis_lock(root/'execution.lock'):
                 12884901888,
             )
 
+    def test_tree_bytes_ignores_transient_unlinked_entries_during_concurrent_build(self):
+        with tempfile.TemporaryDirectory(prefix="athena-tree-bytes-race-") as folder:
+            root = Path(folder)
+            keep = root / "keep.rlib"
+            keep.write_bytes(b"x" * 17)
+            vanish = root / "transient.rcgu.o"
+            vanish.write_bytes(b"y" * 23)
+            real_lstat = Path.lstat
+
+            def unlink_and_lstat(path_obj, *args, **kwargs):
+                if path_obj.name == "transient.rcgu.o":
+                    path_obj.unlink(missing_ok=True)
+                return real_lstat(path_obj, *args, **kwargs)
+
+            with patch.object(Path, "lstat", new=unlink_and_lstat):
+                self.assertEqual(lifecycle.tree_bytes(root), 17)
+
 
 if __name__ == "__main__":
     unittest.main()
