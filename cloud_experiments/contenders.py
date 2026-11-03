@@ -79,7 +79,7 @@ def _registry():
         "projection-fused": _definition(["H04", "H05"], {"projection": "fused"}, "Fuse chunk-owner assignment/text/link collection with checked arena construction after the same HTML5 parser."),
         "links-btree": _definition(["H05"], {"links": "btree"}, "Use ordered tree lookup for resolved unique links while preserving insertion-order IDs."),
         "table-sparse": _definition(["H06"], {"table": "sparse"}, "Sparse row occupancy maps followed by exact public dense-grid materialization.", "logical_grid_only", ["table"]),
-        "table-html-selectors": _definition([], {"html_extractor": "selectors"}, "Precompiled CSS table/row selection over the same Scraper HTML5 DOM, with nearest-table ownership and the existing public span-aware grid.", "html_table_stage_only", ["html-table"]),
+        "table-html-selectors": _definition(["H06"], {"html_extractor": "selectors"}, "Precompiled CSS table/row selection over the same Scraper HTML5 DOM, with nearest-table ownership and the existing public span-aware grid.", "html_table_stage_only", ["html-table"]),
         "build-lto-off": _definition(["H10"], {"lto": "off"}, "Keep source/lock fixed and disable release LTO.", "build_factor"),
         "build-lto-full": _definition(["H10"], {"lto": "fat"}, "Keep source/lock fixed and enable full release LTO.", "build_factor"),
         "build-codegen1": _definition(["H10"], {"codegen_units": 1}, "Keep source/lock fixed and compile release with one codegen unit.", "build_factor"),
@@ -254,26 +254,64 @@ def _hash(kind):
     }
     let digest = hash.finalize().to_hex().to_string();
 '''
-    return r'''    let mut hash = blake3::Hasher::new();
-    let mut scratch = Vec::with_capacity(BATCH);
-    for (i, chunk) in page.chunks.iter().enumerate() {
-        let separator = if i == 0 { b"".as_slice() } else { b"\n".as_slice() };
-        for mut bytes in [separator, chunk.text.as_bytes()] {
-            if scratch.is_empty() && bytes.len() >= BATCH {
-                hash.update(bytes);
-                continue;
-            }
-            while !bytes.is_empty() {
-                let take = bytes.len().min(BATCH - scratch.len());
-                scratch.extend_from_slice(&bytes[..take]);
-                bytes = &bytes[take..];
-                if scratch.len() == BATCH { hash.update(&scratch); scratch.clear(); }
+    return r'''    let digest = match page.chunks.as_slice() {
+        [] => blake3::hash(b""),
+        [only] => blake3::hash(only.text.as_bytes()),
+        [first, rest @ ..] => {
+            let total_len = page
+                .chunks
+                .iter()
+                .fold(page.chunks.len() - 1, |acc, c| acc + c.text.len());
+            if total_len <= 262_144 {
+                let mut scratch = Vec::with_capacity(total_len);
+                scratch.extend_from_slice(first.text.as_bytes());
+                for chunk in rest {
+                    scratch.push(b'\n');
+                    scratch.extend_from_slice(chunk.text.as_bytes());
+                }
+                blake3::hash(&scratch)
+            } else {
+                let mut hash = blake3::Hasher::new();
+                let mut scratch = Vec::with_capacity(BATCH);
+                let first_bytes = first.text.as_bytes();
+                let first_full = (first_bytes.len() / BATCH) * BATCH;
+                if first_full > 0 {
+                    hash.update(&first_bytes[..first_full]);
+                }
+                scratch.extend_from_slice(&first_bytes[first_full..]);
+                for chunk in rest {
+                    let bytes = chunk.text.as_bytes();
+                    if scratch.len() + 1 + bytes.len() <= BATCH {
+                        scratch.push(b'\n');
+                        scratch.extend_from_slice(bytes);
+                        if scratch.len() == BATCH {
+                            hash.update(&scratch);
+                            scratch.clear();
+                        }
+                        continue;
+                    }
+                    scratch.push(b'\n');
+                    let space = BATCH - scratch.len();
+                    let (head, tail) = bytes.split_at(space);
+                    scratch.extend_from_slice(head);
+                    hash.update(&scratch);
+                    scratch.clear();
+                    let full = (tail.len() / BATCH) * BATCH;
+                    if full > 0 {
+                        hash.update(&tail[..full]);
+                    }
+                    scratch.extend_from_slice(&tail[full..]);
+                }
+                if !scratch.is_empty() {
+                    hash.update(&scratch);
+                }
+                hash.finalize()
             }
         }
     }
-    hash.update(&scratch);
-    let digest = hash.finalize().to_hex().to_string();
-'''.replace("BATCH", str(batch))
+    .to_hex()
+    .to_string();
+'''.replace("BATCH", f"{batch}usize")
 
 
 def _hash_source(text, kind):
@@ -307,8 +345,7 @@ def _reserve_source(text, kind):
     return _replace(text, "bytes: Vec::new(),", "bytes: Vec::with_capacity(reserve.min(max_output_bytes)),")
 
 
-_HEAP_SELECTION = r'''#[inline(never)]
-pub fn highlight_indices(chunks: &[Chunk], query: &str, limit: usize) -> Vec<usize> {
+_HEAP_SELECTION = r'''pub fn highlight_indices(chunks: &[Chunk], query: &str, limit: usize) -> Vec<usize> {
     if limit == 0 {
         return Vec::new();
     }
@@ -325,29 +362,60 @@ pub fn highlight_indices(chunks: &[Chunk], query: &str, limit: usize) -> Vec<usi
     if scores.is_empty() {
         return Vec::new();
     }
-    let cmp = |(a, sa): &(usize, f64), (b, sb): &(usize, f64)| sb.total_cmp(sa).then_with(|| a.cmp(b));
+    let cmp =
+        |(a, sa): &(usize, f64), (b, sb): &(usize, f64)| sb.total_cmp(sa).then_with(|| a.cmp(b));
     let cap = limit.min(scores.len());
     if scores.len() > cap {
         scores.select_nth_unstable_by(cap - 1, cmp);
     }
     scores[..cap].sort_unstable_by(cmp);
     let mut selected = Vec::with_capacity(cap);
-    let mut seen = HashSet::<Cow<'_, str>>::with_capacity(cap);
-    for &(index, _) in &scores[..cap] {
-        if seen.insert(lowercase(&chunks[index].text)) {
+    let mut seen: Option<HashSet<Cow<'_, str>>> = None;
+    let mut try_select = |index: usize, selected: &mut Vec<usize>| -> bool {
+        let text = chunks[index].text.as_str();
+        if seen.is_none() && selected.len() < 16 && text.is_ascii() {
+            if selected
+                .iter()
+                .all(|&prev: &usize| !chunks[prev].text.eq_ignore_ascii_case(text))
+            {
+                selected.push(index);
+            }
+            return selected.len() == limit;
+        }
+        let set = seen.get_or_insert_with(|| {
+            let mut s = HashSet::with_capacity(limit.saturating_mul(2));
+            for &prev in selected.iter() {
+                s.insert(lowercase(&chunks[prev].text));
+            }
+            s
+        });
+        if set.insert(lowercase(text)) {
             selected.push(index);
         }
+        selected.len() == limit
+    };
+    for &(index, _) in &scores[..cap] {
+        if try_select(index, &mut selected) {
+            return selected;
+        }
     }
-    if selected.len() < limit && scores.len() > cap {
-        scores[cap..].sort_unstable_by(cmp);
-        for &(index, _) in &scores[cap..] {
-            if seen.insert(lowercase(&chunks[index].text)) {
-                selected.push(index);
-                if selected.len() == limit {
-                    break;
-                }
+    let mut start = cap;
+    let mut window = (limit * 6).max(32);
+    while selected.len() < limit && start < scores.len() {
+        let rem = scores.len() - start;
+        let take = window.min(rem);
+        if rem > take {
+            scores[start..].select_nth_unstable_by(take - 1, cmp);
+        }
+        let end = start + take;
+        scores[start..end].sort_unstable_by(cmp);
+        for &(index, _) in &scores[start..end] {
+            if try_select(index, &mut selected) {
+                return selected;
             }
         }
+        start = end;
+        window = window.saturating_mul(2);
     }
     selected
 }
@@ -415,98 +483,879 @@ pub fn expand_with_slot_limit(
 '''
 
 
-def _fuse_projection(text):
-    start = "fn build_chunks(dom: &DomArena, max_words_per_chunk: usize, link_count: usize) -> Vec<Chunk> {"
-    finish = "    // Finish each owner's list after traversal; nested owners can revisit a link."
+def _transform_projection(text, *, fuse, btree):
+    if btree:
+        text = _replace(
+            text,
+            "use std::collections::HashMap;",
+            "use std::collections::{BTreeMap, HashMap};",
+        )
+    map_type = "BTreeMap<u64, u32>" if btree else "HashMap<u64, u32>"
+    map_init = "BTreeMap::new()" if btree else "HashMap::new()"
+    helpers = r'''fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64 ^ (bytes.len() as u64);
+    for &b in bytes {
+        h = (h ^ (b as u64)).wrapping_mul(0x100000001b3);
+    }
+    h ^ (h >> 32)
+}
+
+fn hash_pair(prefix: &[u8], suffix: &[u8]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64 ^ ((prefix.len() + suffix.len()) as u64);
+    for &b in prefix {
+        h = (h ^ (b as u64)).wrapping_mul(0x100000001b3);
+    }
+    for &b in suffix {
+        h = (h ^ (b as u64)).wrapping_mul(0x100000001b3);
+    }
+    h ^ (h >> 32)
+}
+
+fn is_simple_root_path(href: &str) -> bool {
+    let bytes = href.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'/' || (bytes.len() > 1 && bytes[1] == b'/') {
+        return false;
+    }
+    let mut seen_hash = false;
+    for &b in &bytes[1..] {
+        if b == b'#' {
+            if seen_hash {
+                return false;
+            }
+            seen_hash = true;
+        } else if !(b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_')) {
+            return false;
+        }
+    }
+    true
+}
+
+fn extract_base_origin(base: &Url) -> Option<&str> {
+    if base.scheme() == "https"
+        && base.username().is_empty()
+        && base.password().is_none()
+        && base.host_str().is_some()
+    {
+        let s = base.as_str();
+        let rest = &s[8..];
+        let end = 8 + rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        Some(&s[..end])
+    } else {
+        None
+    }
+}
+
+struct Draft {
+    parent: NodeId,
+    start_or_link: u32,
+    len: u32,
+    tag: Tag,
+}
+'''
+    if fuse:
+        builder = f'''struct ProjectionBuilder<'a> {{
+    base: &'a Url,
+    base_origin: Option<Option<&'a str>>,
+    limits: ParseLimits,
+    node_cap: usize,
+    text_cap: usize,
+    chunk_count: usize,
+    text: Vec<u8>,
+    drafts: Vec<Draft>,
+    link_ids: {map_type},
+    links: Vec<String>,
+    link_collisions: Vec<(String, u32)>,
+    raw_hrefs: Vec<u8>,
+    raw_cache: Vec<(u64, u32, u32, u32)>,
+    link_bytes: usize,
+}}
+
+impl<'a> ProjectionBuilder<'a> {{
+    fn with_capacity(
+        base: &'a Url,
+        limits: ParseLimits,
+        html_len: usize,
+        node_hint: usize,
+    ) -> Self {{
+        let max_drafts = limits.max_nodes.saturating_sub(1);
+        let node_cap = if node_hint > 0 {{
+            node_hint.min(max_drafts)
+        }} else if html_len < 128 {{
+            8.min(max_drafts)
+        }} else {{
+            (html_len / 24).clamp(16, 16_384).min(max_drafts)
+        }};
+        let text_cap = if html_len < 128 {{
+            html_len.min(limits.max_text_bytes)
+        }} else {{
+            (html_len - node_cap.saturating_mul(3).min(html_len / 2))
+                .clamp(64, 65_536)
+                .min(limits.max_text_bytes)
+        }};
+        Self {{
+            base,
+            base_origin: None,
+            limits,
+            node_cap,
+            text_cap,
+            chunk_count: 0,
+            text: Vec::new(),
+            drafts: Vec::new(),
+            link_ids: {map_init},
+            links: Vec::new(),
+            link_collisions: Vec::new(),
+            raw_hrefs: Vec::new(),
+            raw_cache: Vec::new(),
+            link_bytes: 0,
+        }}
+    }}
+
+    fn cache_raw_href(&mut self, raw_h: u64, href: &str, link_idx: u32) {{
+        if href.len() <= 256 {{
+            if self.raw_cache.is_empty() {{
+                self.raw_cache.resize(64, (0, 0, u32::MAX, NONE));
+                self.raw_hrefs.reserve(512);
+            }} else if self.raw_hrefs.len() + href.len() > 4096 {{
+                self.raw_hrefs.clear();
+                self.raw_cache.fill((0, 0, u32::MAX, NONE));
+            }}
+            let off = self.raw_hrefs.len() as u32;
+            let len = href.len() as u32;
+            self.raw_hrefs.extend_from_slice(href.as_bytes());
+            self.raw_cache[(raw_h as usize) & 63] = (raw_h, off, len, link_idx);
+        }}
+    }}
+
+    fn resolve_link(&mut self, href: &str) -> Result<u32, &'static str> {{
+        let raw_h = hash_bytes(href.as_bytes());
+        if !self.raw_cache.is_empty() {{
+            let (cached_h, off, len, cached_id) = self.raw_cache[(raw_h as usize) & 63];
+            if cached_h == raw_h
+                && len as usize == href.len()
+                && self
+                    .raw_hrefs
+                    .get(off as usize..(off.saturating_add(len)) as usize)
+                    == Some(href.as_bytes())
+            {{
+                return Ok(cached_id);
+            }}
+        }}
+        let origin = *self
+            .base_origin
+            .get_or_insert_with(|| extract_base_origin(self.base));
+        if let Some(origin) = origin
+            && is_simple_root_path(href)
+        {{
+            let total_len = origin.len() + href.len();
+            let url_h = hash_pair(origin.as_bytes(), href.as_bytes());
+            if let Some(&id) = self.link_ids.get(&url_h) {{
+                let existing = &self.links[id as usize];
+                if existing.len() == total_len
+                    && existing.starts_with(origin)
+                    && &existing[origin.len()..] == href
+                {{
+                    self.cache_raw_href(raw_h, href, id);
+                    return Ok(id);
+                }}
+                if let Some(&cid) = self.link_collisions.iter().find_map(|(u, idx)| {{
+                    (u.len() == total_len && u.starts_with(origin) && &u[origin.len()..] == href)
+                        .then_some(idx)
+                }}) {{
+                    self.cache_raw_href(raw_h, href, cid);
+                    return Ok(cid);
+                }}
+            }}
+            if total_len > self.limits.max_link_url_bytes
+                || total_len > self.limits.max_link_bytes.saturating_sub(self.link_bytes)
+            {{
+                return Err("resolved link byte budget exceeded");
+            }}
+            self.link_bytes += total_len;
+            let id = u32::try_from(self.links.len()).map_err(|_| "link ID overflow")?;
+            let mut resolved = String::with_capacity(total_len);
+            resolved.push_str(origin);
+            resolved.push_str(href);
+            if *self.link_ids.entry(url_h).or_insert(id) != id {{
+                self.link_collisions.push((resolved.clone(), id));
+            }}
+            self.links.push(resolved);
+            self.cache_raw_href(raw_h, href, id);
+            return Ok(id);
+        }}
+        let mut link_idx = NONE;
+        if let Ok(target) = self.base.join(href)
+            && target.scheme() == "https"
+            && target.username().is_empty()
+            && target.password().is_none()
+        {{
+            let target_str = target.as_str();
+            let url_h = hash_bytes(target_str.as_bytes());
+            if let Some(&id) = self.link_ids.get(&url_h) {{
+                if self.links[id as usize] == target_str {{
+                    link_idx = id;
+                }} else if let Some(&cid) = self
+                    .link_collisions
+                    .iter()
+                    .find_map(|(u, idx)| (u == target_str).then_some(idx))
+                {{
+                    link_idx = cid;
+                }}
+            }}
+            if link_idx == NONE {{
+                if target_str.len() > self.limits.max_link_url_bytes
+                    || target_str.len() > self.limits.max_link_bytes.saturating_sub(self.link_bytes)
+                {{
+                    return Err("resolved link byte budget exceeded");
+                }}
+                self.link_bytes += target_str.len();
+                link_idx = u32::try_from(self.links.len()).map_err(|_| "link ID overflow")?;
+                let owned: String = target.into();
+                if *self.link_ids.entry(url_h).or_insert(link_idx) != link_idx {{
+                    self.link_collisions.push((owned.clone(), link_idx));
+                }}
+                self.links.push(owned);
+            }}
+        }}
+        self.cache_raw_href(raw_h, href, link_idx);
+        Ok(link_idx)
+    }}
+
+    fn add_element(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        href: Option<&str>,
+    ) -> Result<NodeId, &'static str> {{
+        if self.drafts.len() >= self.limits.max_nodes - 1 {{
+            return Err("max DOM nodes exceeded");
+        }}
+        if self.drafts.is_empty() && self.node_cap > 0 {{
+            self.drafts.reserve(self.node_cap);
+        }}
+        let t = tag(name);
+        let link_idx = if t == Tag::A
+            && let Some(href) = href
+        {{
+            self.resolve_link(href)?
+        }} else {{
+            NONE
+        }};
+        if role(t).is_some() {{
+            self.chunk_count += 1;
+        }}
+        let id = u32::try_from(self.drafts.len() + 1).map_err(|_| "node ID overflow")?;
+        self.drafts.push(Draft {{
+            parent,
+            start_or_link: link_idx,
+            len: 0,
+            tag: t,
+        }});
+        Ok(id)
+    }}
+
+    fn add_text(&mut self, parent: NodeId, value: &str) -> Result<(), &'static str> {{
+        if value.is_empty() {{
+            return Ok(());
+        }}
+        if self.drafts.len() >= self.limits.max_nodes - 1 {{
+            return Err("max DOM nodes exceeded");
+        }}
+        if value.len() > self.limits.max_text_bytes.saturating_sub(self.text.len()) {{
+            return Err("decoded text byte budget exceeded");
+        }}
+        if self.drafts.is_empty() && self.node_cap > 0 {{
+            self.drafts.reserve(self.node_cap);
+        }}
+        if self.text.is_empty() && self.text_cap > 0 {{
+            self.text.reserve(self.text_cap.max(value.len()));
+        }}
+        let start = self.text.len() as u32;
+        self.text.extend_from_slice(value.as_bytes());
+        self.drafts.push(Draft {{
+            parent,
+            start_or_link: start,
+            len: value.len() as u32,
+            tag: Tag::Text,
+        }});
+        Ok(())
+    }}
+
+    fn finish(self, parse_warnings: usize) -> Result<Projection, &'static str> {{
+        let Self {{
+            limits,
+            chunk_count,
+            text,
+            drafts,
+            link_ids,
+            links,
+            link_collisions,
+            raw_hrefs,
+            raw_cache,
+            ..
+        }} = self;
+        drop(link_ids);
+        drop(link_collisions);
+        drop(raw_hrefs);
+        drop(raw_cache);
+        let mut chunk_owner = if chunk_count > 0 {{
+            vec![NONE; drafts.len() + 1]
+        }} else {{
+            Vec::new()
+        }};
+        let mut chunks = Vec::<Chunk>::with_capacity(chunk_count);
+        let mut has_many_links = false;
+        let mut dom = DomArena::new(Bytes::from(text), drafts.len() + 1);
+        for (i, draft) in drafts.into_iter().enumerate() {{
+            let range = if draft.tag == Tag::Text {{
+                Some((draft.start_or_link as usize, draft.len as usize))
+            }} else {{
+                None
+            }};
+            let idx = dom
+                .append_child(draft.parent, draft.tag, range)
+                .map_err(|_| "DOM arena capacity/depth/range error")?;
+            debug_assert_eq!(idx as usize, i + 1);
+            if draft.tag != Tag::Text && draft.start_or_link != NONE {{
+                dom.set_attribute_id(idx, draft.start_or_link)
+                    .map_err(|_| "invalid link index")?;
+            }}
+            if chunk_count > 0 {{
+                let inherited = chunk_owner[draft.parent as usize];
+                let owner = if let Some(kind) = role(draft.tag) {{
+                    let index = chunks.len() as u32;
+                    chunks.push(Chunk {{
+                        node: idx,
+                        role: kind,
+                        text: String::new(),
+                        links: Vec::new(),
+                    }});
+                    index
+                }} else {{
+                    inherited
+                }};
+                chunk_owner[idx as usize] = owner;
+                if owner != NONE {{
+                    if draft.tag == Tag::Text
+                        && let Ok(segment) = dom.raw_text(idx)
+                    {{
+                        chunks[owner as usize].text.push_str(segment);
+                    }}
+                    if draft.tag == Tag::A && draft.start_or_link != NONE {{
+                        let clinks = &mut chunks[owner as usize].links;
+                        let link_id = draft.start_or_link;
+                        if clinks.len() < 8 {{
+                            if !clinks.contains(&link_id) {{
+                                clinks.push(link_id);
+                            }}
+                        }} else if clinks.last() != Some(&link_id) {{
+                            clinks.push(link_id);
+                            has_many_links = true;
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        drop(chunk_owner);
+        let chunks = build_chunks_fused(
+            chunks,
+            limits.max_words_per_chunk,
+            links.len(),
+            has_many_links,
+        );
+        Ok(Projection {{
+            dom,
+            chunks,
+            links,
+            parse_warnings,
+        }})
+    }}
+}}
+
+'''
+    else:
+        builder = f'''struct ProjectionBuilder<'a> {{
+    base: &'a Url,
+    base_origin: Option<Option<&'a str>>,
+    limits: ParseLimits,
+    node_cap: usize,
+    text_cap: usize,
+    text: Vec<u8>,
+    drafts: Vec<Draft>,
+    link_ids: {map_type},
+    links: Vec<String>,
+    link_collisions: Vec<(String, u32)>,
+    raw_hrefs: Vec<u8>,
+    raw_cache: Vec<(u64, u32, u32, u32)>,
+    link_bytes: usize,
+}}
+
+impl<'a> ProjectionBuilder<'a> {{
+    fn with_capacity(
+        base: &'a Url,
+        limits: ParseLimits,
+        html_len: usize,
+        node_hint: usize,
+    ) -> Self {{
+        let max_drafts = limits.max_nodes.saturating_sub(1);
+        let node_cap = if node_hint > 0 {{
+            node_hint.min(max_drafts)
+        }} else if html_len < 128 {{
+            8.min(max_drafts)
+        }} else {{
+            (html_len / 24).clamp(16, 16_384).min(max_drafts)
+        }};
+        let text_cap = if html_len < 128 {{
+            html_len.min(limits.max_text_bytes)
+        }} else {{
+            (html_len - node_cap.saturating_mul(3).min(html_len / 2))
+                .clamp(64, 65_536)
+                .min(limits.max_text_bytes)
+        }};
+        Self {{
+            base,
+            base_origin: None,
+            limits,
+            node_cap,
+            text_cap,
+            text: Vec::new(),
+            drafts: Vec::new(),
+            link_ids: {map_init},
+            links: Vec::new(),
+            link_collisions: Vec::new(),
+            raw_hrefs: Vec::new(),
+            raw_cache: Vec::new(),
+            link_bytes: 0,
+        }}
+    }}
+
+    fn cache_raw_href(&mut self, raw_h: u64, href: &str, link_idx: u32) {{
+        if href.len() <= 256 {{
+            if self.raw_cache.is_empty() {{
+                self.raw_cache.resize(64, (0, 0, u32::MAX, NONE));
+                self.raw_hrefs.reserve(512);
+            }} else if self.raw_hrefs.len() + href.len() > 4096 {{
+                self.raw_hrefs.clear();
+                self.raw_cache.fill((0, 0, u32::MAX, NONE));
+            }}
+            let off = self.raw_hrefs.len() as u32;
+            let len = href.len() as u32;
+            self.raw_hrefs.extend_from_slice(href.as_bytes());
+            self.raw_cache[(raw_h as usize) & 63] = (raw_h, off, len, link_idx);
+        }}
+    }}
+
+    fn resolve_link(&mut self, href: &str) -> Result<u32, &'static str> {{
+        let raw_h = hash_bytes(href.as_bytes());
+        if !self.raw_cache.is_empty() {{
+            let (cached_h, off, len, cached_id) = self.raw_cache[(raw_h as usize) & 63];
+            if cached_h == raw_h
+                && len as usize == href.len()
+                && self
+                    .raw_hrefs
+                    .get(off as usize..(off.saturating_add(len)) as usize)
+                    == Some(href.as_bytes())
+            {{
+                return Ok(cached_id);
+            }}
+        }}
+        let origin = *self
+            .base_origin
+            .get_or_insert_with(|| extract_base_origin(self.base));
+        if let Some(origin) = origin
+            && is_simple_root_path(href)
+        {{
+            let total_len = origin.len() + href.len();
+            let url_h = hash_pair(origin.as_bytes(), href.as_bytes());
+            if let Some(&id) = self.link_ids.get(&url_h) {{
+                let existing = &self.links[id as usize];
+                if existing.len() == total_len
+                    && existing.starts_with(origin)
+                    && &existing[origin.len()..] == href
+                {{
+                    self.cache_raw_href(raw_h, href, id);
+                    return Ok(id);
+                }}
+                if let Some(&cid) = self.link_collisions.iter().find_map(|(u, idx)| {{
+                    (u.len() == total_len && u.starts_with(origin) && &u[origin.len()..] == href)
+                        .then_some(idx)
+                }}) {{
+                    self.cache_raw_href(raw_h, href, cid);
+                    return Ok(cid);
+                }}
+            }}
+            if total_len > self.limits.max_link_url_bytes
+                || total_len > self.limits.max_link_bytes.saturating_sub(self.link_bytes)
+            {{
+                return Err("resolved link byte budget exceeded");
+            }}
+            self.link_bytes += total_len;
+            let id = u32::try_from(self.links.len()).map_err(|_| "link ID overflow")?;
+            let mut resolved = String::with_capacity(total_len);
+            resolved.push_str(origin);
+            resolved.push_str(href);
+            if *self.link_ids.entry(url_h).or_insert(id) != id {{
+                self.link_collisions.push((resolved.clone(), id));
+            }}
+            self.links.push(resolved);
+            self.cache_raw_href(raw_h, href, id);
+            return Ok(id);
+        }}
+        let mut link_idx = NONE;
+        if let Ok(target) = self.base.join(href)
+            && target.scheme() == "https"
+            && target.username().is_empty()
+            && target.password().is_none()
+        {{
+            let target_str = target.as_str();
+            let url_h = hash_bytes(target_str.as_bytes());
+            if let Some(&id) = self.link_ids.get(&url_h) {{
+                if self.links[id as usize] == target_str {{
+                    link_idx = id;
+                }} else if let Some(&cid) = self
+                    .link_collisions
+                    .iter()
+                    .find_map(|(u, idx)| (u == target_str).then_some(idx))
+                {{
+                    link_idx = cid;
+                }}
+            }}
+            if link_idx == NONE {{
+                if target_str.len() > self.limits.max_link_url_bytes
+                    || target_str.len() > self.limits.max_link_bytes.saturating_sub(self.link_bytes)
+                {{
+                    return Err("resolved link byte budget exceeded");
+                }}
+                self.link_bytes += target_str.len();
+                link_idx = u32::try_from(self.links.len()).map_err(|_| "link ID overflow")?;
+                let owned: String = target.into();
+                if *self.link_ids.entry(url_h).or_insert(link_idx) != link_idx {{
+                    self.link_collisions.push((owned.clone(), link_idx));
+                }}
+                self.links.push(owned);
+            }}
+        }}
+        self.cache_raw_href(raw_h, href, link_idx);
+        Ok(link_idx)
+    }}
+
+    fn add_element(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        href: Option<&str>,
+    ) -> Result<NodeId, &'static str> {{
+        if self.drafts.len() >= self.limits.max_nodes - 1 {{
+            return Err("max DOM nodes exceeded");
+        }}
+        if self.drafts.is_empty() && self.node_cap > 0 {{
+            self.drafts.reserve(self.node_cap);
+        }}
+        let t = tag(name);
+        let link_idx = if t == Tag::A
+            && let Some(href) = href
+        {{
+            self.resolve_link(href)?
+        }} else {{
+            NONE
+        }};
+        let id = u32::try_from(self.drafts.len() + 1).map_err(|_| "node ID overflow")?;
+        self.drafts.push(Draft {{
+            parent,
+            start_or_link: link_idx,
+            len: 0,
+            tag: t,
+        }});
+        Ok(id)
+    }}
+
+    fn add_text(&mut self, parent: NodeId, value: &str) -> Result<(), &'static str> {{
+        if value.is_empty() {{
+            return Ok(());
+        }}
+        if self.drafts.len() >= self.limits.max_nodes - 1 {{
+            return Err("max DOM nodes exceeded");
+        }}
+        if value.len() > self.limits.max_text_bytes.saturating_sub(self.text.len()) {{
+            return Err("decoded text byte budget exceeded");
+        }}
+        if self.drafts.is_empty() && self.node_cap > 0 {{
+            self.drafts.reserve(self.node_cap);
+        }}
+        if self.text.is_empty() && self.text_cap > 0 {{
+            self.text.reserve(self.text_cap.max(value.len()));
+        }}
+        let start = self.text.len() as u32;
+        self.text.extend_from_slice(value.as_bytes());
+        self.drafts.push(Draft {{
+            parent,
+            start_or_link: start,
+            len: value.len() as u32,
+            tag: Tag::Text,
+        }});
+        Ok(())
+    }}
+
+    fn finish(self, parse_warnings: usize) -> Result<Projection, &'static str> {{
+        let Self {{
+            limits,
+            text,
+            drafts,
+            link_ids,
+            links,
+            link_collisions,
+            raw_hrefs,
+            raw_cache,
+            ..
+        }} = self;
+        drop(link_ids);
+        drop(link_collisions);
+        drop(raw_hrefs);
+        drop(raw_cache);
+        let mut dom = DomArena::new(Bytes::from(text), drafts.len() + 1);
+        for (i, draft) in drafts.into_iter().enumerate() {{
+            let range = if draft.tag == Tag::Text {{
+                Some((draft.start_or_link as usize, draft.len as usize))
+            }} else {{
+                None
+            }};
+            let idx = dom
+                .append_child(draft.parent, draft.tag, range)
+                .map_err(|_| "DOM arena capacity/depth/range error")?;
+            debug_assert_eq!(idx as usize, i + 1);
+            if draft.tag != Tag::Text && draft.start_or_link != NONE {{
+                dom.set_attribute_id(idx, draft.start_or_link)
+                    .map_err(|_| "invalid link index")?;
+            }}
+        }}
+        let chunks = build_chunks(&dom, limits.max_words_per_chunk, links.len());
+        Ok(Projection {{
+            dom,
+            chunks,
+            links,
+            parse_warnings,
+        }})
+    }}
+}}
+
+'''
     text = _region(
         text,
-        start,
-        finish,
-        "fn finish_chunks(\n"
-        "    mut chunks: Vec<Chunk>,\n"
-        "    max_words_per_chunk: usize,\n"
-        "    link_count: usize,\n"
-        ") -> Vec<Chunk> {\n",
+        "struct Draft {",
+        "#[cfg(feature = \"research-probes\")]\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum ResearchNodeKind {",
+        helpers + "\n" + builder,
     )
-    text = _replace(
-        text,
-        "        chunk.links.retain(|&id| {\n"
-        "            let previous = &mut last_owner[id as usize];\n"
-        "            if *previous == chunk.node {\n"
-        "                return false;\n"
-        "            }\n"
-        "            *previous = chunk.node;\n"
-        "            true\n"
-        "        });",
-        "        if chunk.links.len() > 1 {\n"
-        "            chunk.links.retain(|&id| {\n"
-        "                let previous = &mut last_owner[id as usize];\n"
-        "                if *previous == chunk.node {\n"
-        "                    return false;\n"
-        "                }\n"
-        "                *previous = chunk.node;\n"
-        "                true\n"
-        "            });\n"
-        "        }",
-    )
-    text = _replace(
-        text,
-        "            let mut normalized = String::new();",
-        "            let mut normalized = String::with_capacity(chunk.text.len());",
-    )
-    text = _replace(
-        text,
-        "        let mut dom = DomArena::new(Bytes::from(self.text), self.drafts.len() + 1);",
-        "        let mut chunk_owner = vec![None; self.drafts.len() + 1];\n"
-        "        let mut chunks = Vec::<Chunk>::new();\n"
-        "        let mut dom = DomArena::new(Bytes::from(self.text), self.drafts.len() + 1);",
-    )
-    text = _replace(
-        text,
-        '''        for (i, draft) in self.drafts.into_iter().enumerate() {
-            let idx = dom
-                .append_child(draft.parent, draft.tag, draft.range)
-                .map_err(|_| "DOM arena capacity/depth/range error")?;
-            debug_assert_eq!(idx as usize, i + 1);
-            if draft.link_idx != NONE {
-                dom.set_attribute_id(idx, draft.link_idx)
-                    .map_err(|_| "invalid link index")?;
+    if fuse:
+        finish_chunks_fn = r'''fn is_clean_single_spaced(bytes: &[u8], max_words: usize) -> bool {
+    if bytes.is_empty() || max_words == 0 {
+        return false;
+    }
+    let mut words = 0usize;
+    let mut in_word = false;
+    for &b in bytes {
+        if b == b' ' {
+            if !in_word {
+                return false;
             }
+            in_word = false;
+        } else if b <= b' ' || b >= 0x80 {
+            if b.is_ascii_whitespace() || b >= 0x80 {
+                return false;
+            }
+            if !in_word {
+                words += 1;
+                if words > max_words {
+                    return false;
+                }
+                in_word = true;
+            }
+        } else if !in_word {
+            words += 1;
+            if words > max_words {
+                return false;
+            }
+            in_word = true;
         }
-        let chunks = build_chunks(&dom, self.limits.max_words_per_chunk, links.len());''',
-        '''        for (i, draft) in self.drafts.into_iter().enumerate() {
-            let idx = dom
-                .append_child(draft.parent, draft.tag, draft.range)
-                .map_err(|_| "DOM arena capacity/depth/range error")?;
-            debug_assert_eq!(idx as usize, i + 1);
-            if draft.link_idx != NONE {
-                dom.set_attribute_id(idx, draft.link_idx)
-                    .map_err(|_| "invalid link index")?;
-            }
-            let inherited = chunk_owner[draft.parent as usize];
-            let owner = if let Some(kind) = role(draft.tag) {
-                let index = chunks.len();
-                chunks.push(Chunk {
-                    node: idx,
-                    role: kind,
-                    text: String::new(),
-                    links: Vec::new(),
+    }
+    in_word
+}
+
+fn build_chunks_fused(
+    mut chunks: Vec<Chunk>,
+    max_words_per_chunk: usize,
+    link_count: usize,
+    has_many_links: bool,
+) -> Vec<Chunk> {
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+    if has_many_links {
+        let mut last_owner = vec![0u32; link_count];
+        for chunk in &mut chunks {
+            if chunk.links.len() > 8 {
+                chunk.links.retain(|&id| {
+                    let previous = &mut last_owner[id as usize];
+                    if *previous == chunk.node {
+                        return false;
+                    }
+                    *previous = chunk.node;
+                    true
                 });
-                Some(index)
-            } else {
-                inherited
-            };
-            chunk_owner[idx as usize] = owner;
-            if let Some(index) = owner {
-                if draft.tag == Tag::Text\n                    && let Ok(segment) = dom.raw_text(idx)\n                {
-                    chunks[index].text.push_str(segment);
-                }
-                if draft.tag == Tag::A && draft.link_idx != NONE {
-                    chunks[index].links.push(draft.link_idx);
-                }
             }
         }
-        let chunks = finish_chunks(chunks, self.limits.max_words_per_chunk, links.len());''',
+    }
+    for chunk in &mut chunks {
+        if chunk.role == "preformatted" {
+            if let Some(excluded) = chunk.text.split_whitespace().nth(max_words_per_chunk) {
+                let start = excluded.as_ptr() as usize - chunk.text.as_ptr() as usize;
+                let end = chunk.text[..start].trim_end().len();
+                chunk.text.truncate(end);
+                if chunk.text.capacity() > chunk.text.len().saturating_add(128) {
+                    chunk.text.shrink_to_fit();
+                }
+            }
+        } else if !is_clean_single_spaced(chunk.text.as_bytes(), max_words_per_chunk) {
+            let mut normalized = String::with_capacity(
+                chunk
+                    .text
+                    .trim()
+                    .len()
+                    .min(max_words_per_chunk.saturating_mul(8)),
+            );
+            for word in chunk.text.split_whitespace().take(max_words_per_chunk) {
+                if !normalized.is_empty() {
+                    normalized.push(' ');
+                }
+                normalized.push_str(word);
+            }
+            chunk.text = normalized;
+        }
+    }
+    chunks.retain(|c| !c.text.is_empty());
+    chunks
+}
+
+'''
+        text = _region(
+            text,
+            "fn build_chunks(dom: &DomArena, max_words_per_chunk: usize, link_count: usize) -> Vec<Chunk> {",
+            "pub fn parse_html(",
+            finish_chunks_fn,
+        )
+    text = _replace(
+        text,
+        '''    let mut builder = ProjectionBuilder::new(base, limits);
+    let mut stack = vec![(parsed.tree.root(), 0u32)];
+    while let Some((node, parent)) = stack.pop() {
+        let mut next_parent = parent;
+        let mut visit_children = true;
+        match node.value() {
+            HtmlNode::Element(el) => {
+                if skip_subtree(el.name()) {
+                    visit_children = false;
+                } else {
+                    next_parent = builder.add_element(parent, el.name(), el.attr("href"))?;
+                }
+            }
+            HtmlNode::Text(content) => {
+                builder.add_text(parent, content.text.as_ref())?;
+                visit_children = false;
+            }
+            _ => {}
+        }
+        if visit_children {
+            // Stack-based traversal prevents source-controlled call-stack recursion.
+            for child in node.children().rev() {
+                stack.push((child, next_parent));
+            }
+        }
+    }
+    builder.finish(parse_warnings)''',
+        '''    let mut builder = ProjectionBuilder::with_capacity(base, limits, html.len(), parsed.tree.values().len());
+    let mut stack = Vec::with_capacity(if html.len() < 128 { 4 } else { 64 });
+    stack.push((parsed.tree.root(), 0u32));
+    while let Some((node, parent)) = stack.pop() {
+        let mut next_parent = parent;
+        let mut visit_children = true;
+        match node.value() {
+            HtmlNode::Element(el) => {
+                let name = el.name();
+                if skip_subtree(name) {
+                    visit_children = false;
+                } else {
+                    let href = if name == "a" { el.attr("href") } else { None };
+                    next_parent = builder.add_element(parent, name, href)?;
+                }
+            }
+            HtmlNode::Text(content) => {
+                builder.add_text(parent, content.text.as_ref())?;
+                visit_children = false;
+            }
+            _ => {}
+        }
+        if visit_children {
+            // Stack-based traversal prevents source-controlled call-stack recursion.
+            for child in node.children().rev() {
+                stack.push((child, next_parent));
+            }
+        }
+    }
+    drop(stack);
+    builder.finish(parse_warnings)''',
+    )
+    text = _replace(
+        text,
+        '''    let mut builder = ProjectionBuilder::new(base, limits);
+    let mut projected_ids = vec![0u32; nodes.len()];
+    let mut suppressed = vec![false; nodes.len()];
+    for (index, node) in nodes.iter().enumerate() {
+        let parent_index = match node.parent {
+            Some(parent) if parent < index => Some(parent),
+            Some(_) => return Err("invalid research parser tree"),
+            None => None,
+        };
+        let parent_id = parent_index.map_or(0, |parent| projected_ids[parent]);
+        if parent_index.is_some_and(|parent| suppressed[parent]) {
+            suppressed[index] = true;
+            continue;
+        }
+
+        match node.kind {
+            ResearchNodeKind::Element => {
+                if skip_subtree(&node.name) {
+                    suppressed[index] = true;
+                } else {
+                    projected_ids[index] =
+                        builder.add_element(parent_id, &node.name, node.attr("href"))?;
+                }
+            }''',
+        '''    let mut builder = ProjectionBuilder::with_capacity(base, limits, html_len, nodes.len());
+    let mut projected_ids = vec![0u32; nodes.len()];
+    let mut suppressed = vec![false; nodes.len()];
+    for (index, node) in nodes.iter().enumerate() {
+        let parent_index = match node.parent {
+            Some(parent) if parent < index => Some(parent),
+            Some(_) => return Err("invalid research parser tree"),
+            None => None,
+        };
+        let parent_id = parent_index.map_or(0, |parent| projected_ids[parent]);
+        if parent_index.is_some_and(|parent| suppressed[parent]) {
+            suppressed[index] = true;
+            continue;
+        }
+
+        match node.kind {
+            ResearchNodeKind::Element => {
+                if skip_subtree(&node.name) {
+                    suppressed[index] = true;
+                } else {
+                    let href = if node.name == "a" {
+                        node.attr("href")
+                    } else {
+                        None
+                    };
+                    projected_ids[index] = builder.add_element(parent_id, &node.name, href)?;
+                }
+            }''',
     )
     return text
 
@@ -558,6 +1407,34 @@ def transform(files, variant_id):
                 )
             ),
         )
+    if "lookup" in factors or "selection" in factors:
+        edit(
+            "src/rank.rs",
+            lambda text: _replace(
+                text,
+                "fn lowercase(word: &str) -> Cow<'_, str> {\n"
+                "    if word\n"
+                "        .bytes()\n"
+                "        .all(|b| b.is_ascii() && !b.is_ascii_uppercase())\n"
+                "    {\n"
+                "        Cow::Borrowed(word)\n"
+                "    } else {\n"
+                "        Cow::Owned(word.to_lowercase())\n"
+                "    }\n"
+                "}",
+                "fn lowercase(word: &str) -> Cow<'_, str> {\n"
+                "    if word.is_ascii() {\n"
+                "        if word.bytes().all(|b| !b.is_ascii_uppercase()) {\n"
+                "            Cow::Borrowed(word)\n"
+                "        } else {\n"
+                "            Cow::Owned(word.to_ascii_lowercase())\n"
+                "        }\n"
+                "    } else {\n"
+                "        Cow::Owned(word.to_lowercase())\n"
+                "    }\n"
+                "}",
+            ),
+        )
     if "lookup" in factors:
         def lookup(text):
             text = _replace(text, "use std::collections::{HashMap, HashSet};", "use std::collections::HashSet;")
@@ -590,7 +1467,9 @@ def transform(files, variant_id):
                     "        for (idx, term) in terms.iter().enumerate() {\n"
                     "            let mut h = term.len();\n"
                     "            for &byte in term.as_bytes() {\n"
-                    "                h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(byte as usize);\n"
+                    "                h = h\n"
+                    "                    .wrapping_mul(0x517cc1b727220a95)\n"
+                    "                    .wrapping_add(byte as usize);\n"
                     "            }\n"
                     "            let mut slot = (h ^ (h >> 16)) & mask;\n"
                     "            while hash_slots[slot] != usize::MAX {\n"
@@ -620,7 +1499,9 @@ def transform(files, variant_id):
                 "                let mask = hash_slots.len() - 1;\n"
                 "                let mut h = bytes.len();\n"
                 "                for &byte in bytes {\n"
-                "                    h = h.wrapping_mul(0x517cc1b727220a95).wrapping_add(byte as usize);\n"
+                "                    h = h\n"
+                "                        .wrapping_mul(0x517cc1b727220a95)\n"
+                "                        .wrapping_add(byte as usize);\n"
                 "                }\n"
                 "                let mut slot = (h ^ (h >> 16)) & mask;\n"
                 "                loop {\n"
@@ -654,16 +1535,25 @@ def transform(files, variant_id):
                 "        }",
                 "            let raw = word.as_bytes();\n"
                 "            if (raw[0] < 128 && (first_mask[(raw[0] >> 6) as usize] & (1u64 << (raw[0] & 63))) == 0)\n"
-                "                || (raw[raw.len() - 1] < 128 && (last_mask[(raw[raw.len() - 1] >> 6) as usize] & (1u64 << (raw[raw.len() - 1] & 63))) == 0)\n"
-                "                || (!(min_len..=max_len).contains(&raw.len()) && word.is_ascii())\n"
+                "                || (raw[raw.len() - 1] < 128\n"
+                "                    && (last_mask[(raw[raw.len() - 1] >> 6) as usize]\n"
+                "                        & (1u64 << (raw[raw.len() - 1] & 63)))\n"
+                "                        == 0)\n"
                 "            {\n"
+                "                continue;\n"
+                "            }\n"
+                "            let is_ascii = word.is_ascii();\n"
+                "            if is_ascii && !(min_len..=max_len).contains(&raw.len()) {\n"
                 "                continue;\n"
                 "            }\n"
                 "            let key = lowercase(word);\n"
                 "            let bytes = key.as_bytes();\n"
-                "            if !(min_len..=max_len).contains(&bytes.len())\n"
-                "                || (first_mask[(bytes[0] >> 6) as usize] & (1u64 << (bytes[0] & 63))) == 0\n"
-                "                || (last_mask[(bytes[bytes.len() - 1] >> 6) as usize] & (1u64 << (bytes[bytes.len() - 1] & 63))) == 0\n"
+                "            if !is_ascii\n"
+                "                && (!(min_len..=max_len).contains(&bytes.len())\n"
+                "                    || (first_mask[(bytes[0] >> 6) as usize] & (1u64 << (bytes[0] & 63))) == 0\n"
+                "                    || (last_mask[(bytes[bytes.len() - 1] >> 6) as usize]\n"
+                "                        & (1u64 << (bytes[bytes.len() - 1] & 63)))\n"
+                "                        == 0)\n"
                 "            {\n"
                 "                continue;\n"
                 "            }\n"
@@ -683,21 +1573,23 @@ def transform(files, variant_id):
                 "        }\n"
                 "        lengths.push(length);",
             )
-            if "selection" not in factors:
-                text = _replace(text, "pub fn bm25(", "#[inline(never)]\npub fn bm25(")
-                text = _replace(text, "pub fn highlight_indices(", "#[inline(never)]\npub fn highlight_indices(")
             return text
         edit("src/rank.rs", lookup)
     if "selection" in factors:
         def select(text):
-            text = _replace(text, "pub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {", "fn score_chunks(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {")
-            text = _replace(text, "    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}", "    scores\n}\n#[inline(never)]\npub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {\n    let mut scores = score_chunks(chunks, query, k1, b);\n    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}")
+            text = _replace(text, "pub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {", "#[inline(always)]\nfn score_chunks(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {")
+            text = _replace(text, "    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}", "    scores\n}\npub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {\n    let mut scores = score_chunks(chunks, query, k1, b);\n    scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));\n    scores\n}")
             return _region(text, "pub fn highlight_indices(", "#[cfg(test)]", _HEAP_SELECTION)
         edit("src/rank.rs", select)
-    if "projection" in factors:
-        edit("src/projection.rs", _fuse_projection)
-    if "links" in factors:
-        edit("src/projection.rs", lambda text: _replace(_replace(_replace(text, "use std::collections::HashMap;", "use std::collections::{BTreeMap, HashMap};"), "link_ids: HashMap<String, u32>,", "link_ids: BTreeMap<String, u32>,"), "link_ids: HashMap::new(),", "link_ids: BTreeMap::new(),"))
+    if "projection" in factors or "links" in factors:
+        edit(
+            "src/projection.rs",
+            lambda text: _transform_projection(
+                text,
+                fuse="projection" in factors,
+                btree="links" in factors,
+            ),
+        )
     if "table" in factors:
         edit("src/table.rs", lambda text: _region(text, "fn resize_row(", "#[cfg(test)]", _SPARSE_TABLE))
     return output

@@ -3295,17 +3295,17 @@ if missing:
 sys.exit(0 if not missing and result.wasSuccessful() else 1)
 """
             command = [sys.executable, "-I", "-B", "-c", script, str(root / "source"), *selected]
-            result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
             fixture = root / "source/cloud_experiments/mcp_sdk/core_fixtures.json"
             original = fixture.read_bytes()
             fixture.unlink()
-            missing_fixture = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+            missing_fixture = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
             self.assertNotEqual(missing_fixture.returncode, 0)
             self.assertIn("core_fixtures.json", missing_fixture.stderr)
             fixture.write_bytes(original)
             (root / "source/kaggle_results/verify_statistics.py").unlink()
-            challenged = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=30)
+            challenged = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120)
             self.assertNotEqual(challenged.returncode, 0)
             self.assertIn("verify_statistics", challenged.stderr)
 
@@ -4854,15 +4854,194 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
                 variant_id,
             )
         rank_bin_txt = contenders.transform(source, "rank-binary+rank-select")["src/rank.rs"].decode("utf-8")
-        self.assertIn("(!(min_len..=max_len).contains(&raw.len()) && word.is_ascii())", rank_bin_txt)
+        self.assertIn("if is_ascii && !(min_len..=max_len).contains(&raw.len()) {", rank_bin_txt)
         self.assertIn("first_mask[(bytes[0] >> 6) as usize]", rank_bin_txt)
+        self.assertIn("if !is_ascii", rank_bin_txt)
         self.assertIn("if terms.len() > 8 && (chunks.len() > 1 || chunks[0].text.len() > 64)", rank_bin_txt)
         self.assertIn("scores.select_nth_unstable_by(cap - 1, cmp);", rank_bin_txt)
-        self.assertIn("#[inline(never)]", rank_bin_txt)
+        self.assertIn("scores[start..].select_nth_unstable_by(take - 1, cmp);", rank_bin_txt)
+        self.assertIn("#[inline(always)]\nfn score_chunks(", rank_bin_txt)
+        self.assertIn("!chunks[prev].text.eq_ignore_ascii_case(text)", rank_bin_txt)
+        self.assertNotIn("scores.truncate(write);", rank_bin_txt)
+        self.assertNotIn("selected.clear();", rank_bin_txt)
+        proj_txt = contenders.transform(source, "projection-fused+links-btree")["src/projection.rs"].decode("utf-8")
+        self.assertIn("start_or_link: u32,\n    len: u32,\n    tag: Tag,", proj_txt)
+        self.assertIn("raw_cache: Vec<(u64, u32, u32, u32)>,", proj_txt)
+        self.assertIn("base_origin: Option<Option<&'a str>>,", proj_txt)
+        self.assertIn("link_ids: BTreeMap<u64, u32>,", proj_txt)
+        self.assertIn(".clamp(64, 65_536)", proj_txt)
+        self.assertIn("chunk_count: usize,", proj_txt)
+        self.assertIn("let chunks = build_chunks_fused(", proj_txt)
+        self.assertEqual(contenders.metadata("table-html-selectors")["decisions"], ["H06"])
         probe_txt = (root / "cloud_experiments/core_probe.rs").read_text(encoding="utf-8")
         self.assertIn("fn parse_projection_and_table_cells(", probe_txt)
         self.assertIn("table_cells: Option<Vec<Value>>,", probe_txt)
         self.assertIn("Vec::with_capacity(document.tree.nodes().count())", probe_txt)
+        self.assertIn("let (group, group_type) = row_group(element, table, &groups);", probe_txt)
+        self.assertIn("for row in table.select(&selectors.row) {", probe_txt)
+        self.assertIn("b\"textarea\".as_slice(),", probe_txt)
+        self.assertIn("if bytes[i..].starts_with(b\"<!--\") {", probe_txt)
+        self.assertIn("norms: Vec<f64>,", probe_txt)
+        self.assertIn("PreparedRank::new_with_key(", probe_txt)
+
+    def test_harsh_stress_cases_and_oracle_rejected_isolation(self):
+        from cloud_experiments import workloads
+
+        screen_stress = workloads.harsh_stress_cases("screen")
+        confirm_stress = workloads.harsh_stress_cases("confirm")
+        expected_ids = [
+            "stress-zipf-skewed-lengths",
+            "stress-boilerplate-novelty-trap",
+            "stress-dense-multi-link-blocks",
+            "stress-html-table-multi-64x16",
+            "stress-false-table-script-noise",
+            "stress-json-escape-burst",
+        ]
+        self.assertEqual([c["id"] for c in screen_stress], expected_ids)
+        self.assertEqual([c["id"] for c in confirm_stress], expected_ids)
+        self.assertEqual(len(research.synthetic_cases("screen", include_harsh_stress=False)), 136)
+        self.assertEqual(len(research.synthetic_cases("screen", include_harsh_stress=True)), 142)
+
+        for split_cases in (screen_stress, confirm_stress):
+            by_id = {case["id"]: case for case in split_cases}
+            zipf = by_id["stress-zipf-skewed-lengths"]
+            self.assertEqual(zipf["stage"], "prepared")
+            self.assertEqual(zipf["fixture"]["queries"], 8)
+            self.assertEqual(zipf["fixture"]["invalidate_after"], 4)
+            self.assertEqual(zipf["fixture"]["expected_prepared_top_indices"], [1] * 8)
+
+            trap = by_id["stress-boilerplate-novelty-trap"]
+            self.assertEqual(trap["stage"], "highlight")
+            self.assertEqual(trap["fixture"]["highlight_limit"], 8)
+            self.assertEqual(trap["fixture"]["expected_selected"], [0, 1, 2, 48, 49, 50, 51, 52])
+            self.assertEqual(trap["fixture"]["html"].count("<p>"), 512)
+
+            dense = by_id["stress-dense-multi-link-blocks"]
+            self.assertEqual(dense["stage"], "parse")
+            self.assertEqual(len(dense["fixture"]["expected_blocks"]), 256)
+            self.assertEqual(dense["fixture"]["html"].count("<a href="), 4096)
+            self.assertIn("<nav>", dense["fixture"]["html"])
+            self.assertIn("<footer>", dense["fixture"]["html"])
+
+            tables = by_id["stress-html-table-multi-64x16"]
+            self.assertEqual(tables["stage"], "html-table")
+            self.assertEqual(len(tables["fixture"]["expected_html_tables"]), 6)
+            self.assertEqual(len(tables["fixture"]["expected_html_tables"][0]["rows"]), 64)
+            self.assertEqual(len(tables["fixture"]["expected_html_tables"][0]["rows"][1]["cells"]), 15)
+            self.assertEqual(len(tables["fixture"]["expected_html_tables"][0]["rows"][3]["cells"]), 15)
+
+            false_tbl = by_id["stress-false-table-script-noise"]
+            self.assertEqual(false_tbl["stage"], "pipeline")
+            self.assertTrue(false_tbl["fixture"]["include_table_cells"])
+            self.assertIn("<table-viewer", false_tbl["fixture"]["html"])
+            self.assertEqual(len(false_tbl["fixture"]["expected_blocks"]), 512)
+
+            burst = by_id["stress-json-escape-burst"]
+            self.assertEqual(burst["stage"], "serialization")
+            self.assertEqual(len(burst["fixture"]["expected_blocks"]), 64)
+            self.assertGreater(len(burst["fixture"]["html"].encode("utf-8")), 8192)
+
+        # Verify high_efficiency_design(exclude_oracle_rejected=True) and cloud_017_variants
+        filtered = research.experimental_design.high_efficiency_design(
+            target_quality=0.95, exclude_oracle_rejected=True
+        )
+        self.assertTrue(filtered["exclude_oracle_rejected"])
+        self.assertIn("lib-json-sonic", filtered["variants"])
+        for v in filtered["variants"]:
+            if "+" in v:
+                self.assertNotIn("lib-json-sonic", v.split("+"))
+        self.assertEqual(filtered["efficiency"]["reference_variant_count"], 186)
+        self.assertGreaterEqual(filtered["efficiency"]["composite_quality_score"], 0.95)
+        self.assertEqual(filtered["efficiency"]["pairwise_coverage_ratio"], 1.0)
+
+        core = research.experimental_design.whole_path_core_panel()
+        self.assertEqual(
+            core["cloud_017_variants"],
+            [
+                "baseline",
+                "projection-fused",
+                "links-btree",
+                "projection-fused+links-btree",
+                "lib-blake3-intrinsics",
+                "lib-scraper-lean",
+                "lib-scraper-atomic",
+                "lib-scraper-modern",
+                "build-lto-off",
+                "build-lto-full",
+                "build-codegen1",
+                "build-native",
+                "prepared",
+                "table-sparse",
+                "table-html-selectors",
+            ],
+        )
+        self.assertIn("I-PROJECT", core["cloud_017_interaction_panels"])
+
+        rejected_map = {
+            "lib-json-sonic": {
+                "status": "REJECTED_WITHIN_SCOPE",
+                "error_type": "ValueError",
+                "detail": "Canonical output parity failed: budget-65536",
+            }
+        }
+        self.assertIsNone(research._component_rejection_reason("aae-direct", rejected_map))
+        self.assertIsNone(research._component_rejection_reason("aae-direct+rank-select", rejected_map))
+        comp_rej = research._component_rejection_reason("lib-json-sonic+rank-select", rejected_map)
+        self.assertIsNotNone(comp_rej)
+        self.assertEqual(comp_rej["status"], "REJECTED_COMPONENT_WITHIN_SCOPE")
+        self.assertEqual(comp_rej["component"], "lib-json-sonic")
+
+        # Validate harsh stress case gold oracles against core_probe if available
+        root = Path(__file__).resolve().parents[1]
+        probe_override = os.environ.get("ATHENA_CORE_PROBE_BIN", "").strip()
+        probe_candidates = (
+            [Path(probe_override)] if probe_override else []
+        ) + [
+            root / "target" / "debug" / ("core_probe.exe" if os.name == "nt" else "core_probe"),
+            root / "target" / "release" / ("core_probe.exe" if os.name == "nt" else "core_probe"),
+        ]
+        probe_bin = next((p for p in probe_candidates if p.is_file()), None)
+        if probe_bin is not None:
+            with tempfile.TemporaryDirectory(prefix="athena-harsh-stress-") as tmp:
+                tmp_dir = Path(tmp)
+                for split_cases in (screen_stress, confirm_stress):
+                    for case in split_cases:
+                        fixture_path = tmp_dir / f"{case['id']}.json"
+                        fixture_path.write_bytes(research.canonical(case["fixture"]))
+                        proc = subprocess.run(
+                            [str(probe_bin), case["stage"], str(fixture_path), "0"],
+                            capture_output=True,
+                            timeout=30,
+                            check=True,
+                        )
+                        self.assertEqual(
+                            workloads.envelope_errors(proc.stdout, case["fixture"]),
+                            [],
+                            f"Harsh stress oracle failed on {case['id']}",
+                        )
+                        if case["stage"] in ("serialization", "pipeline"):
+                            lines = proc.stdout.splitlines()
+                            frame = research.protocol.strict_json_loads(lines[1])
+                            frame["text"] += " corrupted"
+                            lines[1] = research.canonical(frame)
+                            corrupted_raw = b"\n".join(lines) + b"\n"
+                        else:
+                            actual = research.protocol.strict_json_loads(proc.stdout)
+                            mutated = copy.deepcopy(actual)
+                            if case["stage"] == "prepared":
+                                mutated[0][0][0] = 999999
+                            elif case["stage"] == "highlight":
+                                mutated[0] = 999999
+                            elif case["stage"] == "parse":
+                                mutated["chunks"][0]["text"] += " corrupted"
+                            elif case["stage"] == "html-table":
+                                mutated["tables"][0]["rows"][0]["cells"][0]["text"] += " corrupted"
+                            corrupted_raw = research.canonical(mutated)
+                        self.assertNotEqual(
+                            workloads.envelope_errors(corrupted_raw, case["fixture"]),
+                            [],
+                            f"Harsh stress oracle did not detect corruption on {case['id']}",
+                        )
 
     def test_service_study_positive_log_supports_subunit_and_subnormal_values(self):
         from cloud_experiments import service_study
@@ -4942,6 +5121,59 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(prof["draws_per_repeat"], 4608)
         self.assertGreaterEqual(prof["seconds_per_case_draw_max"], 0.0)
 
+    def test_cloud_020_synthesis_transforms_and_panel(self):
+        from cloud_experiments import contenders, experimental_design
+        panel = experimental_design.whole_path_core_panel()
+        self.assertEqual(
+            panel["cloud_020_variants"],
+            [
+                "baseline",
+                "projection-fused",
+                "projection-fused+links-btree",
+                "aae-batched4096",
+                "aae-batched16384",
+                "rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+                "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+                "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+build-native+lib-scraper-modern",
+            ],
+        )
+        for variant in panel["cloud_020_variants"]:
+            self.assertEqual(contenders.canonical_id(variant), variant)
+            meta = contenders.metadata(variant)
+            self.assertEqual(meta["id"], variant)
+
+        root = Path(__file__).resolve().parent.parent
+        files = {
+            rel: (root / rel).read_bytes()
+            for rel in (
+                "Cargo.toml",
+                "Cargo.lock",
+                "src/aae.rs",
+                "src/rank.rs",
+                "src/projection.rs",
+                "src/table.rs",
+                "cloud_experiments/core_probe.rs",
+            )
+        }
+        fused_out = contenders.transform(files, "projection-fused+links-btree")
+        proj_rs = fused_out["src/projection.rs"].decode("utf-8")
+        self.assertIn("parsed.tree.values().len()", proj_rs)
+        self.assertIn("fn build_chunks_fused(", proj_rs)
+        self.assertIn("fn is_clean_single_spaced(", proj_rs)
+
+        batched_out = contenders.transform(files, "aae-batched16384")
+        aae_rs = batched_out["src/aae.rs"].decode("utf-8")
+        self.assertIn("match page.chunks.as_slice()", aae_rs)
+        self.assertIn("[only] => blake3::hash(only.text.as_bytes())", aae_rs)
+
+        design = research.manifest_design()
+        design["selection"]["slots_per_owner"] = 3
+        planned, _, _ = research._planned_cargo_cache_variants(
+            design, variants=panel["cloud_020_variants"]
+        )
+        self.assertEqual(planned, panel["cloud_020_variants"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

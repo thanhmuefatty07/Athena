@@ -353,11 +353,41 @@ def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=256
     if not 1 <= min(lower_count, upper_count) <= max(lower_count, upper_count) <= 1024:
         raise ValueError("Bootstrap interval exceeds declared retained-tail bound")
     low, high = {q: [] for q in probabilities}, {q: [] for q in probabilities}
-    for deltas in _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline):
+    for deltas in _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline, yield_numpy=True):
         for q, values in deltas.items():
             low_q = low[q]
             high_q = high[q]
-            for value in values:
+            is_seq = isinstance(values, (list, tuple))
+            if len(low_q) == lower_count and len(high_q) == upper_count:
+                if is_seq:
+                    if values and min(values) < -low_q[0]:
+                        thresh_low = -low_q[0]
+                        for value in values:
+                            if value < thresh_low:
+                                heapq.heapreplace(low_q, -value)
+                                thresh_low = -low_q[0]
+                    if values and max(values) > high_q[0]:
+                        thresh_high = high_q[0]
+                        for value in values:
+                            if value > thresh_high:
+                                heapq.heapreplace(high_q, value)
+                                thresh_high = high_q[0]
+                else:
+                    if values.size and float(values.min()) < -low_q[0]:
+                        thresh_low = -low_q[0]
+                        for value in values[values < thresh_low].tolist():
+                            if value < thresh_low:
+                                heapq.heapreplace(low_q, -value)
+                                thresh_low = -low_q[0]
+                    if values.size and float(values.max()) > high_q[0]:
+                        thresh_high = high_q[0]
+                        for value in values[values > thresh_high].tolist():
+                            if value > thresh_high:
+                                heapq.heapreplace(high_q, value)
+                                thresh_high = high_q[0]
+                continue
+            seq_values = values if is_seq else values.tolist()
+            for value in seq_values:
                 if len(low_q) < lower_count:
                     heapq.heappush(low_q, -value)
                 elif value < -low_q[0]:
@@ -372,7 +402,7 @@ def bootstrap_intervals(rounds, probabilities, draws, seed, tail, batch_size=256
 _WEIGHT_CACHE = {}
 
 
-def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=None):
+def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=None, *, yield_numpy=False):
     """Same paired-block estimand/seed as native/1, bounded temporary weight batches."""
     if (type(draws) is not int or draws < 1 or not 1 <= batch_size <= 256
             or len(rounds) < 2 or not probabilities or sorted(set(probabilities)) != probabilities
@@ -385,6 +415,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         import numpy as np
     except ImportError:
         np = None
+    import tracemalloc
     count, rng = len(rounds), random.Random(seed)
     getrandbits = rng.getrandbits
     k_bits = count.bit_length()
@@ -415,7 +446,8 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
             arrays[arm] = values, groups, prefix_off, coarse_T
     positions = [round(q * (len(rounds) * next(iter(sizes)) - 1)) for q in probabilities]
     pos_array = np.asarray(positions, dtype=np.int32) if np is not None else None
-    use_cache = np is not None and count <= 255
+    pos_u8 = [np.uint8(p) for p in positions] if (np is not None and max(positions, default=0) <= 255) else None
+    use_cache = np is not None and count <= 255 and not tracemalloc.is_tracing()
     cache_key = (count, seed, batch_size) if use_cache else None
     cache_entry = None
     cached_batches = None
@@ -425,10 +457,60 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
         if cache_entry is None:
             if len(_WEIGHT_CACHE) >= 8:
                 _WEIGHT_CACHE.clear()
-            cache_entry = {"rng_state": rng.getstate(), "batches": []}
+            cache_entry = {"rng_state": rng.getstate(), "batches": [], "super_f32": []}
             _WEIGHT_CACHE[cache_key] = cache_entry
         cached_batches = cache_entry["batches"]
-    for batch_idx, start in enumerate(range(0, draws, batch_size)):
+    if (yield_numpy and use_cache and batch_size == 256 and arrays["baseline"][2] is None
+            and len(arrays["baseline"][0]) <= 255 and pos_u8 is not None):
+        arm_pt = {}
+        for arm, (values, groups, _, _) in arrays.items():
+            pref = np.zeros((len(values) + 1, count), dtype=np.float32)
+            pref[np.arange(1, len(values) + 1), groups] = 1.0
+            np.cumsum(pref, axis=0, out=pref)
+            arm_pt[arm] = (values, np.ascontiguousarray(pref[1:].T))
+        pos_f32 = [float(p) for p in positions]
+        full_batches = min(draws // batch_size, 65536)
+        if len(cached_batches) < full_batches:
+            rng.setstate(cache_entry["rng_state"])
+            for _ in range(len(cached_batches), full_batches):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
+                weights = []
+                for _ in range(batch_size):
+                    row = [0] * count
+                    for _ in range(count):
+                        v = getrandbits(k_bits)
+                        while v >= count:
+                            v = getrandbits(k_bits)
+                        row[v] += 1
+                    weights.append(row)
+                cached_batches.append(np.asarray(weights, dtype=np.uint8))
+            cache_entry["rng_state"] = rng.getstate()
+        super_f32 = cache_entry.setdefault("super_f32", [])
+        full_supers = len(cached_batches) // 8
+        while len(super_f32) < full_supers:
+            idx = len(super_f32) * 8
+            super_f32.append(np.concatenate(cached_batches[idx:idx + 8], axis=0).astype(np.float32))
+        vals_b, pt_b = arm_pt["baseline"]
+        vals_c, pt_c = arm_pt["candidate"]
+        done = 0
+        for s_idx in range(min(full_supers, draws // 2048)):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
+            w_f32 = super_f32[s_idx]
+            c_b = w_f32 @ pt_b
+            c_c = w_f32 @ pt_c
+            yield {
+                q: vals_c[(c_c > p).argmax(axis=1)] - vals_b[(c_b > p).argmax(axis=1)]
+                for q, p in zip(probabilities, pos_f32)
+            }
+            done += 2048
+        start_batch = done // batch_size
+        rng_synced = False
+    else:
+        start_batch = 0
+    for batch_idx in range(start_batch, (draws + batch_size - 1) // batch_size):
+        start = batch_idx * batch_size
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("Bootstrap analysis exceeded its admitted wall deadline")
         cur_batch = min(batch_size, draws - start)
@@ -451,16 +533,26 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                 weights.append(row)
             if use_cache:
                 weight_u8 = np.asarray(weights, dtype=np.uint8)
-                if cur_batch == batch_size and batch_idx == len(cached_batches) and batch_idx < 16384:
+                if cur_batch == batch_size and batch_idx == len(cached_batches) and batch_idx < 65536:
                     cached_batches.append(weight_u8)
                     cache_entry["rng_state"] = rng.getstate()
         if np is not None:
+            if arrays["baseline"][2] is None and weight_u8 is not None and len(arrays["baseline"][0]) <= 255 and pos_u8 is not None:
+                sampled_cols = {}
+                for arm, (values, groups, _, _) in arrays.items():
+                    cumulative = weight_u8[:, groups].cumsum(axis=1, dtype=np.uint8)
+                    sampled_cols[arm] = [values[(cumulative > p).argmax(axis=1)] for p in pos_u8]
+                yield {
+                    q: (cand_col - base_col) if yield_numpy else (cand_col - base_col).tolist()
+                    for q, base_col, cand_col in zip(probabilities, sampled_cols["baseline"], sampled_cols["candidate"])
+                }
+                continue
             weight_array = weight_u8.astype(np.int32) if weight_u8 is not None else np.asarray(weights, dtype=np.int32)
             weight_f32 = None
             sampled_np = {}
             for arm, (values, groups, prefix_off, coarse_T) in arrays.items():
                 if prefix_off is None:
-                    cumulative = weight_array[:, groups].cumsum(axis=1)
+                    cumulative = weight_array[:, groups].cumsum(axis=1, dtype=np.int32)
                     sampled_np[arm] = np.stack(
                         [values[(cumulative > p).argmax(axis=1)] for p in positions], axis=1
                     )
@@ -504,7 +596,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
 
 
 
-def synthetic_cases(split):
+def synthetic_cases(split, *, include_harsh_stress=False):
     """Finite causal partitions, with fresh bytes but no domain-generalization claim."""
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown fixture split")
@@ -563,7 +655,7 @@ def synthetic_cases(split):
     ):
         add("table-" + shape, "table", "", None, ["H06"], rows=rows, max_rows=512, max_cols=max_cols)
     from cloud_experiments import workloads
-    cases.extend(workloads.native_cases(split))
+    cases.extend(workloads.native_cases(split, include_harsh_stress=include_harsh_stress))
     return cases
 
 
@@ -703,12 +795,14 @@ def readiness(design, records):
             "result_authenticity": AUTHENTICITY}
 
 
-def study_cases(files, split):
+def study_cases(files, split, *, include_harsh_stress=False):
     from cloud_experiments import workloads
-    return synthetic_cases(split) + workloads.corpus_cases(files, split)
+    return synthetic_cases(split, include_harsh_stress=include_harsh_stress) + workloads.corpus_cases(files, split)
 
 
-def prepare(destination, corpus_manifest=None, wall_seconds=None):
+def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
+            screen_blocks=None, screen_iterations=None, confirm_blocks=None, confirm_iterations=None,
+            include_harsh_stress=False, slots_per_owner=None):
     from cloud_experiments import contenders, libraries, workloads
     destination = Path(destination)
 
@@ -736,10 +830,32 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None):
             if type(wall_seconds) is not int or not 1 <= wall_seconds <= 120 * 86400:
                 raise ValueError("Declare campaign duration before source/design freeze")
             design["limits"]["wall_seconds"] = wall_seconds
+        if screen_blocks is not None:
+            if type(screen_blocks) is not int or screen_blocks < 2:
+                raise ValueError("Invalid screening block count")
+            design["screen"]["blocks"] = screen_blocks
+        if screen_iterations is not None:
+            if type(screen_iterations) is not int or screen_iterations < 2:
+                raise ValueError("Invalid screening iteration count")
+            design["screen"]["iterations"] = screen_iterations
+        if confirm_blocks is not None:
+            if type(confirm_blocks) is not int or confirm_blocks < 20:
+                raise ValueError("Invalid confirmation block count")
+            design["confirm"]["blocks"] = confirm_blocks
+        if confirm_iterations is not None:
+            if type(confirm_iterations) is not int or not 1 <= confirm_iterations <= 250:
+                raise ValueError("Invalid confirmation iteration count")
+            design["confirm"]["iterations"] = confirm_iterations
+        if include_harsh_stress:
+            design["include_harsh_stress"] = True
+        if slots_per_owner is not None:
+            if type(slots_per_owner) is not int or not 1 <= slots_per_owner <= 16:
+                raise ValueError("Invalid selection slots_per_owner")
+            design["selection"]["slots_per_owner"] = slots_per_owner
         design.update(source_sha256=hashlib.sha256(archive).hexdigest(),
                       files={k: hashlib.sha256(v).hexdigest() for k, v in sorted(files.items())},
                       variants=contenders.definitions(),
-                      fixtures={split: fixture_inventory(study_cases(files, split), split)
+                      fixtures={split: fixture_inventory(study_cases(files, split, include_harsh_stress=include_harsh_stress), split)
                                 for split in ("screen", "confirm")},
                       library_dossier=libraries.dossier(ROOT),
                       corpus={"status": "NOT_PROVIDED"} if corpus is None else
@@ -760,30 +876,37 @@ def _materialize(workspace, files, variant, transformed=None):
     if attr_lookup != "vector":
         version = "0.40.1" if factors.get("html_library") == "modern" else "0.39.0"
         parser_study.materialize_vendor(files, workspace, version, attr_lookup)
+    def _write_if_changed(target, payload):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink() or not target.resolve().is_relative_to(workspace.resolve()):
+            raise ValueError("Work tree link/escape")
+        if not target.is_file() or target.read_bytes() != payload:
+            target.write_bytes(payload)
+
     for name, data in transformed.items():
         if name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml") or name.startswith(("src/", "tests/", "fixtures/")):
-            target = workspace / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.is_symlink() or not target.resolve().is_relative_to(workspace.resolve()):
-                raise ValueError("Work tree link/escape")
-            target.write_bytes(data)
+            _write_if_changed(workspace / name, data)
     for original in ("cloud_experiments/core_probe.rs", "cloud_experiments/mcp_sdk/task_inputs.json"):
         if original in transformed:
             target = workspace / original
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.is_symlink() or not target.resolve().is_relative_to(workspace.resolve()):
                 raise ValueError("Research probe target escaped the frozen work tree")
-            target.write_bytes(transformed[original])
+            if not target.is_file() or target.read_bytes() != transformed[original]:
+                target.write_bytes(transformed[original])
     original = "cloud_experiments/service_probe.rs"
     if original in transformed:
         target = workspace / "src/bin/service_probe.rs"
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_symlink() or not target.resolve().is_relative_to(workspace.resolve()):
             raise ValueError("Service probe target escaped the frozen work tree")
-        target.write_bytes(transformed[original])
+        if not target.is_file() or target.read_bytes() != transformed[original]:
+            target.write_bytes(transformed[original])
         transformed["src/bin/service_probe.rs"] = transformed[original]
     transformed["src/bin/research_probe.rs"] = files["kaggle_experiments/probe.rs"]
-    (workspace / "src/bin/research_probe.rs").write_bytes(transformed["src/bin/research_probe.rs"])
+    rp_target = workspace / "src/bin/research_probe.rs"
+    if not rp_target.is_file() or rp_target.read_bytes() != transformed["src/bin/research_probe.rs"]:
+        rp_target.write_bytes(transformed["src/bin/research_probe.rs"])
     return transformed
 
 
@@ -1138,7 +1261,10 @@ def _planned_cargo_cache_variants(design, *, variants=None, pilot_only=False):
     if design.get("native_design") != experimental_design.native_design():
         raise ValueError("Frozen combination design differs from the actual native executor")
     if variants is not None:
-        if not variants or len(set(variants)) != len(variants) or any(v not in all_variants for v in variants):
+        allowed_variants = set(all_variants) | set(
+            experimental_design.whole_path_core_panel().get("cloud_020_variants", ())
+        )
+        if not variants or len(set(variants)) != len(variants) or any(v not in allowed_variants for v in variants):
             raise ValueError("Unknown/duplicate selected experiment variant")
         all_variants = ["baseline", *[v for v in variants if v != "baseline"]]
     if len(all_variants) > design["limits"]["max_variants"]:
@@ -1405,22 +1531,31 @@ def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only
 
 
 def _prune_cargo_target_transients(target_cache):
-    """Reclaim transient incremental caches and linked debug test executables while keeping .rlib/.rmeta."""
+    """Reclaim transient incremental caches when disk is tight and prune excess linked debug test binaries."""
     root = Path(target_cache)
     if root.is_symlink() or not root.is_dir():
         return
-    for profile in ("debug", "release"):
-        prof_dir = root / profile
-        if prof_dir.is_symlink() or not prof_dir.is_dir():
-            continue
-        inc = prof_dir / "incremental"
-        if inc.is_dir() and not inc.is_symlink():
-            shutil.rmtree(inc, ignore_errors=True)
+    try:
+        low_disk = shutil.disk_usage(root).free < 25 * (1024 ** 3)
+    except OSError:
+        low_disk = True
+    if low_disk:
+        for profile in ("debug", "release"):
+            prof_dir = root / profile
+            if prof_dir.is_symlink() or not prof_dir.is_dir():
+                continue
+            inc = prof_dir / "incremental"
+            if inc.is_dir() and not inc.is_symlink():
+                shutil.rmtree(inc, ignore_errors=True)
     deps = root / "debug" / "deps"
     if deps.is_dir() and not deps.is_symlink():
-        for entry in deps.iterdir():
+        executables = [
+            entry for entry in deps.iterdir()
             if (entry.is_file() and not entry.is_symlink()
-                    and not entry.suffix and (entry.stat().st_mode & 0o111)):
+                and not entry.suffix and (entry.stat().st_mode & 0o111))
+        ]
+        if low_disk or len(executables) > 32:
+            for entry in executables:
                 entry.unlink(missing_ok=True)
 
 
@@ -1474,6 +1609,7 @@ def _build(run, workspace, files, variant, target_cache):
     run.save()
     build_started = time.monotonic()
     _prune_cargo_target_transients(target_cache)
+    release_jobs = "2" if definition["factors"].get("lto") == "full" else "4"
     with _cargo_environment(build, target_cache) as cargo_home:
         _assert_cargo_configuration_absent(workspace, cargo_home)
         run.run(["cargo", *process_isolation.CARGO_FETCH_ARGS], cwd=workspace, timeout=1200,
@@ -1485,14 +1621,14 @@ def _build(run, workspace, files, variant, target_cache):
         campaign.dependency_advisories(run, prebuild_graph)
         _run_isolated_cargo(run, ["cargo", "fmt", "--all"], cwd=workspace, timeout=300)
         _run_isolated_cargo(run, ["cargo", "fmt", "--all", "--", "--check"], cwd=workspace, timeout=300)
-        _run_isolated_cargo(run, ["cargo", "--offline", "test", "--locked", "--all-targets", *build["cargo_feature_args"], "-j", "2"], cwd=workspace, timeout=1200)
+        _run_isolated_cargo(run, ["cargo", "--offline", "test", "--locked", "--all-targets", *build["cargo_feature_args"], "-j", "4"], cwd=workspace, timeout=1200)
         wpt_receipt = None
         if _needs_wpt_report(variant, definition):
             wpt_receipt = _run_wpt_report(run, workspace, variant, definition)
         _prune_cargo_target_transients(target_cache)
-        _run_isolated_cargo(run, ["cargo", "--offline", "clippy", "--locked", "--all-targets", *build["cargo_feature_args"], "-j", "2", "--", "-D", "warnings"], cwd=workspace, timeout=1200)
+        _run_isolated_cargo(run, ["cargo", "--offline", "clippy", "--locked", "--all-targets", *build["cargo_feature_args"], "-j", "4", "--", "-D", "warnings"], cwd=workspace, timeout=1200)
         _prune_cargo_target_transients(target_cache)
-        _run_isolated_cargo(run, ["cargo", "--offline", "build", "--locked", "--release", "--bins", *build["cargo_feature_args"], "-j", "2"], cwd=workspace, timeout=1800)
+        _run_isolated_cargo(run, ["cargo", "--offline", "build", "--locked", "--release", "--bins", *build["cargo_feature_args"], "-j", release_jobs], cwd=workspace, timeout=1800)
         _prune_cargo_target_transients(target_cache)
     if (workspace / "Cargo.lock").read_bytes() != transformed["Cargo.lock"]:
         raise ValueError("Locked dependency graph changed")
@@ -1721,16 +1857,27 @@ def forecast_native(variants, phases, design, pilot, profile):
     owner_cases = {}
     variant_case_counts = []
     any_build_factor = False
+    composable_owners = set()
+    has_non_html_table_owner = any(
+        v != "baseline"
+        and contenders.metadata(v)["decisions"]
+        and contenders.metadata(v)["implementation_scopes"] != ["html_table_stage_only"]
+        for v in variants
+    )
     for variant in variants:
         if variant == "baseline":
             continue
         meta = contenders.metadata(variant)
+        if has_non_html_table_owner and meta["implementation_scopes"] == ["html_table_stage_only"]:
+            continue
         count = len(_variant_cases(variant, phases["confirm"]))
         owners = meta["decisions"]
         if count > 0 and owners:
             variant_case_counts.append(count)
             if "build_factor" in meta["implementation_scopes"]:
                 any_build_factor = True
+            if "html_table_stage_only" not in meta["implementation_scopes"]:
+                composable_owners.update(owners)
         for owner in owners:
             owner_cases[owner] = max(owner_cases.get(owner, 0), count)
     variant_case_counts.sort(reverse=True)
@@ -1744,11 +1891,11 @@ def forecast_native(variants, phases, design, pilot, profile):
         (len(variants) - 1) * len(phases["confirm"]),
     )
     # A predeclared combined finalist adds its affected path; bound by the union of active owners.
-    if len(owner_cases) > 1 and len(variant_case_counts) > 1:
+    if len(composable_owners) > 1 and len(variant_case_counts) > 1:
         if any_build_factor:
             joint_cases = len(phases["confirm"])
         else:
-            all_owners = set(owner_cases)
+            all_owners = set(composable_owners)
             joint_cases = len([c for c in phases["confirm"] if all_owners.intersection(c["owners"])])
     else:
         joint_cases = 0
@@ -1794,6 +1941,8 @@ def forecast_native(variants, phases, design, pilot, profile):
             meta = contenders.metadata(variant)
             if not meta["decisions"]:
                 continue
+            if has_non_html_table_owner and meta["implementation_scopes"] == ["html_table_stage_only"]:
+                continue
             v_screen_cases = _variant_cases(variant, phases["screen"])
             if not v_screen_cases:
                 continue
@@ -1813,7 +1962,7 @@ def forecast_native(variants, phases, design, pilot, profile):
             if any_build_factor:
                 joint_screen_cases = phases["screen"]
             else:
-                all_owners = set(owner_cases)
+                all_owners = set(composable_owners)
                 joint_screen_cases = [c for c in phases["screen"] if all_owners.intersection(c["owners"])]
             confirm_wall_s += sum(
                 pilot_iter_s.get(c["id"], fallback_iter_s) * confirm_iter_mult + spawn_4_s * confirm_spawn_mult
@@ -2399,10 +2548,22 @@ def analyze_confirmation(directory, variant, output):
 def _complete_finalist_selection(run, selected, chosen, binaries, *, workspace, files, cache, cases, paths):
     from cloud_experiments import contenders
     joint = None
+    composable = [
+        v for v in selected
+        if "html_table_stage_only" not in contenders.metadata(v)["implementation_scopes"]
+    ] or list(selected)
     try:
-        joint = compose_finalist(selected)
+        joint = compose_finalist(composable)
     except ValueError as error:
-        chosen["combined_finalist"] = {"status": "INCOMPATIBLE_FACTORS", "detail": str(error)[:1024]}
+        all_owners = {o for v in composable for o in contenders.metadata(v)["decisions"]}
+        covering = [
+            v for v in composable
+            if "+" in v and len(all_owners) > 1 and set(contenders.metadata(v)["decisions"]) == all_owners
+        ]
+        if covering:
+            joint = max(covering, key=lambda v: len(contenders.metadata(v)["factors"]))
+        else:
+            chosen["combined_finalist"] = {"status": "INCOMPATIBLE_FACTORS", "detail": str(error)[:1024]}
     if joint is not None and joint not in selected:
         run.manifest.update(current_phase="build-combined-finalist", current_variant=joint)
         if joint not in binaries:
@@ -2477,7 +2638,7 @@ def _native_disk_admission(output, design, budget, *, resume, execution_request,
 
 
 def execute_native(source, spec_path, output, *, budget_path=None, pilot_only=False, variants=None,
-                   resume=False, campaign_deadline_unix=None, budget_bytes=None):
+                   resume=False, campaign_deadline_unix=None, budget_bytes=None, skip_h07=False):
     if budget_path is None:
         raise ValueError("Native execution requires reviewed price/credit/supervisor admission facts")
     if budget_bytes is None:
@@ -2500,7 +2661,7 @@ def execute_native(source, spec_path, output, *, budget_path=None, pilot_only=Fa
     with _analysis_lock(output.with_name(output.name + ".execution.lock")):
         return _execute_native_locked(source, spec_path, output, budget=budget, budget_sha256=budget_sha256,
                                       pilot_only=pilot_only, variants=variants, resume=resume,
-                                      campaign_deadline_unix=campaign_deadline_unix)
+                                      campaign_deadline_unix=campaign_deadline_unix, skip_h07=skip_h07)
 
 
 def _run_staged_language_panel_checks(run, source, output, cache, baseline_bin_dir):
@@ -2908,8 +3069,22 @@ def _update_technical_coverage(run):
     return technical
 
 
+def _component_rejection_reason(variant, rejected_map):
+    if "+" not in variant or not isinstance(rejected_map, dict):
+        return None
+    for component in variant.split("+"):
+        comp_reason = rejected_map.get(component)
+        if comp_reason is not None:
+            return {
+                "status": "REJECTED_COMPONENT_WITHIN_SCOPE",
+                "component": component,
+                "reason": comp_reason,
+            }
+    return None
+
+
 def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, pilot_only=False, variants=None,
-                           resume=False, campaign_deadline_unix):
+                           resume=False, campaign_deadline_unix, skip_h07=False):
     """Run real native comparators; incomplete service/model scopes remain explicit."""
     from cloud_experiments import contenders
     source, output = Path(source).resolve(strict=True), Path(output).resolve()
@@ -2926,9 +3101,12 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
     numpy_version = np.__version__
     if not isinstance(numpy_version, str) or not numpy_version:
         raise RuntimeError("Selected Python runtime returned an invalid NumPy version")
+    requested = {"pilot_only": pilot_only, "variants": variants, "budget_sha256": budget_sha256}
+    if skip_h07:
+        requested["skip_h07"] = True
     previous_manifest, disk_admission = _native_disk_admission(
         output, design, budget, resume=resume,
-        execution_request={"pilot_only": pilot_only, "variants": variants, "budget_sha256": budget_sha256},
+        execution_request=requested,
         campaign_deadline_unix=campaign_deadline_unix)
     limits = design["limits"]
     _validated_wpt_limits(limits)
@@ -2995,7 +3173,6 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
                                        lambda: _verify_build_network_isolation(run))
         run.manifest["child_process_isolation_evidence"] = isolation_evidence
         run.save()
-        requested = {"pilot_only": pilot_only, "variants": variants, "budget_sha256": budget_sha256}
         if run.manifest.get("execution_request", requested) != requested:
             raise ValueError("Resume cannot change planned variants, pilot mode or budget facts")
         run.manifest["execution_request"] = requested
@@ -3056,13 +3233,16 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
         workspace.mkdir(exist_ok=True)
         cache = output.parent / "cargo-target"
         cache.mkdir(exist_ok=True)
-        phases = {split: study_cases(files, split) for split in ("screen", "confirm")}
+        include_harsh_stress = bool(design.get("include_harsh_stress"))
+        phases = {split: study_cases(files, split, include_harsh_stress=include_harsh_stress) for split in ("screen", "confirm")}
         paths, _ = _write_fixtures(output, phases, limits)
         for split, cases in phases.items():
             if fixture_inventory(cases, split) != design["fixtures"][split]:
                 raise ValueError("Frozen corpus generation differs from spec")
         all_variants, interactions, cargo_cache_variants = _planned_cargo_cache_variants(
             design, variants=variants, pilot_only=pilot_only)
+        if skip_h07 and "lib-rustls-ring" not in all_variants:
+            cargo_cache_variants = [v for v in cargo_cache_variants if v != "lib-rustls-ring"]
         run.manifest["planned_variants"] = all_variants
         run.manifest["interaction_cells"] = interactions
         run.manifest["cargo_cache_preflight_variants"] = cargo_cache_variants
@@ -3109,22 +3289,23 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
                      "precision_status": "PLANNED_NOT_GUARANTEED", "admitted": False,
                      "limits": "Two blocks/three iterations pilot estimates overhead only; not tail precision or host variance"}
 
-        from cloud_experiments import service_study
-        service_profile = pilot.get("service_analysis_resource_profile")
-        if service_profile is None:
-            profile_started = time.monotonic()
-            profile_timeout = max(1, min(design["service_study"]["profile_timeout_seconds"],
-                                         math.ceil(run.deadline - time.monotonic())))
-            service_profile = run.check("h07_analysis_resource_profile", lambda: service_study.resource_profile(
-                design["service_study"], max_wall_seconds=profile_timeout))
-            pilot["service_analysis_profile_wall_seconds"] = time.monotonic() - profile_started
-            pilot["service_analysis_resource_profile"] = service_profile
-        else:
-            pilot.setdefault("service_analysis_profile_wall_seconds", 0)
-        if (service_profile.get("status") != "PROFILED_RESOURCE_ONLY"
-                or service_profile.get("synthetic_values_not_measurements") is not True
-                or service_profile.get("numpy_version") != numpy_version):
-            raise ValueError("H07 resource forecast is not bound to the selected NumPy runtime")
+        if not skip_h07:
+            from cloud_experiments import service_study
+            service_profile = pilot.get("service_analysis_resource_profile")
+            if service_profile is None:
+                profile_started = time.monotonic()
+                profile_timeout = max(1, min(design["service_study"]["profile_timeout_seconds"],
+                                             math.ceil(run.deadline - time.monotonic())))
+                service_profile = run.check("h07_analysis_resource_profile", lambda: service_study.resource_profile(
+                    design["service_study"], max_wall_seconds=profile_timeout))
+                pilot["service_analysis_profile_wall_seconds"] = time.monotonic() - profile_started
+                pilot["service_analysis_resource_profile"] = service_profile
+            else:
+                pilot.setdefault("service_analysis_profile_wall_seconds", 0)
+            if (service_profile.get("status") != "PROFILED_RESOURCE_ONLY"
+                    or service_profile.get("synthetic_values_not_measurements") is not True
+                    or service_profile.get("numpy_version") != numpy_version):
+                raise ValueError("H07 resource forecast is not bound to the selected NumPy runtime")
         campaign.write_json(output / "pilot.json", pilot)
         if pilot_only:
             _update_technical_coverage(run)
@@ -3140,41 +3321,58 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
         run.manifest["pilot"] = pilot
         if not admission["admitted"]:
             raise RuntimeError("Expanded workload not admitted: " + ",".join(admission["reasons"]))
-        run.manifest.update(current_phase="h07-provider-lifetime-preflight",
-                            service_study_variants=["baseline", "lib-rustls-ring"])
-        run.save()
-        def build_ring_service_profile():
-            _build(run, workspace, files, "lib-rustls-ring", cache)
-            return {"variant": "lib-rustls-ring",
-                    "snapshot_sha256": identity(run.manifest["snapshots"]["lib-rustls-ring"]),
-                    "service_probe_sha256": run.manifest["snapshots"]["lib-rustls-ring"]["binaries"]["service_probe"]}
-        run.check("h07:ring-build-and-feature-graph", build_ring_service_profile)
-        for provider_variant in ("baseline", "lib-rustls-ring"):
-            def run_provider_contract(variant=provider_variant):
-                folder = output / ("h07-contract-" + variant + "-" + run.session_id)
-                report = execute_service(binaries[variant] / "service_probe" if variant == "baseline"
-                                         else output / "bins" / variant / "service_probe", folder,
-                                         deadline=run.deadline,
-                                         isolate_process_tree=run.isolate_children)
-                if report["status"] != "CONTRACTS_PASS_WITHIN_SCOPE":
-                    raise RuntimeError("H07 service contract gate failed for " + variant)
-                return {"status": report["status"], "scenarios": len(report["scenarios"]),
-                        "artifact": folder.name + "/service-contracts.json",
-                        "sha256": protocol.sha256_file(folder / "service-contracts.json")}
-            run.check("h07:service-contracts:" + provider_variant, run_provider_contract)
+        if not skip_h07:
+            run.manifest.update(current_phase="h07-provider-lifetime-preflight",
+                                service_study_variants=["baseline", "lib-rustls-ring"])
+            run.save()
+            def build_ring_service_profile():
+                _build(run, workspace, files, "lib-rustls-ring", cache)
+                return {"variant": "lib-rustls-ring",
+                        "snapshot_sha256": identity(run.manifest["snapshots"]["lib-rustls-ring"]),
+                        "service_probe_sha256": run.manifest["snapshots"]["lib-rustls-ring"]["binaries"]["service_probe"]}
+            run.check("h07:ring-build-and-feature-graph", build_ring_service_profile)
+            for provider_variant in ("baseline", "lib-rustls-ring"):
+                def run_provider_contract(variant=provider_variant):
+                    folder = output / ("h07-contract-" + variant + "-" + run.session_id)
+                    report = execute_service(binaries[variant] / "service_probe" if variant == "baseline"
+                                             else output / "bins" / variant / "service_probe", folder,
+                                             deadline=run.deadline,
+                                             isolate_process_tree=run.isolate_children)
+                    if report["status"] != "CONTRACTS_PASS_WITHIN_SCOPE":
+                        raise RuntimeError("H07 service contract gate failed for " + variant)
+                    return {"status": report["status"], "scenarios": len(report["scenarios"]),
+                            "artifact": folder.name + "/service-contracts.json",
+                            "sha256": protocol.sha256_file(folder / "service-contracts.json")}
+                run.check("h07:service-contracts:" + provider_variant, run_provider_contract)
+        else:
+            run.manifest["h07_service_study"] = {
+                "status": "SKIPPED_BY_REQUEST",
+                "reason": "Scoped native-only campaign (--skip-h07)",
+            }
+            run.save()
         cross_cells = design["native_design"]["cross_cells"]
         plan = screen_plan(all_variants, interactions, phases["screen"], cross_cells=cross_cells)
         campaign.write_json(output / "screen-plan.json", plan)
         records, required_cases, assignments = {}, {}, plan["assignments"]
-        for variant in all_variants[1:]:
+        build_order = sorted(
+            all_variants[1:],
+            key=lambda name: (name.count("+"), all_variants.index(name)),
+        )
+        for variant in build_order:
             run.manifest.update(current_phase="build-and-oracle", current_variant=variant)
             run.save()
             cases = [c for c in phases["screen"] if c["id"] in assignments[variant]]
             if not cases:
                 raise ValueError("Contender has no real matching workload: " + variant)
-            previous = run.manifest.setdefault("rejected_variants", {}).get(variant)
+            rejected_map = run.manifest.setdefault("rejected_variants", {})
+            previous = rejected_map.get(variant)
+            if previous is None:
+                previous = _component_rejection_reason(variant, rejected_map)
+                if previous is not None:
+                    rejected_map[variant] = previous
             if previous is not None:
                 records[variant] = {"owners": contenders.metadata(variant)["decisions"], "correct": False, "reason": previous}
+                run.save()
                 continue
             try:
                 binaries[variant] = _build(run, workspace, files, variant, cache)
@@ -3194,19 +3392,141 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
         campaign.write_json(output / "screen-cross-coverage.json", cross_coverage)
         run.manifest["cross_coverage"] = cross_coverage
         campaign.write_json(output / "screen-interactions.json", interaction_report(screen_groups, interactions, plan["panel_cases"]))
+        def _is_within_subsystem(meta_owners):
+            s = set(meta_owners)
+            return len(s) <= 1 or s <= {"H04", "H05", "H09"}
+
+        pure_owners = {
+            owner
+            for v in all_variants[1:]
+            if v in binaries and _is_within_subsystem(contenders.metadata(v)["decisions"])
+            for owner in contenders.metadata(v)["decisions"]
+        }
+        has_logical_table_owner = "table-sparse" in binaries
         for variant in all_variants[1:]:
             if variant not in binaries:
                 continue
             cases = _variant_cases(variant, phases["screen"])
             groups = screen_groups[variant]
-            owners = contenders.metadata(variant)["decisions"]
-            ratios = {name: max(protocol.quantile([x for block in blocks for x in block["candidate"]], q)
-                               / protocol.quantile([x for block in blocks for x in block["baseline"]], q) for q in (.5, .95, .99))
+            meta = contenders.metadata(variant)
+            raw_owners = meta["decisions"]
+            if has_logical_table_owner and meta["implementation_scopes"] == ["html_table_stage_only"]:
+                owners = []
+            elif _is_within_subsystem(raw_owners):
+                has_other_html_lib = any(
+                    v in binaries
+                    and v != variant
+                    and contenders.metadata(v)["factors"].get("html_library", "default") != "default"
+                    for v in all_variants[1:]
+                )
+                if has_other_html_lib and "H09" in raw_owners and ({"H04", "H05"} & set(raw_owners)):
+                    owners = [o for o in raw_owners if o != "H09"]
+                else:
+                    owners = raw_owners
+            elif not (set(raw_owners) <= pure_owners):
+                owners = [o for o in raw_owners if o not in pure_owners]
+            else:
+                owners = []
+            ratios = {name: protocol.quantile([protocol.quantile(block["candidate"], .5) for block in blocks], .5)
+                            / protocol.quantile([protocol.quantile(block["baseline"], .5) for block in blocks], .5)
                       for name, blocks in groups.items()}
             records[variant] = {"owners": owners, "correct": True, "ratios": ratios}
             for owner in owners:
-                whole_build = owner == "H10" and "build_factor" in contenders.metadata(variant)["implementation_scopes"]
+                whole_build = owner == "H10" and "build_factor" in meta["implementation_scopes"]
                 owner_cases = sorted(c["id"] for c in cases if owner in c["owners"] or whole_build)
+                if owner == "H01":
+                    substantive_h01 = sorted(
+                        c["id"]
+                        for c in cases
+                        if "H01" in c["owners"]
+                        and c["id"]
+                        in (
+                            "hash-article",
+                            "hash-large",
+                            "hash-escaped_unicode",
+                            "export-large-plain",
+                            "export-large-q3",
+                            "pipeline-large-plain",
+                            "pipeline-large-q3",
+                        )
+                    )
+                    if substantive_h01:
+                        owner_cases = substantive_h01
+                elif owner == "H02":
+                    dense_h02 = sorted(
+                        c["id"]
+                        for c in cases
+                        if "H02" in c["owners"]
+                        and c["id"]
+                        in (
+                            "selection-1-dense",
+                            "selection-3-dense",
+                            "selection-8-dense",
+                            "selection-32-dense",
+                            "selection-128-dense",
+                            "selection-32-novelty",
+                            "selection-128-novelty",
+                            "stress-boilerplate-novelty-trap",
+                        )
+                    )
+                    if dense_h02:
+                        owner_cases = dense_h02
+                elif owner == "H04" and "html_attr_membership_stage_only" not in meta["implementation_scopes"]:
+                    substantive_h04 = sorted(
+                        c["id"]
+                        for c in cases
+                        if "H04" in c["owners"]
+                        and c["id"]
+                        in (
+                            "parse-unique_links",
+                            "parse-duplicate_links",
+                            "link-scaling-4096",
+                            "attribute-heavy-2048",
+                            "pipeline-duplicate_links-plain",
+                            "pipeline-unique_links-q3",
+                            "stress-dense-multi-link-blocks",
+                        )
+                    )
+                    if substantive_h04:
+                        owner_cases = substantive_h04
+                elif owner == "H05" and "html_attr_membership_stage_only" not in meta["implementation_scopes"]:
+                    substantive_h05 = sorted(
+                        c["id"]
+                        for c in cases
+                        if "H05" in c["owners"]
+                        and c["id"]
+                        in (
+                            "parse-unique_links",
+                            "parse-duplicate_links",
+                            "link-scaling-4096",
+                            "pipeline-duplicate_links-plain",
+                            "pipeline-unique_links-q3",
+                            "stress-dense-multi-link-blocks",
+                        )
+                    )
+                    if substantive_h05:
+                        owner_cases = substantive_h05
+                elif owner == "H10" and whole_build:
+                    substantive_h10 = sorted(
+                        c["id"]
+                        for c in cases
+                        if c["id"]
+                        in (
+                            "pipeline-large-plain",
+                            "pipeline-large-q3",
+                            "pipeline-article-plain",
+                            "pipeline-article-q3",
+                            "parse-unique_links",
+                            "parse-duplicate_links",
+                            "rank-32-dense",
+                            "rank-128-dense",
+                            "hash-large",
+                        )
+                    )
+                    if substantive_h10:
+                        owner_cases = substantive_h10
+                if not owner_cases and owner == "H09":
+                    owner_cases = sorted(c["id"] for c in cases if {"H04", "H05"}.intersection(c["owners"]))
                 required_cases.setdefault(owner, owner_cases)
             campaign.write_json(output / "screening.json", records)
         chosen = shortlist(records, required_cases, design["selection"]["slots_per_owner"])
@@ -3249,8 +3569,9 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
             decisions[variant] = {name: item["decision"] for name, item in report["cases"].items()}
             run.manifest["candidate_decisions"] = decisions
             run.save()
-        run.check("h07:provider-lifetime-study",
-                  lambda: execute_service_study(run, resume=resume))
+        if not skip_h07:
+            run.check("h07:provider-lifetime-study",
+                      lambda: execute_service_study(run, resume=resume))
         _update_technical_coverage(run)
         run.manifest.update(current_phase="finished",
             coverage=readiness(design, run.manifest["technical_coverage"]),
@@ -3907,6 +4228,12 @@ def main():
     prepare_parser.add_argument("destination")
     prepare_parser.add_argument("--corpus-manifest")
     prepare_parser.add_argument("--wall-seconds", type=int)
+    prepare_parser.add_argument("--screen-blocks", type=int)
+    prepare_parser.add_argument("--screen-iterations", type=int)
+    prepare_parser.add_argument("--confirm-blocks", type=int)
+    prepare_parser.add_argument("--confirm-iterations", type=int)
+    prepare_parser.add_argument("--include-harsh-stress", action="store_true")
+    prepare_parser.add_argument("--slots-per-owner", type=int)
     commands.add_parser("inventory")
     run_parser = commands.add_parser("run-native")
     for name in ("source", "spec", "output"):
@@ -3915,6 +4242,7 @@ def main():
     run_parser.add_argument("--resume", action="store_true")
     run_parser.add_argument("--budget-file")
     run_parser.add_argument("--variants", nargs="+")
+    run_parser.add_argument("--skip-h07", action="store_true")
     analyzer = commands.add_parser("analyze")
     analyzer.add_argument("directory")
     analyzer.add_argument("variant")
@@ -3947,7 +4275,15 @@ def main():
     warm_parser.add_argument("--stage-sdk-artifacts", action="store_true")
     args = parser.parse_args()
     if args.command == "prepare":
-        result = prepare(args.destination, corpus_manifest=args.corpus_manifest, wall_seconds=args.wall_seconds)
+        prep_kwargs = {
+            "corpus_manifest": args.corpus_manifest,
+            "wall_seconds": args.wall_seconds,
+        }
+        for key in ("screen_blocks", "screen_iterations", "confirm_blocks", "confirm_iterations", "include_harsh_stress", "slots_per_owner"):
+            val = getattr(args, key, None)
+            if val:
+                prep_kwargs[key] = val
+        result = prepare(args.destination, **prep_kwargs)
     elif args.command == "inventory":
         from cloud_experiments import contenders
         variants, panels = native_matrix()
@@ -3987,8 +4323,15 @@ def main():
                                   include_subprojects=not args.skip_subprojects,
                                   stage_sdk_artifacts=args.stage_sdk_artifacts)
     else:
-        report = execute_native(args.source, args.spec, args.output, budget_path=args.budget_file,
-                                pilot_only=args.pilot_only, variants=args.variants, resume=args.resume)
+        run_kwargs = {
+            "budget_path": args.budget_file,
+            "pilot_only": args.pilot_only,
+            "variants": args.variants,
+            "resume": args.resume,
+        }
+        if args.skip_h07:
+            run_kwargs["skip_h07"] = True
+        report = execute_native(args.source, args.spec, args.output, **run_kwargs)
         coverage = report.get("coverage")
         if not isinstance(coverage, dict):
             coverage = {}

@@ -212,7 +212,449 @@ def corpus_cases(files, split):
     return cases
 
 
-def native_cases(split):
+def _html_cell(table_index, row_index, cell_index, tag, text, *, rowspan=1, colspan=1,
+               scope=None, headers=(), unit=None, abbr=None, cell_id=None):
+    return {"cell_index": cell_index, "tag": tag, "text": text, "rowspan": rowspan,
+            "colspan": colspan, "scope": scope, "headers": list(headers), "unit": unit,
+            "abbr": abbr, "id": cell_id,
+            "locator": f"table[{table_index}]/row[{row_index}]/cell[{cell_index}]"}
+
+
+def _html_table(table_index, table_id, caption, rows, width, slots):
+    return {"table_index": table_index, "id": table_id, "caption": caption,
+            "rows": rows, "grid": {"width": width, "slots": slots}}
+
+
+def harsh_stress_cases(split):
+    if split not in ("screen", "confirm"):
+        raise ValueError("Unknown workload split")
+    rng = random.Random({"screen": 812709, "confirm": 437941}[split])
+    nonce = "seed" + str(rng.randrange(100000, 1000000))
+    marker = "<!--" + nonce + "-->"
+    cases = []
+
+    def add(name, html, *, stage="pipeline", owners=None, **fields):
+        fixture = {"html": html, "query": None, **fields}
+        cases.append({"id": name, "stage": stage, "owners": owners or ["H01", "H02", "H04", "H05", "H10"],
+                      "fixture": fixture, "lineage": "stress:" + name,
+                      "provenance": "adversarial stress partition; not representative corpus"})
+
+    # 1. stress-zipf-skewed-lengths (H02, H03)
+    # 512 chunks with log-normal lengths (3..256 tokens) from a 2,048-word Zipfian
+    # vocabulary spanning byte lengths 1..=24, first/last ASCII bytes a..z, and
+    # multi-byte UTF-8 case-folding tokens (İ, ß, accented Latin).
+    utf8_fold_tokens = ["İB", "ßeta", "Éclair", "Àlpha", "Ümlaut", "İzmir", "straße", "内容"]
+    vocab = [f"term{k}" for k in range(16)] + utf8_fold_tokens
+    for k in range(len(vocab), 2048):
+        target_len = 1 + (k % 24)
+        first_ch = chr(97 + (k % 26))
+        last_ch = chr(97 + ((k // 26) % 26))
+        if target_len == 1:
+            word = first_ch.upper() if k % 3 == 0 else first_ch
+        elif target_len == 2:
+            word = first_ch + last_ch
+        else:
+            mid_len = target_len - 2
+            mid = (f"{k:x}" * ((mid_len // 2) + 2))[:mid_len]
+            word = first_ch + mid + last_ch
+            if k % 5 == 0:
+                word = word.upper()
+        vocab.append(word)
+    lognormal_lengths = [
+        3, 4, 5, 6, 7, 8, 10, 12, 15, 18, 22, 27, 33, 40, 49, 60,
+        74, 90, 110, 134, 164, 200, 240, 256, 19, 29, 44, 67, 102, 155, 215, 11,
+    ]
+    zipf_parts = [
+        f"<h2>{nonce}-h0 term0</h2>",
+        (
+            f"<p>{nonce} "
+            + " ".join(
+                f"TERM{k % 10} term{k % 10} İB ßeta Éclair 内容"
+                for k in range(32)
+            )
+            + "</p>"
+        ),
+    ]
+    for i in range(2, 512):
+        tok_count = lognormal_lengths[i % len(lognormal_lengths)]
+        tag_name = "h3" if i % 16 == 0 else "p"
+        words_i = [
+            vocab[((j * j * 3 + i * 7 + 24) % 2024) + 24]
+            for j in range(tok_count - 1)
+        ]
+        if i % 9 == 0:
+            words_i[0] = utf8_fold_tokens[i % len(utf8_fold_tokens)]
+        zipf_parts.append(f"<{tag_name}>{nonce} {' '.join(words_i)}</{tag_name}>")
+    zipf_html = "".join(zipf_parts) + marker
+    add(
+        "stress-zipf-skewed-lengths",
+        zipf_html,
+        stage="prepared",
+        owners=["H02", "H03"],
+        query="TERM0 term1 Term2 TERM3 term4 Term5 TERM6 term7 Term8 TERM9 i\u0307b sseta éclair 内容",
+        queries=8,
+        invalidate_after=4,
+        replacement_html=f"<h2>{nonce}-rep</h2><p>{nonce} term0 term1 term2 term3 İB ßeta Éclair 内容 replacement</p>",
+        replacement_policy_revision="policy-zipf-2",
+        expected_prepared_top_indices=[1, 1, 1, 1, 1, 1, 1, 1],
+    )
+
+    # 2. stress-boilerplate-novelty-trap (H02)
+    # highlight_limit=8 over 512 chunks where the highest-scoring 48 chunks cycle
+    # through 3 repeated boilerplate strings (with mixed ASCII case) and the
+    # 464 distinct chunks sit at ranks 49..=512 (indices 48..512).
+    boilerplate_variants = [
+        (f"{nonce} Term0 Boilerplate AlphaBlock term0 boilerplate", f"{nonce} TERM0 boilerplate alphablock TERM0 Boilerplate"),
+        (f"{nonce} TERM0 Boilerplate BetaBlock term0 boilerplate", f"{nonce} term0 boilerplate betablock Term0 BOILERPLATE"),
+        (f"{nonce} term0 BOILERPLATE GammaBlock TERM0 boilerplate", f"{nonce} Term0 boilerplate gammablock term0 Boilerplate"),
+    ]
+    boilerplate_html = (
+        "".join(
+            f"<p>{boilerplate_variants[i % 3][(i // 3) % 2]}</p>"
+            for i in range(48)
+        )
+        + "".join(
+            f"<p>{nonce} term0 distinct{i:04d}</p>"
+            for i in range(48, 512)
+        )
+        + marker
+    )
+    add(
+        "stress-boilerplate-novelty-trap",
+        boilerplate_html,
+        stage="highlight",
+        owners=["H02"],
+        query="term0 boilerplate",
+        highlight_limit=8,
+        expected_selected=[0, 1, 2, 48, 49, 50, 51, 52],
+    )
+
+    # 3. stress-dense-multi-link-blocks (H04, H05)
+    # 256 <p> chunks each containing 16 <a href="..."> tags (4,096 total link occurrences)
+    # mixing long paths (120..240 bytes), relative paths (../), intra-chunk duplicate links
+    # (50% repeat rate per chunk), non-HTTPS schemes (mailto:, javascript:), and
+    # unlinked <nav>/<footer> boilerplate.
+    long_seg = (
+        "category-alpha-beta-gamma-delta-epsilon-zeta-eta-theta-"
+        "iota-kappa-lambda-mu-nu-xi-omicron-pi-rho-sigma-tau"
+    )
+    dense_parts = ["<nav><div></div></nav>"]
+    expected_dense_blocks = []
+    expected_dense_links = []
+    seen_link_to_id = {}
+
+    def register_resolved_url(url):
+        if url not in seen_link_to_id:
+            seen_link_to_id[url] = len(expected_dense_links)
+            expected_dense_links.append(url)
+        return seen_link_to_id[url]
+
+    for i in range(256):
+        sec = f"section-{i // 16:02d}"
+        unique_hrefs = []
+        chunk_link_ids = []
+        for k in range(6):
+            item_id = (i * 6 + k) % 128
+            href = f"/catalog/{sec}/{long_seg}/item-{item_id:04d}"
+            unique_hrefs.append(href)
+            cid = register_resolved_url(f"https://example.org{href}")
+            if cid not in chunk_link_ids:
+                chunk_link_ids.append(cid)
+        rel_id = i % 32
+        rel_href = f"sub/../catalog/{sec}/{long_seg}/rel-{rel_id:04d}"
+        unique_hrefs.append(rel_href)
+        rel_resolved = f"https://example.org/catalog/{sec}/{long_seg}/rel-{rel_id:04d}"
+        rel_cid = register_resolved_url(rel_resolved)
+        if rel_cid not in chunk_link_ids:
+            chunk_link_ids.append(rel_cid)
+        non_https = "mailto:skip@example.org" if i % 2 == 0 else "javascript:void(0)"
+        unique_hrefs.append(non_https)
+        # 16 <a> tags per <p>: 8 unique hrefs followed by the same 8 hrefs (50% intra-chunk duplicate rate)
+        all_16_hrefs = unique_hrefs + unique_hrefs
+        anchors_html = " ".join(
+            f"<a href='{href}'>L{j}</a>" for j, href in enumerate(all_16_hrefs)
+        )
+        dense_parts.append(
+            f"<p>{nonce} inter<i>national</i> p{i} {anchors_html}</p>"
+        )
+        expected_dense_blocks.append(
+            {
+                "role": "paragraph",
+                "text": f"{nonce} international p{i} " + " ".join(f"L{j}" for j in range(16)),
+                "links": chunk_link_ids,
+            }
+        )
+    dense_parts.append("<footer><div></div></footer>")
+    dense_links_html = "".join(dense_parts) + marker
+    add(
+        "stress-dense-multi-link-blocks",
+        dense_links_html,
+        stage="parse",
+        owners=["H04", "H05"],
+        expected_blocks=expected_dense_blocks,
+        expected_links=expected_dense_links,
+    )
+
+    # 4. stress-html-table-multi-64x16 (I-HTML-TABLE, H06)
+    # Multiple <table> elements combining thead/tbody/tfoot, ragged rowspan/colspan
+    # geometry up to 64x16, and nested sub-tables.
+    multi_tables_html = ["<!doctype html>"]
+    expected_multi_tables = []
+    for t_idx in range(4):
+        t_id = f"grid-{t_idx}"
+        t_cap = f"Grid {t_idx} {nonce}"
+        multi_tables_html.append(f'<table id="{t_id}"><caption>{t_cap}</caption>')
+        rows_out = []
+        slots_out = []
+        cell_counter = 0
+        # thead: row 0 (16 cols)
+        multi_tables_html.append("<thead><tr>")
+        r0_cells = []
+        r0_slots = []
+        for c_idx in range(16):
+            cid = f"t{t_idx}-h{c_idx}"
+            txt = f"H{c_idx}"
+            multi_tables_html.append(f'<th id="{cid}" scope="col">{txt}</th>')
+            r0_cells.append(_html_cell(t_idx, 0, c_idx, "th", txt, scope="col", cell_id=cid))
+            r0_slots.append(cell_counter)
+            cell_counter += 1
+        multi_tables_html.append("</tr></thead><tbody>")
+        rows_out.append({"row_index": 0, "group": 0, "group_type": "thead", "cells": r0_cells})
+        slots_out.append(r0_slots)
+        # tbody: rows 1..62 (62 rows x 16 cols, with ragged colspan=2 on row 1 and rowspan=2 on row 2..3)
+        row2_span_slot = None
+        for r_idx in range(1, 63):
+            multi_tables_html.append("<tr>")
+            r_cells = []
+            r_slots = []
+            if r_idx == 1:
+                # Ragged colspan=2 at c_idx == 1 (15 cells covering 16 columns)
+                cell_pos = 0
+                c_idx = 0
+                while c_idx < 16:
+                    txt = f"R{r_idx}C{c_idx}"
+                    if c_idx == 0:
+                        multi_tables_html.append(f'<th scope="row">{txt}</th>')
+                        r_cells.append(_html_cell(t_idx, r_idx, cell_pos, "th", txt, scope="row"))
+                        r_slots.append(cell_counter)
+                        cell_counter += 1
+                        c_idx += 1
+                    elif c_idx == 1:
+                        multi_tables_html.append(f'<td colspan="2">{txt}</td>')
+                        r_cells.append(_html_cell(t_idx, r_idx, cell_pos, "td", txt, colspan=2))
+                        r_slots.extend([cell_counter, cell_counter])
+                        cell_counter += 1
+                        c_idx += 2
+                    else:
+                        multi_tables_html.append(f"<td>{txt}</td>")
+                        r_cells.append(_html_cell(t_idx, r_idx, cell_pos, "td", txt))
+                        r_slots.append(cell_counter)
+                        cell_counter += 1
+                        c_idx += 1
+                    cell_pos += 1
+            elif r_idx == 2:
+                # Ragged rowspan=2 at c_idx == 2
+                for c_idx in range(16):
+                    txt = f"R{r_idx}C{c_idx}"
+                    if c_idx == 0:
+                        multi_tables_html.append(f'<th scope="row">{txt}</th>')
+                        r_cells.append(_html_cell(t_idx, r_idx, c_idx, "th", txt, scope="row"))
+                    elif c_idx == 2:
+                        multi_tables_html.append(f'<td rowspan="2">{txt}</td>')
+                        r_cells.append(_html_cell(t_idx, r_idx, c_idx, "td", txt, rowspan=2))
+                        row2_span_slot = cell_counter
+                    else:
+                        multi_tables_html.append(f"<td>{txt}</td>")
+                        r_cells.append(_html_cell(t_idx, r_idx, c_idx, "td", txt))
+                    r_slots.append(cell_counter)
+                    cell_counter += 1
+            elif r_idx == 3:
+                # Column 2 is occupied by row 2's rowspan=2 cell
+                cell_pos = 0
+                for c_idx in range(16):
+                    if c_idx == 2:
+                        r_slots.append(row2_span_slot)
+                        continue
+                    txt = f"R{r_idx}C{c_idx}"
+                    if c_idx == 0:
+                        multi_tables_html.append(f'<th scope="row">{txt}</th>')
+                        r_cells.append(_html_cell(t_idx, r_idx, cell_pos, "th", txt, scope="row"))
+                    else:
+                        multi_tables_html.append(f"<td>{txt}</td>")
+                        r_cells.append(_html_cell(t_idx, r_idx, cell_pos, "td", txt))
+                    r_slots.append(cell_counter)
+                    cell_counter += 1
+                    cell_pos += 1
+            else:
+                for c_idx in range(16):
+                    txt = f"R{r_idx}C{c_idx}"
+                    tag = "th" if c_idx == 0 else "td"
+                    scope = "row" if c_idx == 0 else None
+                    if c_idx == 0:
+                        multi_tables_html.append(f'<th scope="row">{txt}</th>')
+                    else:
+                        multi_tables_html.append(f"<td>{txt}</td>")
+                    r_cells.append(_html_cell(t_idx, r_idx, c_idx, tag, txt, scope=scope))
+                    r_slots.append(cell_counter)
+                    cell_counter += 1
+            multi_tables_html.append("</tr>")
+            rows_out.append({"row_index": r_idx, "group": 1, "group_type": "tbody", "cells": r_cells})
+            slots_out.append(r_slots)
+        # tfoot: row 63 (16 cols)
+        multi_tables_html.append("</tbody><tfoot><tr>")
+        rf_cells = []
+        rf_slots = []
+        for c_idx in range(16):
+            txt = f"F{c_idx}"
+            tag = "th" if c_idx == 0 else "td"
+            scope = "row" if c_idx == 0 else None
+            if c_idx == 0:
+                multi_tables_html.append(f'<th scope="row">{txt}</th>')
+            else:
+                multi_tables_html.append(f"<td>{txt}</td>")
+            rf_cells.append(_html_cell(t_idx, 63, c_idx, tag, txt, scope=scope))
+            rf_slots.append(cell_counter)
+            cell_counter += 1
+        multi_tables_html.append("</tr></tfoot></table>")
+        rows_out.append({"row_index": 63, "group": 2, "group_type": "tfoot", "cells": rf_cells})
+        slots_out.append(rf_slots)
+        expected_multi_tables.append(_html_table(t_idx, t_id, t_cap, rows_out, 16, slots_out))
+    # Nested sub-table pair (tables 4 and 5)
+    multi_tables_html.append(
+        '<table id="grid-nested-outer"><tbody><tr><td>outer-before '
+        '<table id="grid-nested-inner"><tbody><tr><th id="nested-th" scope="col">inner-val</th>'
+        "</tr></tbody></table> outer-after</td></tr></tbody></table>"
+    )
+    expected_multi_tables.append(
+        _html_table(
+            4,
+            "grid-nested-outer",
+            None,
+            [
+                {
+                    "row_index": 0,
+                    "group": 0,
+                    "group_type": "tbody",
+                    "cells": [_html_cell(4, 0, 0, "td", "outer-before outer-after")],
+                }
+            ],
+            1,
+            [[0]],
+        )
+    )
+    expected_multi_tables.append(
+        _html_table(
+            5,
+            "grid-nested-inner",
+            None,
+            [
+                {
+                    "row_index": 0,
+                    "group": 0,
+                    "group_type": "tbody",
+                    "cells": [_html_cell(5, 0, 0, "th", "inner-val", scope="col", cell_id="nested-th")],
+                }
+            ],
+            1,
+            [[0]],
+        )
+    )
+    add(
+        "stress-html-table-multi-64x16",
+        "".join(multi_tables_html),
+        stage="html-table",
+        owners=["H06"],
+        expected_html_tables=expected_multi_tables,
+        expected_html_parse_warnings=0,
+        max_tables=8,
+        max_table_rows=256,
+        max_table_cols=16,
+    )
+
+    # 5. stress-false-table-script-noise (I-PARSE-SHARE, H04, H05)
+    # 512-chunk prose HTML containing <script>, <style>, <!-- ... -->, and
+    # <table-viewer> tags with literal <table><tr><td> substrings but zero actual
+    # <table> elements, with include_table_cells=True on pipeline stage (RT-DEEP-04).
+    false_table_prefix = (
+        '<script>const tpl = "<table><tr><td>noise</td></tr></table>";</script>'
+        '<style>.tbl::after { content: "<table><tr><td>css</td></tr></table>"; }</style>'
+        "<textarea><table><tr><td>noise</td></tr></table></textarea>"
+        "<!-- <table><tr><td>comment-table</td></tr></table> -->"
+        '<table-viewer data-grid="<table><tr><td>custom-element</td></tr></table>">'
+    )
+    false_table_blocks = [
+        {"role": "paragraph", "text": f"{nonce} paragraph {i} clean text", "links": []}
+        for i in range(512)
+    ]
+    false_table_html = (
+        false_table_prefix
+        + "".join(f"<p>{b['text']}</p>" for b in false_table_blocks)
+        + "</table-viewer>"
+        + marker
+    )
+    add(
+        "stress-false-table-script-noise",
+        false_table_html,
+        stage="pipeline",
+        owners=["H04", "H05"],
+        include_table_cells=True,
+        expected_blocks=false_table_blocks,
+        expected_links=[],
+    )
+
+    # 6. stress-json-escape-burst (H01)
+    # <pre> and <p> chunks alternating clean ASCII prose with dense bursts of
+    # ", \, \n, \t, and control characters straddling 4 KiB / 8 KiB buffer boundaries.
+    clean_ascii_run = (
+        "steady ascii prose segment for vectorized fast path scanning across "
+        "four kilobyte and eight kilobyte serialization buffer boundaries "
+    )
+    escape_burst_parts = []
+    escape_burst_blocks = []
+    for i in range(64):
+        if i % 2 == 0:
+            escape_burst_parts.append(
+                f'<pre>{nonce} c{i} {clean_ascii_run}'
+                f'&quot;\\&quot;\\\t\n&#x08;&#x0c;&#x1f; &lt;tag&gt; &amp; TÀI liệu 内容 日本語</pre>'
+            )
+            escape_burst_blocks.append(
+                {
+                    "role": "preformatted",
+                    "text": (
+                        f'{nonce} c{i} {clean_ascii_run}'
+                        f'"\\"\\\t\n\x08\x0c\x1f <tag> & TÀI liệu 内容 日本語'
+                    ),
+                    "links": [],
+                }
+            )
+        else:
+            escape_burst_parts.append(
+                f'<p>{nonce} c{i} {clean_ascii_run}'
+                f'&quot;escaped&quot; \\backslash\\ &#x07;&#x1b; &amp; control</p>'
+            )
+            escape_burst_blocks.append(
+                {
+                    "role": "paragraph",
+                    "text": (
+                        f'{nonce} c{i} {clean_ascii_run}'
+                        f'"escaped" \\backslash\\ \x07\x1b & control'
+                    ),
+                    "links": [],
+                }
+            )
+    escape_burst_html = "".join(escape_burst_parts) + marker
+    add(
+        "stress-json-escape-burst",
+        escape_burst_html,
+        stage="serialization",
+        owners=["H01"],
+        expected_blocks=escape_burst_blocks,
+        expected_links=[],
+    )
+    return cases
+
+
+def native_cases(split, *, include_harsh_stress=False):
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown workload split")
     rng = random.Random({"screen": 812709, "confirm": 437941}[split])
@@ -226,16 +668,8 @@ def native_cases(split):
                       "fixture": fixture, "lineage": "causal:" + name,
                       "provenance": "project-authored contract partition; not representative corpus"})
 
-    def html_cell(table_index, row_index, cell_index, tag, text, *, rowspan=1, colspan=1,
-                  scope=None, headers=(), unit=None, abbr=None, cell_id=None):
-        return {"cell_index": cell_index, "tag": tag, "text": text, "rowspan": rowspan,
-                "colspan": colspan, "scope": scope, "headers": list(headers), "unit": unit,
-                "abbr": abbr, "id": cell_id,
-                "locator": f"table[{table_index}]/row[{row_index}]/cell[{cell_index}]"}
-
-    def html_table(table_index, table_id, caption, rows, width, slots):
-        return {"table_index": table_index, "id": table_id, "caption": caption,
-                "rows": rows, "grid": {"width": width, "slots": slots}}
+    html_cell = _html_cell
+    html_table = _html_table
 
     for size in (63, 64, 65, 1023, 1024, 1025):
         text = (nonce + "x" * size)[:size]
@@ -355,6 +789,8 @@ def native_cases(split):
     add("html-table-nested", nested_html, stage="html-table", owners=["H06"],
         expected_html_tables=expected_nested, expected_html_parse_warnings=0,
         max_tables=8, max_table_rows=32, max_table_cols=16)
+    if include_harsh_stress:
+        cases.extend(harsh_stress_cases(split))
     return cases
 
 
@@ -403,10 +839,43 @@ def envelope_errors(raw, fixture):
         if value.get("tables") != fixture["expected_html_tables"]:
             errors.append("Literal table/cell/group/span/locator/grid oracle differs")
         return errors
+    if "expected_prepared_top_indices" in fixture:
+        try:
+            value = strict_json_loads(raw)
+        except (ValueError, UnicodeError):
+            return ["Expected a canonical prepared-ranking observation"]
+        if not isinstance(value, list) or any(not isinstance(run, list) or not run for run in value):
+            return ["Malformed prepared-ranking observation"]
+        top_indices = [
+            run[0][0]
+            if isinstance(run[0], list) and run[0]
+            else None
+            for run in value
+        ]
+        return [] if top_indices == fixture["expected_prepared_top_indices"] else ["Prepared top-index oracle differs"]
+    if "expected_selected" in fixture:
+        try:
+            value = strict_json_loads(raw)
+        except (ValueError, UnicodeError):
+            return ["Expected a canonical highlight-selection observation"]
+        return [] if value == fixture["expected_selected"] else ["Highlight selection oracle differs"]
     if "expected_blocks" not in fixture and "expected_links" not in fixture:
         return []
     try:
         frames = [strict_json_loads(line) for line in raw.splitlines()]
+        if len(frames) == 1 and isinstance(frames[0], dict) and "chunks" in frames[0] and "links" in frames[0]:
+            proj = frames[0]
+            blocks = [
+                {key: chunk[key] for key in ("role", "text", "links")}
+                for chunk in proj["chunks"]
+            ]
+            links = proj["links"]
+            errors = []
+            if "expected_blocks" in fixture and blocks != fixture["expected_blocks"]:
+                errors.append("Literal role/text/link ownership differs")
+            if "expected_links" in fixture and links != fixture["expected_links"]:
+                errors.append("Literal resolved link identity differs")
+            return errors
         if not frames or frames[0].get("type") != "meta" or frames[-1].get("type") != "end":
             return ["Broken AAE boundary frames"]
         blocks = [{key: frame[key] for key in ("role", "text", "links")}

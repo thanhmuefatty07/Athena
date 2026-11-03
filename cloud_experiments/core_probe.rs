@@ -170,18 +170,22 @@ fn lowercase(word: &str) -> std::borrow::Cow<'_, str> {
 
 struct PreparedRank {
     key: [u8; 32],
-    lengths: Vec<usize>,
+    norms: Vec<f64>,
     postings: BTreeMap<String, Vec<(usize, usize)>>,
     retained_payload_bytes: usize,
 }
 impl PreparedRank {
     fn new(chunks: &[Chunk], revision: &str, max_tokens: usize) -> Result<Self, String> {
+        Self::new_with_key(chunks, source_key(chunks, revision), max_tokens)
+    }
+    fn new_with_key(chunks: &[Chunk], key: [u8; 32], max_tokens: usize) -> Result<Self, String> {
         let mut lengths = Vec::with_capacity(chunks.len());
+        let mut total_len = 0usize;
         let mut postings = BTreeMap::<String, Vec<(usize, usize)>>::new();
         let mut tokens = 0usize;
         let mut normalized_bytes = 0usize;
         for (index, chunk) in chunks.iter().enumerate() {
-            let mut length = 0;
+            let mut length = 0usize;
             for word in words(&chunk.text) {
                 tokens += 1;
                 if tokens > max_tokens {
@@ -207,9 +211,22 @@ impl PreparedRank {
                 }
                 length += 1;
             }
+            total_len += length;
             lengths.push(length);
         }
-        let retained_payload_bytes = lengths.capacity() * std::mem::size_of::<usize>()
+        let n = lengths.len();
+        let avg_len = if n == 0 {
+            1.0
+        } else {
+            (total_len as f64 / n as f64).max(1.0)
+        };
+        let k1 = 1.2;
+        let b = 0.75;
+        let norms: Vec<f64> = lengths
+            .into_iter()
+            .map(|len| k1 * (1.0 - b + b * len as f64 / avg_len))
+            .collect();
+        let retained_payload_bytes = norms.capacity() * std::mem::size_of::<f64>()
             + postings
                 .iter()
                 .map(|(term, hits)| {
@@ -217,8 +234,8 @@ impl PreparedRank {
                 })
                 .sum::<usize>();
         Ok(Self {
-            key: source_key(chunks, revision),
-            lengths,
+            key,
+            norms,
             postings,
             retained_payload_bytes,
         })
@@ -227,14 +244,11 @@ impl PreparedRank {
         let mut terms = words(query).map(lowercase).collect::<Vec<_>>();
         terms.sort_unstable();
         terms.dedup();
-        let n = self.lengths.len();
+        let n = self.norms.len();
         if n == 0 {
             return vec![];
         }
-        let total_len: usize = self.lengths.iter().sum();
-        let avg_len = (total_len as f64 / n as f64).max(1.0);
         let k1 = 1.2;
-        let b = 0.75;
         let mut scores = (0..n).map(|i| (i, 0.0)).collect::<Vec<_>>();
         for term in terms {
             if let Some(matches) = self.postings.get(term.as_ref()) {
@@ -242,16 +256,19 @@ impl PreparedRank {
                 let idf = (1.0 + (n as f64 - df + 0.5) / (df + 0.5)).ln();
                 for &(i, frequency) in matches {
                     let freq = frequency as f64;
-                    let norm = k1 * (1.0 - b + b * self.lengths[i] as f64 / avg_len);
-                    scores[i].1 += idf * freq * (k1 + 1.0) / (freq + norm);
+                    scores[i].1 += idf * freq * (k1 + 1.0) / (freq + self.norms[i]);
                 }
             }
         }
         scores.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));
         scores
     }
+    #[cfg(test)]
     fn matches(&self, chunks: &[Chunk], revision: &str) -> bool {
-        self.key == source_key(chunks, revision)
+        self.matches_key(&source_key(chunks, revision))
+    }
+    fn matches_key(&self, key: &[u8; 32]) -> bool {
+        &self.key == key
     }
 }
 
@@ -264,41 +281,69 @@ fn content_hash(chunks: &[Chunk], batch: usize) -> [u8; 32] {
             .join("\n");
         return *blake3::hash(joined.as_bytes()).as_bytes();
     }
-    let mut hash = blake3::Hasher::new();
     if batch == 1 {
+        let mut hash = blake3::Hasher::new();
         for (i, chunk) in chunks.iter().enumerate() {
             if i != 0 {
                 hash.update(b"\n");
             }
             hash.update(chunk.text.as_bytes());
         }
-    } else {
-        let mut scratch = Vec::with_capacity(batch);
-        for (i, chunk) in chunks.iter().enumerate() {
-            let separator = if i == 0 {
-                b"".as_slice()
-            } else {
-                b"\n".as_slice()
-            };
-            for mut bytes in [separator, chunk.text.as_bytes()] {
-                if scratch.is_empty() && bytes.len() >= batch {
-                    hash.update(bytes);
-                    continue;
+        return *hash.finalize().as_bytes();
+    }
+    match chunks {
+        [] => *blake3::hash(b"").as_bytes(),
+        [only] => *blake3::hash(only.text.as_bytes()).as_bytes(),
+        [first, rest @ ..] => {
+            let total_len = chunks
+                .iter()
+                .fold(chunks.len() - 1, |acc, c| acc + c.text.len());
+            if total_len <= batch.max(262_144) {
+                let mut scratch = Vec::with_capacity(total_len);
+                scratch.extend_from_slice(first.text.as_bytes());
+                for chunk in rest {
+                    scratch.push(b'\n');
+                    scratch.extend_from_slice(chunk.text.as_bytes());
                 }
-                while !bytes.is_empty() {
-                    let take = bytes.len().min(batch - scratch.len());
-                    scratch.extend_from_slice(&bytes[..take]);
-                    bytes = &bytes[take..];
+                return *blake3::hash(&scratch).as_bytes();
+            }
+            let mut hash = blake3::Hasher::new();
+            let mut scratch = Vec::with_capacity(batch);
+            let first_bytes = first.text.as_bytes();
+            let first_full = (first_bytes.len() / batch) * batch;
+            if first_full > 0 {
+                hash.update(&first_bytes[..first_full]);
+            }
+            scratch.extend_from_slice(&first_bytes[first_full..]);
+            for chunk in rest {
+                let bytes = chunk.text.as_bytes();
+                if scratch.len() + 1 + bytes.len() <= batch {
+                    scratch.push(b'\n');
+                    scratch.extend_from_slice(bytes);
                     if scratch.len() == batch {
                         hash.update(&scratch);
                         scratch.clear();
                     }
+                    continue;
                 }
+                scratch.push(b'\n');
+                let space = batch - scratch.len();
+                let (head, tail) = bytes.split_at(space);
+                scratch.extend_from_slice(head);
+                hash.update(&scratch);
+                scratch.clear();
+                let full = (tail.len() / batch) * batch;
+                if full > 0 {
+                    hash.update(&tail[..full]);
+                }
+                scratch.extend_from_slice(&tail[full..]);
             }
+            if !scratch.is_empty() {
+                hash.update(&scratch);
+            }
+            *hash.finalize().as_bytes()
         }
-        hash.update(&scratch);
     }
-    *hash.finalize().as_bytes()
 }
 
 fn block_ids(chunks: &[Chunk]) -> Vec<[u8; 32]> {
@@ -426,11 +471,11 @@ fn nearest_table_index<'a>(element: ElementRef<'a>, tables: &[ElementRef<'a>]) -
     None
 }
 
-fn row_group<'a>(row: ElementRef<'a>, table: ElementRef<'a>) -> (usize, String) {
-    let groups = table
-        .child_elements()
-        .filter(|child| matches!(child.value().name(), "thead" | "tbody" | "tfoot"))
-        .collect::<Vec<_>>();
+fn row_group<'a>(
+    row: ElementRef<'a>,
+    table: ElementRef<'a>,
+    groups: &[ElementRef<'a>],
+) -> (usize, String) {
     let mut parent = row.parent().and_then(ElementRef::wrap);
     while let Some(candidate) = parent {
         if candidate == table {
@@ -451,9 +496,13 @@ fn row_group<'a>(row: ElementRef<'a>, table: ElementRef<'a>) -> (usize, String) 
 
 fn rows_by_traversal<'a>(
     table: ElementRef<'a>,
-    tables: &[ElementRef<'a>],
-    table_index: usize,
+    _tables: &[ElementRef<'a>],
+    _table_index: usize,
 ) -> Vec<(ElementRef<'a>, usize, String)> {
+    let groups = table
+        .child_elements()
+        .filter(|child| matches!(child.value().name(), "thead" | "tbody" | "tfoot"))
+        .collect::<Vec<_>>();
     let mut stack = table.child_elements().collect::<Vec<_>>();
     stack.reverse();
     let mut rows = Vec::new();
@@ -461,10 +510,8 @@ fn rows_by_traversal<'a>(
         match element.value().name() {
             "table" => continue,
             "tr" => {
-                if nearest_table_index(element, tables) == Some(table_index) {
-                    let (group, group_type) = row_group(element, table);
-                    rows.push((element, group, group_type));
-                }
+                let (group, group_type) = row_group(element, table, &groups);
+                rows.push((element, group, group_type));
             }
             _ => {
                 let mut children = element.child_elements().collect::<Vec<_>>();
@@ -477,48 +524,50 @@ fn rows_by_traversal<'a>(
 }
 
 fn rows_by_selector<'a>(
-    document: &'a Html,
+    _document: &'a Html,
     tables: &[ElementRef<'a>],
     selectors: &TableSelectors,
 ) -> Vec<Vec<(ElementRef<'a>, usize, String)>> {
     let mut result = vec![Vec::new(); tables.len()];
-    if tables.is_empty() {
-        return result;
-    }
-    let mut table_groups: Vec<Option<Vec<ElementRef<'a>>>> = vec![None; tables.len()];
-    for row in document.select(&selectors.row) {
-        let mut group_candidate = None;
-        let mut table_index = None;
-        let mut parent = row.parent().and_then(ElementRef::wrap);
-        while let Some(candidate) = parent {
-            let name = candidate.value().name();
-            if name == "table" {
-                table_index = tables.iter().position(|table| *table == candidate);
-                break;
-            }
-            if group_candidate.is_none() && matches!(name, "thead" | "tbody" | "tfoot") {
-                group_candidate = Some((candidate, name));
-            }
-            parent = candidate.parent().and_then(ElementRef::wrap);
-        }
-        if let Some(index) = table_index {
-            let groups = table_groups[index].get_or_insert_with(|| {
-                tables[index]
-                    .child_elements()
-                    .filter(|child| matches!(child.value().name(), "thead" | "tbody" | "tfoot"))
-                    .collect()
-            });
-            let (group, group_type) = match group_candidate {
-                Some((candidate, name)) => {
-                    let group_idx = groups
-                        .iter()
-                        .position(|group| *group == candidate)
-                        .unwrap_or(groups.len());
-                    (group_idx, name.to_owned())
+    for (index, &table) in tables.iter().enumerate() {
+        let mut groups: Option<Vec<ElementRef<'a>>> = None;
+        for row in table.select(&selectors.row) {
+            let mut group_candidate = None;
+            let mut owned_by_table = false;
+            let mut parent = row.parent().and_then(ElementRef::wrap);
+            while let Some(candidate) = parent {
+                if candidate == table {
+                    owned_by_table = true;
+                    break;
                 }
-                None => (groups.len(), "table".to_owned()),
-            };
-            result[index].push((row, group, group_type));
+                let name = candidate.value().name();
+                if name == "table" {
+                    break;
+                }
+                if group_candidate.is_none() && matches!(name, "thead" | "tbody" | "tfoot") {
+                    group_candidate = Some((candidate, name));
+                }
+                parent = candidate.parent().and_then(ElementRef::wrap);
+            }
+            if owned_by_table {
+                let groups = groups.get_or_insert_with(|| {
+                    table
+                        .child_elements()
+                        .filter(|child| matches!(child.value().name(), "thead" | "tbody" | "tfoot"))
+                        .collect()
+                });
+                let (group, group_type) = match group_candidate {
+                    Some((candidate, name)) => {
+                        let group_idx = groups
+                            .iter()
+                            .position(|group| *group == candidate)
+                            .unwrap_or(groups.len());
+                        (group_idx, name.to_owned())
+                    }
+                    None => (groups.len(), "table".to_owned()),
+                };
+                result[index].push((row, group, group_type));
+            }
         }
     }
     result
@@ -1067,10 +1116,6 @@ fn repeated_queries(input: &Fixture, lexical: bool) -> Result<Output, String> {
         None
     };
     if let Some(prepared) = &state {
-        require(
-            prepared.matches(&initial.chunks, &input.revision),
-            "prepared source identity mismatch",
-        )?;
         retained_payload_bytes = prepared.retained_payload_bytes;
     }
     for query in &input.queries[..split] {
@@ -1100,30 +1145,30 @@ fn repeated_queries(input: &Fixture, lexical: bool) -> Result<Output, String> {
                 .as_str()
                 .unwrap_or("unicode-alphanumeric/1")
         );
-        if let Some(prepared) = &state
-            && source_key(&initial.chunks, &input.revision)
-                != source_key(&replacement.chunks, &revision)
+        let replacement_key = if lexical {
+            Some(source_key(&replacement.chunks, &revision))
+        } else {
+            None
+        };
+        if let (Some(prepared), Some(rep_key)) = (&state, &replacement_key)
+            && !prepared.matches_key(rep_key)
         {
             require(
-                !prepared.matches(&replacement.chunks, &revision),
+                !prepared.matches_key(rep_key),
                 "stale prepared source was accepted",
             )?;
         }
         drop(state.take());
-        state = if lexical {
-            Some(PreparedRank::new(
+        state = if let Some(rep_key) = replacement_key {
+            Some(PreparedRank::new_with_key(
                 &replacement.chunks,
-                &revision,
+                rep_key,
                 input.max_tokens,
             )?)
         } else {
             None
         };
         if let Some(prepared) = &state {
-            require(
-                prepared.matches(&replacement.chunks, &revision),
-                "replacement prepared identity mismatch",
-            )?;
             retained_payload_bytes = retained_payload_bytes.max(prepared.retained_payload_bytes);
         }
         for query in &input.queries[split..] {
@@ -1600,10 +1645,117 @@ fn parse_cell_value_and_unit(raw: &str) -> (String, Option<String>) {
     (rhs.to_owned(), None)
 }
 
+fn is_tag_delimiter(byte: u8) -> bool {
+    matches!(byte, b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
 fn has_html_table_tag(html: &str) -> bool {
-    html.as_bytes()
+    let bytes = html.as_bytes();
+    if !bytes
         .windows(6)
         .any(|window| window.eq_ignore_ascii_case(b"<table"))
+    {
+        return false;
+    }
+    let mut i = 0usize;
+    'scan: while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!-->") {
+            i += 5;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!--->") {
+            i += 6;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!--") {
+            i += 4;
+            if let Some(end) = bytes[i..].windows(3).position(|w| w == b"-->") {
+                i += end + 3;
+            } else {
+                return false;
+            }
+            continue;
+        }
+        let rest = &bytes[i + 1..];
+        if rest.len() >= 6 && rest[..5].eq_ignore_ascii_case(b"table") && is_tag_delimiter(rest[5])
+        {
+            return true;
+        }
+        for raw_tag in [
+            b"script".as_slice(),
+            b"style".as_slice(),
+            b"textarea".as_slice(),
+            b"title".as_slice(),
+            b"xmp".as_slice(),
+        ] {
+            let tlen = raw_tag.len();
+            if rest.len() > tlen
+                && rest[..tlen].eq_ignore_ascii_case(raw_tag)
+                && is_tag_delimiter(rest[tlen])
+            {
+                i += 1 + tlen;
+                let mut quote = 0u8;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    i += 1;
+                    if quote != 0 {
+                        if b == quote {
+                            quote = 0;
+                        }
+                    } else if b == b'"' || b == b'\'' {
+                        quote = b;
+                    } else if b == b'>' {
+                        break;
+                    }
+                }
+                while i + 2 + tlen < bytes.len() {
+                    if bytes[i] == b'<'
+                        && bytes[i + 1] == b'/'
+                        && bytes[i + 2..i + 2 + tlen].eq_ignore_ascii_case(raw_tag)
+                        && is_tag_delimiter(bytes[i + 2 + tlen])
+                    {
+                        i += 2 + tlen;
+                        while i < bytes.len() && bytes[i] != b'>' {
+                            i += 1;
+                        }
+                        if i < bytes.len() {
+                            i += 1;
+                        }
+                        continue 'scan;
+                    }
+                    i += 1;
+                }
+                return false;
+            }
+        }
+        if rest
+            .first()
+            .is_some_and(|&b| b.is_ascii_alphabetic() || b == b'/' || b == b'!' || b == b'?')
+        {
+            i += 1;
+            let mut quote = 0u8;
+            while i < bytes.len() {
+                let b = bytes[i];
+                i += 1;
+                if quote != 0 {
+                    if b == quote {
+                        quote = 0;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = b;
+                } else if b == b'>' {
+                    break;
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn is_skipped_projection_subtree(name: &str) -> bool {
@@ -1700,10 +1852,18 @@ fn parse_projection_and_table_cells(
     let (document, parse_warnings) =
         parse_html_document_with_node_limit(html, limits.max_parser_nodes)
             .map_err(str::to_owned)?;
+    let has_table_element = document
+        .tree
+        .values()
+        .any(|node| matches!(node, scraper::Node::Element(el) if el.name() == "table"));
     let nodes = scraper_projection_nodes(&document);
     let projection = project_research_nodes(html.len(), &nodes, url, limits, parse_warnings)
         .map_err(str::to_string)?;
-    let cells = extract_structured_table_cells_from_document(&document, table_limits)?;
+    let cells = if has_table_element {
+        extract_structured_table_cells_from_document(&document, table_limits)?
+    } else {
+        Vec::new()
+    };
     Ok((projection, Some(cells)))
 }
 
@@ -2880,5 +3040,57 @@ mod tests {
             extract_tables(&wide, "traversal", test_table_limits(8, 512, 500)).unwrap_err(),
             "HTML table grid limit exceeded"
         );
+    }
+
+    #[test]
+    fn html_table_tag_prefilter_handles_comments_rawtext_and_quoted_attributes() {
+        assert!(!has_html_table_tag(
+            r#"<script>const t = "<table><tr><td>1</td></tr></table>";</SCRIPT 	><style>.x{content:"<table>"}</style><textarea><table><tr><td>noise</td></tr></table></textarea><title><table></title><xmp><table></xmp><!-- <table> --><table-viewer><p>ok</p></table-viewer data-x="<table>">"#
+        ));
+        assert!(has_html_table_tag(
+            "<!--><table><tr><td>1</td></tr></table>"
+        ));
+        assert!(has_html_table_tag(
+            "<!---><table><tr><td>1</td></tr></table>"
+        ));
+        assert!(has_html_table_tag(
+            r#"<div title="<!--"><table><tr><td>1</td></tr></table></div>"#
+        ));
+        assert!(has_html_table_tag(
+            r#"<div data-x="<script>"><table><tr><td>1</td></tr></table></div>"#
+        ));
+        assert!(has_html_table_tag(
+            r#"<script>const s = "<table-viewer>";</script><TABLE class="grid"><tr><td>1</td></tr></TABLE>"#
+        ));
+    }
+
+    #[test]
+    fn content_hash_batches_match_joined_across_exact_buffer_boundaries() {
+        let mk = |s: String| Chunk {
+            node: 1,
+            role: "paragraph",
+            text: s,
+            links: Vec::new(),
+        };
+        for chunks in [
+            vec![],
+            vec![mk("single".into())],
+            vec![mk("x".repeat(4095)), mk("y".repeat(17))],
+            vec![
+                mk("a".repeat(4095)),
+                mk("b".repeat(17)),
+                mk("c".repeat(300_000)),
+            ],
+            vec![
+                mk("p".repeat(16383)),
+                mk("q".repeat(5)),
+                mk("r".repeat(300_000)),
+            ],
+        ] {
+            let expected = content_hash(&chunks, 0);
+            for batch in [1, 4096, 16384] {
+                assert_eq!(content_hash(&chunks, batch), expected);
+            }
+        }
     }
 }

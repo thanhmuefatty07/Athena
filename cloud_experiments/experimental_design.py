@@ -338,8 +338,15 @@ def evaluate_design_efficiency(variants, *, full_variants=None):
     }
 
 
+ORACLE_REJECTED_CONTENDERS = ("lib-json-sonic",)
+
+
 def high_efficiency_design(
-    *, target_quality=0.95, include_single_arms=True, enforce_higher_order=False
+    *,
+    target_quality=0.95,
+    include_single_arms=True,
+    enforce_higher_order=False,
+    exclude_oracle_rejected=False,
 ):
     """Construct a D-optimal / mixed-strength fractional design achieving >= target_quality with minimal runs."""
     if type(target_quality) not in (int, float) or not (0.5 <= float(target_quality) <= 1.0):
@@ -348,21 +355,40 @@ def high_efficiency_design(
         raise TypeError("include_single_arms must be a boolean")
     if type(enforce_higher_order) is not bool:
         raise TypeError("enforce_higher_order must be a boolean")
+    if type(exclude_oracle_rejected) is not bool:
+        raise TypeError("exclude_oracle_rejected must be a boolean")
     target_quality = float(target_quality)
     compiled = _compiled()
     groups, index = _index()
     _, records, _, _ = _requirements()
+    reference_pool = (
+        [
+            v
+            for v in compiled["variants"]
+            if not (
+                "+" in v
+                and any(rej in v.split("+") for rej in ORACLE_REJECTED_CONTENDERS)
+            )
+        ]
+        if exclude_oracle_rejected
+        else list(compiled["variants"])
+    )
     higher_order_bits = 0
     for idx, rec in enumerate(records):
         if len(rec["axes"]) >= 3:
             higher_order_bits |= 1 << idx
     masks = {
         name: _mask(contenders.metadata(name)["factors"], groups, index)
-        for name in compiled["variants"]
+        for name in reference_pool
     }
+    ref_total_mask = 0
+    for name in reference_pool:
+        ref_total_mask |= masks[name]
+    ref_ho_mask = ref_total_mask & higher_order_bits
     single_arms = {
         name for name, defn in contenders.definitions().items()
         if defn["implementation_scope"] != "service_provider_stage_only"
+        and name in masks
     }
     selected_set = {"baseline", "html-attrs-modern-vector"}
     if include_single_arms:
@@ -370,19 +396,19 @@ def high_efficiency_design(
     covered_mask = 0
     for name in selected_set:
         covered_mask |= masks[name]
-    all_required = (1 << len(records)) - 1
-    remaining_candidates = [v for v in compiled["variants"] if v not in selected_set]
+    all_required = ref_total_mask
+    remaining_candidates = [v for v in reference_pool if v not in selected_set]
     while remaining_candidates:
         ordered = sorted(
             selected_set,
             key=lambda value: (value != "baseline", value != "html-attrs-modern-vector", value),
         )
-        if covered_mask.bit_count() / len(records) >= target_quality and (
+        if (covered_mask & all_required).bit_count() / max(1, all_required.bit_count()) >= target_quality and (
             not enforce_higher_order
-            or (covered_mask & higher_order_bits).bit_count() / higher_order_bits.bit_count()
+            or (covered_mask & ref_ho_mask).bit_count() / max(1, ref_ho_mask.bit_count())
             >= target_quality
         ):
-            metrics = evaluate_design_efficiency(ordered, full_variants=compiled["variants"])
+            metrics = evaluate_design_efficiency(ordered, full_variants=reference_pool)
             if (
                 metrics["main_effect_coverage_ratio"] >= target_quality
                 and (not include_single_arms or metrics["single_arm_retention_ratio"] >= target_quality)
@@ -399,9 +425,9 @@ def high_efficiency_design(
             ):
                 break
         uncovered = all_required & ~covered_mask
-        uncovered_ho = uncovered & higher_order_bits
+        uncovered_ho = uncovered & ref_ho_mask
         if enforce_higher_order and (
-            (covered_mask & higher_order_bits).bit_count() / higher_order_bits.bit_count()
+            (covered_mask & ref_ho_mask).bit_count() / max(1, ref_ho_mask.bit_count())
             < target_quality
         ):
             best = min(
@@ -432,7 +458,7 @@ def high_efficiency_design(
         selected_set,
         key=lambda value: (value != "baseline", value != "html-attrs-modern-vector", value),
     )
-    metrics = evaluate_design_efficiency(ordered, full_variants=compiled["variants"])
+    metrics = evaluate_design_efficiency(ordered, full_variants=reference_pool)
     if metrics["composite_quality_score"] < target_quality:
         raise ValueError("Failed to reach requested target_quality within high-efficiency pool")
     return {
@@ -440,6 +466,7 @@ def high_efficiency_design(
         "target_quality": target_quality,
         "include_single_arms": include_single_arms,
         "enforce_higher_order": enforce_higher_order,
+        "exclude_oracle_rejected": exclude_oracle_rejected,
         "variants": ordered,
         "cross_cells": [v for v in compiled["cross_cells"] if v in selected_set],
         "efficiency": metrics,
@@ -508,7 +535,90 @@ def whole_path_core_panel():
         "rank-linear+rank-select",
         "table-html-selectors",
     ]
-    for name in variants:
+    cloud_017_variants = [
+        "baseline",
+        "projection-fused",
+        "links-btree",
+        "projection-fused+links-btree",
+        "lib-blake3-intrinsics",
+        "lib-scraper-lean",
+        "lib-scraper-atomic",
+        "lib-scraper-modern",
+        "build-lto-off",
+        "build-lto-full",
+        "build-codegen1",
+        "build-native",
+        "prepared",
+        "table-sparse",
+        "table-html-selectors",
+    ]
+    compiled_panels = _compiled()["factorial_panels"]
+    cloud_017_interaction_panels = {
+        panel_id: list(compiled_panels[panel_id])
+        for panel_id in (
+            "I-PROJECT",
+            "I-COMPILER",
+            "I-HASH-LIBRARY",
+            "I-PARSER-LIBRARY",
+            "I-QUERY-PROJECT",
+        )
+    }
+    cloud_018_variants = [
+        "baseline",
+        "aae-batched4096",
+        "projection-fused",
+        "links-btree",
+        "projection-fused+links-btree",
+        "rank-binary",
+        "rank-linear",
+        "rank-select",
+        "rank-binary+rank-select",
+        "rank-linear+rank-select",
+        "rank-binary+projection-fused",
+        "rank-linear+projection-fused",
+        "rank-select+projection-fused",
+        "rank-binary+rank-select+projection-fused",
+        "rank-linear+rank-select+projection-fused",
+        "table-html-selectors",
+    ]
+    cloud_019_variants = [
+        "baseline",
+        "aae-incremental",
+        "aae-batched4096",
+        "aae-batched16384",
+        "lib-blake3-pure",
+        "lib-blake3-intrinsics",
+        "aae-incremental+lib-blake3-pure",
+        "aae-batched4096+lib-blake3-pure",
+        "aae-batched16384+lib-blake3-pure",
+        "aae-incremental+lib-blake3-intrinsics",
+        "aae-batched4096+lib-blake3-intrinsics",
+        "aae-batched16384+lib-blake3-intrinsics",
+        "lib-scraper-lean",
+        "lib-scraper-atomic",
+        "lib-scraper-modern",
+        "build-lto-off",
+        "build-lto-full",
+        "build-codegen1",
+        "build-native",
+    ]
+    cloud_020_variants = [
+        "baseline",
+        "projection-fused",
+        "projection-fused+links-btree",
+        "aae-batched4096",
+        "aae-batched16384",
+        "rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+        "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+        "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+build-native+lib-scraper-modern",
+    ]
+    for name in (
+        set(variants)
+        | set(cloud_017_variants)
+        | set(cloud_018_variants)
+        | set(cloud_019_variants)
+        | set(cloud_020_variants)
+    ):
         contenders.metadata(name)
     return {
         "schema": "athena-whole-path-core-panel/1",
@@ -516,6 +626,11 @@ def whole_path_core_panel():
         "cloud_014_variants": cloud_014_variants,
         "cloud_015_variants": cloud_015_variants,
         "cloud_016_variants": cloud_016_variants,
+        "cloud_017_variants": cloud_017_variants,
+        "cloud_017_interaction_panels": cloud_017_interaction_panels,
+        "cloud_018_variants": cloud_018_variants,
+        "cloud_019_variants": cloud_019_variants,
+        "cloud_020_variants": cloud_020_variants,
         "active_owners": ["H01", "H02", "H03", "H06", "H07", "H08", "H09", "H14"],
         "complete_interaction_panels": ["I-RANK", "I-HTML-TABLE"],
         "efficiency_within_active_subspace": evaluate_design_efficiency(
