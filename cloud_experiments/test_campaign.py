@@ -5160,14 +5160,17 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertIn("parsed.tree.values().len()", proj_rs)
         self.assertIn("fn build_chunks_fused(", proj_rs)
         self.assertIn("fn is_clean_single_spaced(", proj_rs)
-        self.assertIn(
-            "apply_boilerplate_policy(&dom, &mut chunks, &mut links, limits.boilerplate);",
-            proj_rs,
-        )
-        self.assertNotIn(
-            "apply_boilerplate_policy(&dom, &mut chunks, limits.boilerplate);",
-            proj_rs,
-        )
+        for variant_out in (fused_out, contenders.transform(files, "links-btree")):
+            variant_proj = variant_out["src/projection.rs"].decode("utf-8")
+            self.assertIn("            mut links,\n", variant_proj)
+            self.assertIn(
+                "apply_boilerplate_policy(&dom, &mut chunks, &mut links, limits.boilerplate);",
+                variant_proj,
+            )
+            self.assertNotIn(
+                "apply_boilerplate_policy(&dom, &mut chunks, limits.boilerplate);",
+                variant_proj,
+            )
 
         batched_out = contenders.transform(files, "aae-batched16384")
         aae_rs = batched_out["src/aae.rs"].decode("utf-8")
