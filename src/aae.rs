@@ -1,10 +1,21 @@
 //! Athena Agentic Envelope v1: versioned JSON Lines, explicit provenance.
 //! Page text is ALWAYS serialized through serde_json rather than interpolated
 //! into control directives, preserving framing against content injection.
-use crate::{projection::Projection, rank::highlight_indices};
+use crate::{
+    projection::Projection,
+    rank::{PreparedRank, highlight_indices},
+};
 use serde::Serialize;
 use std::io::{self, BufWriter, Write};
 use url::Url;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LinkMode {
+    #[default]
+    All,
+    HighlightedOnly,
+    None,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -81,6 +92,79 @@ pub fn export_jsonl_with_limit(
     highlight_limit: usize,
     max_output_bytes: usize,
 ) -> Result<String, serde_json::Error> {
+    export_jsonl_with_options(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        max_output_bytes,
+        true,
+    )
+}
+
+/// Exports AAE v1 JSONL with configurable source link emission (`include_links`).
+pub fn export_jsonl_with_options(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+    include_links: bool,
+) -> Result<String, serde_json::Error> {
+    export_jsonl_with_options_and_prepared(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        max_output_bytes,
+        include_links,
+        None,
+    )
+}
+
+/// Exports AAE v1 JSONL using an optional pre-built `PreparedRank` lexical index.
+#[allow(clippy::too_many_arguments)]
+pub fn export_jsonl_with_options_and_prepared(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+    include_links: bool,
+    prepared: Option<&PreparedRank>,
+) -> Result<String, serde_json::Error> {
+    export_jsonl_with_link_mode_and_prepared(
+        page,
+        url,
+        observed_at_ms,
+        query,
+        highlight_limit,
+        max_output_bytes,
+        if include_links {
+            LinkMode::All
+        } else {
+            LinkMode::None
+        },
+        prepared,
+    )
+}
+
+/// Exports AAE v1 JSONL with `LinkMode` (`All`, `HighlightedOnly`, `None`) and optional `PreparedRank`.
+#[allow(clippy::too_many_arguments)]
+pub fn export_jsonl_with_link_mode_and_prepared(
+    page: &Projection,
+    url: &Url,
+    observed_at_ms: u64,
+    query: Option<&str>,
+    highlight_limit: usize,
+    max_output_bytes: usize,
+    link_mode: LinkMode,
+    prepared: Option<&PreparedRank>,
+) -> Result<String, serde_json::Error> {
     let mut out = BufWriter::with_capacity(
         8192,
         Output {
@@ -117,16 +201,37 @@ pub fn export_jsonl_with_limit(
         &mut out,
     )?;
 
+    let mut highlighted_links: Vec<u32> = Vec::new();
+    let mut link_remap: Vec<u32> = Vec::new();
+
     if let Some(q) = query {
-        let highlights = highlight_indices(&page.chunks, q, highlight_limit);
+        let highlights = if let Some(index) = prepared {
+            index.top_indices(q, highlight_limit)
+        } else {
+            highlight_indices(&page.chunks, q, highlight_limit)
+        };
         let mut highlighted = vec![false; page.chunks.len()];
         for &i in &highlights {
             highlighted[i] = true;
+        }
+        if link_mode == LinkMode::HighlightedOnly && !page.links.is_empty() {
+            link_remap.resize(page.links.len(), u32::MAX);
+            for &i in &highlights {
+                for &orig_id in &page.chunks[i].links {
+                    if let Some(slot) = link_remap.get_mut(orig_id as usize)
+                        && *slot == u32::MAX
+                    {
+                        *slot = highlighted_links.len() as u32;
+                        highlighted_links.push(orig_id);
+                    }
+                }
+            }
         }
         let ordering = highlights
             .iter()
             .copied()
             .chain((0..page.chunks.len()).filter(|&i| !highlighted[i]));
+        let mut remapped_buf: Vec<u32> = Vec::new();
         for i in ordering {
             let chunk = &page.chunks[i];
             let mut hasher = blake3::Hasher::new();
@@ -136,12 +241,32 @@ pub fn export_jsonl_with_limit(
             // Disambiguate repeated identical strings within the same snapshot.
             hasher.update(&(i as u64).to_le_bytes());
             let hash = hasher.finalize().to_hex().to_string();
+            let block_links: &[u32] = match link_mode {
+                LinkMode::All => &chunk.links,
+                LinkMode::None => &[],
+                LinkMode::HighlightedOnly => {
+                    if highlighted[i] && !chunk.links.is_empty() {
+                        remapped_buf.clear();
+                        for &orig_id in &chunk.links {
+                            if let Some(&new_id) = link_remap.get(orig_id as usize)
+                                && new_id != u32::MAX
+                                && !remapped_buf.contains(&new_id)
+                            {
+                                remapped_buf.push(new_id);
+                            }
+                        }
+                        &remapped_buf
+                    } else {
+                        &[]
+                    }
+                }
+            };
             json_line(
                 &Frame::Block {
                     id: hash,
                     role: chunk.role,
                     text: &chunk.text,
-                    links: &chunk.links,
+                    links: block_links,
                     highlight: highlighted[i],
                 },
                 &mut out,
@@ -156,12 +281,16 @@ pub fn export_jsonl_with_limit(
             // Disambiguate repeated identical strings within the same snapshot.
             hasher.update(&(i as u64).to_le_bytes());
             let hash = hasher.finalize().to_hex().to_string();
+            let block_links: &[u32] = match link_mode {
+                LinkMode::All => &chunk.links,
+                LinkMode::HighlightedOnly | LinkMode::None => &[],
+            };
             json_line(
                 &Frame::Block {
                     id: hash,
                     role: chunk.role,
                     text: &chunk.text,
-                    links: &chunk.links,
+                    links: block_links,
                     highlight: false,
                 },
                 &mut out,
@@ -169,14 +298,32 @@ pub fn export_jsonl_with_limit(
         }
     }
 
-    for (i, target) in page.links.iter().enumerate() {
-        json_line(
-            &Frame::Link {
-                id: i as u32,
-                url: target,
-            },
-            &mut out,
-        )?;
+    match link_mode {
+        LinkMode::All => {
+            for (i, target) in page.links.iter().enumerate() {
+                json_line(
+                    &Frame::Link {
+                        id: i as u32,
+                        url: target,
+                    },
+                    &mut out,
+                )?;
+            }
+        }
+        LinkMode::HighlightedOnly => {
+            for (new_id, &orig_id) in highlighted_links.iter().enumerate() {
+                if let Some(target) = page.links.get(orig_id as usize) {
+                    json_line(
+                        &Frame::Link {
+                            id: new_id as u32,
+                            url: target,
+                        },
+                        &mut out,
+                    )?;
+                }
+            }
+        }
+        LinkMode::None => {}
     }
     json_line(
         &Frame::End {
@@ -253,5 +400,102 @@ mod tests {
                 .all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok())
         );
         assert_eq!(out.lines().count(), 3);
+    }
+    #[test]
+    fn link_modes_all_highlighted_only_and_none_preserve_hashes_and_valid_indices() {
+        let base = Url::parse("https://example.org/").unwrap();
+        let page = parse_html(
+            "<main><p>Unmatched <a href='/nav'>nav</a>.</p><p>Relevant <a href='/docs'>docs</a> and <a href='/api'>api</a>.</p></main>",
+            &base,
+            100,
+            100,
+        )
+        .unwrap();
+        let full =
+            export_jsonl_with_options(&page, &base, 42, Some("docs"), 1, 65_536, true).unwrap();
+        let highlighted_only = export_jsonl_with_link_mode_and_prepared(
+            &page,
+            &base,
+            42,
+            Some("docs"),
+            1,
+            65_536,
+            LinkMode::HighlightedOnly,
+            None,
+        )
+        .unwrap();
+        let compact =
+            export_jsonl_with_options(&page, &base, 42, Some("docs"), 1, 65_536, false).unwrap();
+        assert!(compact.len() < highlighted_only.len());
+        assert!(highlighted_only.len() < full.len());
+        let full_frames: Vec<serde_json::Value> = full
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let hl_frames: Vec<serde_json::Value> = highlighted_only
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let compact_frames: Vec<serde_json::Value> = compact
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(full_frames[0], compact_frames[0]);
+        assert_eq!(full_frames[0], hl_frames[0]);
+        assert_eq!(hl_frames.iter().filter(|f| f["type"] == "link").count(), 2);
+        assert_eq!(hl_frames[1]["links"], serde_json::json!([0, 1]));
+        assert_eq!(hl_frames[2]["links"], serde_json::json!([]));
+        assert!(compact_frames.iter().all(|f| f["type"] != "link"));
+        for block in compact_frames.iter().filter(|f| f["type"] == "block") {
+            assert_eq!(block["links"], serde_json::json!([]));
+        }
+        let prepared = PreparedRank::new(&page.chunks);
+        let from_prepared = export_jsonl_with_options_and_prepared(
+            &page,
+            &base,
+            42,
+            Some("docs"),
+            1,
+            65_536,
+            false,
+            Some(&prepared),
+        )
+        .unwrap();
+        assert_eq!(compact, from_prepared);
+
+        let mut custom = page;
+        custom.links = (0..6)
+            .map(|i| format!("https://example.org/l/{i}"))
+            .collect();
+        custom.chunks[1].links = vec![5, 2, 5];
+        let remapped_out = export_jsonl_with_link_mode_and_prepared(
+            &custom,
+            &base,
+            42,
+            Some("docs"),
+            1,
+            65_536,
+            LinkMode::HighlightedOnly,
+            None,
+        )
+        .unwrap();
+        let remapped_frames: Vec<serde_json::Value> = remapped_out
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(remapped_frames[1]["links"], serde_json::json!([0, 1]));
+        let link_frames: Vec<&serde_json::Value> = remapped_frames
+            .iter()
+            .filter(|f| f["type"] == "link")
+            .collect();
+        assert_eq!(link_frames.len(), 2);
+        assert_eq!(
+            link_frames[0],
+            &serde_json::json!({"type": "link", "id": 0, "url": "https://example.org/l/5"})
+        );
+        assert_eq!(
+            link_frames[1],
+            &serde_json::json!({"type": "link", "id": 1, "url": "https://example.org/l/2"})
+        );
     }
 }

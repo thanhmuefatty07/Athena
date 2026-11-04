@@ -8,9 +8,9 @@ from functools import lru_cache
 _DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde", "tls_provider": "aws-lc"}
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
-    "src/aae.rs": "169a53a88caa5a471c690e7a78e143d97063a6c80e902b89b5baadc7c106ffde",
-    "src/rank.rs": "32dd5ce781576ca851152a556237cfb8f42209536f7cb169207119294425ca3d",
-    "src/projection.rs": "79b6641d9ccbcd39f639b55b16d29f808cdea0c1293caf29499a86ea58883858",
+    "src/aae.rs": "75411fe28008a2592518429a095ff02479e472412ba8a0b506644ca263ded389",
+    "src/rank.rs": "bad6ef11c80c90206435729df26e0cc32d99e0b68ead228398dd2fb36efc8a24",
+    "src/projection.rs": "3c81910afe9da6832d3ab9622475f1ff4dee826e3e6b6d3246ef0469315fe84c",
     "src/table.rs": "eb1933a8f29d21f0a8887a6c17cebfc4a2f78b98a73f7a2040139966a561533e",
 }
 
@@ -42,7 +42,7 @@ def _definition(decisions, factors, description, scope="whole_path", stages=None
 
 def _build(factors):
     probe = {}
-    for factor, variable in [("writer", "ATHENA_RESEARCH_WRITER"), ("hash", "ATHENA_RESEARCH_HASH"), ("reserve", "ATHENA_RESEARCH_RESERVE"), ("prepared", "ATHENA_RESEARCH_PREPARED"), ("html_extractor", "ATHENA_RESEARCH_TABLE_EXTRACTOR")]:
+    for factor, variable in [("writer", "ATHENA_RESEARCH_WRITER"), ("hash", "ATHENA_RESEARCH_HASH"), ("reserve", "ATHENA_RESEARCH_RESERVE"), ("prepared", "ATHENA_RESEARCH_PREPARED"), ("html_extractor", "ATHENA_RESEARCH_TABLE_EXTRACTOR"), ("rank_model", "ATHENA_RESEARCH_RANK_MODEL")]:
         if factor in factors:
             probe[variable] = str(factors[factor])
     profile = {}
@@ -262,7 +262,33 @@ def _hash(kind):
                 .chunks
                 .iter()
                 .fold(page.chunks.len() - 1, |acc, c| acc + c.text.len());
-            if total_len <= 262_144 {
+            if total_len <= 4096 {
+                let mut stack = [0u8; 4096];
+                let first_bytes = first.text.as_bytes();
+                stack[..first_bytes.len()].copy_from_slice(first_bytes);
+                let mut pos = first_bytes.len();
+                for chunk in rest {
+                    stack[pos] = b'\n';
+                    pos += 1;
+                    let bytes = chunk.text.as_bytes();
+                    stack[pos..pos + bytes.len()].copy_from_slice(bytes);
+                    pos += bytes.len();
+                }
+                blake3::hash(&stack[..pos])
+            } else if total_len <= 32_768 {
+                let mut stack = [0u8; 32_768];
+                let first_bytes = first.text.as_bytes();
+                stack[..first_bytes.len()].copy_from_slice(first_bytes);
+                let mut pos = first_bytes.len();
+                for chunk in rest {
+                    stack[pos] = b'\n';
+                    pos += 1;
+                    let bytes = chunk.text.as_bytes();
+                    stack[pos..pos + bytes.len()].copy_from_slice(bytes);
+                    pos += bytes.len();
+                }
+                blake3::hash(&stack[..pos])
+            } else if total_len <= 262_144 {
                 let mut scratch = Vec::with_capacity(total_len);
                 scratch.extend_from_slice(first.text.as_bytes());
                 for chunk in rest {
@@ -733,7 +759,8 @@ impl<'a> ProjectionBuilder<'a> {{
             self.drafts.reserve(self.node_cap);
         }}
         let t = tag(name);
-        let link_idx = if t == Tag::A
+        let link_idx = if self.limits.include_links
+            && t == Tag::A
             && let Some(href) = href
         {{
             self.resolve_link(href)?
@@ -787,7 +814,7 @@ impl<'a> ProjectionBuilder<'a> {{
             text,
             drafts,
             link_ids,
-            links,
+            mut links,
             link_collisions,
             raw_hrefs,
             raw_cache,
@@ -862,6 +889,8 @@ impl<'a> ProjectionBuilder<'a> {{
             links.len(),
             has_many_links,
         );
+        let mut chunks = chunks;
+        apply_boilerplate_policy(&dom, &mut chunks, &mut links, limits.boilerplate);
         Ok(Projection {{
             dom,
             chunks,
@@ -1051,7 +1080,8 @@ impl<'a> ProjectionBuilder<'a> {{
             self.drafts.reserve(self.node_cap);
         }}
         let t = tag(name);
-        let link_idx = if t == Tag::A
+        let link_idx = if self.limits.include_links
+            && t == Tag::A
             && let Some(href) = href
         {{
             self.resolve_link(href)?
@@ -1101,7 +1131,7 @@ impl<'a> ProjectionBuilder<'a> {{
             text,
             drafts,
             link_ids,
-            links,
+            mut links,
             link_collisions,
             raw_hrefs,
             raw_cache,
@@ -1127,7 +1157,8 @@ impl<'a> ProjectionBuilder<'a> {{
                     .map_err(|_| "invalid link index")?;
             }}
         }}
-        let chunks = build_chunks(&dom, limits.max_words_per_chunk, links.len());
+        let mut chunks = build_chunks(&dom, limits.max_words_per_chunk, links.len());
+        apply_boilerplate_policy(&dom, &mut chunks, &mut links, limits.boilerplate);
         Ok(Projection {{
             dom,
             chunks,
@@ -1250,10 +1281,16 @@ fn build_chunks_fused(
         let mut visit_children = true;
         match node.value() {
             HtmlNode::Element(el) => {
-                if skip_subtree(el.name()) {
+                let name = el.name();
+                if skip_subtree(name) {
                     visit_children = false;
                 } else {
-                    next_parent = builder.add_element(parent, el.name(), el.attr("href"))?;
+                    let href = if limits.include_links && name == "a" {
+                        el.attr("href")
+                    } else {
+                        None
+                    };
+                    next_parent = builder.add_element(parent, name, href)?;
                 }
             }
             HtmlNode::Text(content) => {
@@ -1282,7 +1319,7 @@ fn build_chunks_fused(
                 if skip_subtree(name) {
                     visit_children = false;
                 } else {
-                    let href = if name == "a" { el.attr("href") } else { None };
+                    let href = if limits.include_links && name == "a" { el.attr("href") } else { None };
                     next_parent = builder.add_element(parent, name, href)?;
                 }
             }
@@ -1324,8 +1361,12 @@ fn build_chunks_fused(
                 if skip_subtree(&node.name) {
                     suppressed[index] = true;
                 } else {
-                    projected_ids[index] =
-                        builder.add_element(parent_id, &node.name, node.attr("href"))?;
+                    let href = if limits.include_links && node.name == "a" {
+                        node.attr("href")
+                    } else {
+                        None
+                    };
+                    projected_ids[index] = builder.add_element(parent_id, &node.name, href)?;
                 }
             }''',
         '''    let mut builder = ProjectionBuilder::with_capacity(base, limits, html_len, nodes.len());
@@ -1348,7 +1389,7 @@ fn build_chunks_fused(
                 if skip_subtree(&node.name) {
                     suppressed[index] = true;
                 } else {
-                    let href = if node.name == "a" {
+                    let href = if limits.include_links && node.name == "a" {
                         node.attr("href")
                     } else {
                         None

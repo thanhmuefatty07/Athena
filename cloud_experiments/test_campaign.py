@@ -5160,6 +5160,14 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertIn("parsed.tree.values().len()", proj_rs)
         self.assertIn("fn build_chunks_fused(", proj_rs)
         self.assertIn("fn is_clean_single_spaced(", proj_rs)
+        self.assertIn(
+            "apply_boilerplate_policy(&dom, &mut chunks, &mut links, limits.boilerplate);",
+            proj_rs,
+        )
+        self.assertNotIn(
+            "apply_boilerplate_policy(&dom, &mut chunks, limits.boilerplate);",
+            proj_rs,
+        )
 
         batched_out = contenders.transform(files, "aae-batched16384")
         aae_rs = batched_out["src/aae.rs"].decode("utf-8")
@@ -5172,6 +5180,113 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             design, variants=panel["cloud_020_variants"]
         )
         self.assertEqual(planned, panel["cloud_020_variants"])
+
+    def test_annas_archive_and_link_mode_cohorts(self):
+        from cloud_experiments import workloads
+
+        for split in ("screen", "confirm"):
+            cohorts = workloads.annas_archive_cases(split)
+            self.assertEqual(
+                [c["id"] for c in cohorts],
+                [
+                    "annas-search-dense",
+                    "annas-md5-detail-table",
+                    "export-links-none",
+                    "export-links-highlighted-only",
+                    "parse-cetd-entropy-v1",
+                    "select-bm25f-mslp",
+                    "select-bm25f-simhash64",
+                    "rank-bm25-plus",
+                    "rank-bm25f",
+                    "rank-bm25l",
+                    "rank-ql-dirichlet",
+                ],
+            )
+            by_id = {c["id"]: c for c in cohorts}
+            self.assertEqual(
+                by_id["annas-search-dense"]["fixture"]["parse_limits"]["comment_unwrap"],
+                "annas_archive",
+            )
+            self.assertEqual(
+                by_id["annas-search-dense"]["fixture"]["parse_limits"]["boilerplate"],
+                "main_content_v1",
+            )
+            self.assertEqual(len(by_id["annas-search-dense"]["fixture"]["expected_links"]), 32)
+            self.assertEqual(by_id["export-links-none"]["fixture"]["link_mode"], "none")
+            self.assertEqual(by_id["export-links-none"]["fixture"]["expected_links"], [])
+            self.assertEqual(
+                by_id["export-links-highlighted-only"]["fixture"]["link_mode"],
+                "highlighted_only",
+            )
+            self.assertEqual(
+                by_id["export-links-highlighted-only"]["fixture"]["expected_links"],
+                ["https://example.org/hit/alpha"],
+            )
+            probe_candidates = [
+                Path("target/debug/core_probe.exe"),
+                Path("target/debug/core_probe"),
+                Path("target/release/core_probe.exe"),
+                Path("target/release/core_probe"),
+            ]
+            probe_bin = next((p for p in probe_candidates if p.is_file()), None)
+            for cohort in cohorts:
+                fixture = cohort["fixture"]
+                if "expected_html_tables" in fixture:
+                    raw = json.dumps(
+                        {
+                            "schema": "athena-html-table-candidate/2",
+                            "parse_warnings": fixture["expected_html_parse_warnings"],
+                            "header_associations": "explicit-attributes-only",
+                            "cell_text": "normalized DOM text, excluding nested-table descendants from each cell",
+                            "tables": fixture["expected_html_tables"],
+                        }
+                    )
+                    self.assertEqual(workloads.envelope_errors(raw, fixture), [])
+                elif "expected_blocks" in fixture:
+                    expected_blocks = fixture["expected_blocks"]
+                    expected_links = fixture["expected_links"]
+                    total_blocks = len(expected_blocks)
+                    frames = [
+                        json.dumps(
+                            {
+                                "type": "meta",
+                                "version": "aae/1",
+                                "source_url": "https://example.org/",
+                                "fetched_at_unix_ms": 0,
+                                "content_hash": "0" * 64,
+                                "total_blocks": total_blocks,
+                                "parse_warnings": 0,
+                            }
+                        )
+                    ]
+                    for idx, block in enumerate(expected_blocks):
+                        frames.append(
+                            json.dumps(
+                                {
+                                    "type": "block",
+                                    "id": f"{idx:064x}",
+                                    "role": block["role"],
+                                    "text": block["text"],
+                                    "links": block["links"],
+                                    "highlight": idx == 0 and bool(fixture.get("query")),
+                                }
+                            )
+                        )
+                    for link_idx, url in enumerate(expected_links):
+                        frames.append(json.dumps({"type": "link", "id": link_idx, "url": url}))
+                    frames.append(json.dumps({"type": "end", "block_count": total_blocks}))
+                    raw = "\n".join(frames) + "\n"
+                    self.assertEqual(workloads.envelope_errors(raw, fixture), [])
+                if probe_bin is not None:
+                    probe_out = subprocess.check_output(
+                        [str(probe_bin), cohort["stage"], "-", "0"],
+                        input=json.dumps(fixture).encode("utf-8"),
+                    ).decode("utf-8")
+                    self.assertEqual(
+                        workloads.envelope_errors(probe_out, fixture),
+                        [],
+                        f"core_probe output failed envelope_errors for {cohort['id']}",
+                    )
 
 
 if __name__ == "__main__":

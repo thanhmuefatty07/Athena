@@ -29,6 +29,21 @@ pub struct Projection {
     pub parse_warnings: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommentUnwrapPolicy {
+    #[default]
+    None,
+    AnnasArchiveScrollCards,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoilerplatePolicy {
+    #[default]
+    FullDom,
+    MainContentV1,
+    CetdEntropyV1,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ParseLimits {
     pub max_html_bytes: usize,
@@ -38,6 +53,9 @@ pub struct ParseLimits {
     pub max_words_per_chunk: usize,
     pub max_link_bytes: usize,
     pub max_link_url_bytes: usize,
+    pub include_links: bool,
+    pub comment_unwrap: CommentUnwrapPolicy,
+    pub boilerplate: BoilerplatePolicy,
 }
 impl Default for ParseLimits {
     fn default() -> Self {
@@ -49,6 +67,9 @@ impl Default for ParseLimits {
             max_words_per_chunk: 1200,
             max_link_bytes: 4 * 1024 * 1024,
             max_link_url_bytes: 8192,
+            include_links: true,
+            comment_unwrap: CommentUnwrapPolicy::None,
+            boilerplate: BoilerplatePolicy::FullDom,
         }
     }
 }
@@ -90,7 +111,8 @@ impl<'a> ProjectionBuilder<'a> {
             return Err("max DOM nodes exceeded");
         }
         let mut link_idx = NONE;
-        if name == "a"
+        if self.limits.include_links
+            && name == "a"
             && let Some(href) = href
             && let Ok(target) = self.base.join(href)
             && target.scheme() == "https"
@@ -158,7 +180,8 @@ impl<'a> ProjectionBuilder<'a> {
                     .map_err(|_| "invalid link index")?;
             }
         }
-        let chunks = build_chunks(&dom, self.limits.max_words_per_chunk, links.len());
+        let mut chunks = build_chunks(&dom, self.limits.max_words_per_chunk, links.len());
+        apply_boilerplate_policy(&dom, &mut chunks, &mut links, self.limits.boilerplate);
         Ok(Projection {
             dom,
             chunks,
@@ -744,6 +767,8 @@ pub fn parse_html_with_limits(
     {
         return Err("invalid resource budget");
     }
+    let html_cow = unwrap_comments_if_enabled(html, limits.comment_unwrap);
+    let html = html_cow.as_ref();
     let (parsed, parse_warnings) = parse_html_document_bounded(html, limits.max_parser_nodes)
         .map_err(|_| "max DOM nodes exceeded")?;
     let mut builder = ProjectionBuilder::new(base, limits);
@@ -753,10 +778,16 @@ pub fn parse_html_with_limits(
         let mut visit_children = true;
         match node.value() {
             HtmlNode::Element(el) => {
-                if skip_subtree(el.name()) {
+                let name = el.name();
+                if skip_subtree(name) {
                     visit_children = false;
                 } else {
-                    next_parent = builder.add_element(parent, el.name(), el.attr("href"))?;
+                    let href = if limits.include_links && name == "a" {
+                        el.attr("href")
+                    } else {
+                        None
+                    };
+                    next_parent = builder.add_element(parent, name, href)?;
                 }
             }
             HtmlNode::Text(content) => {
@@ -818,8 +849,12 @@ pub fn project_research_nodes(
                 if skip_subtree(&node.name) {
                     suppressed[index] = true;
                 } else {
-                    projected_ids[index] =
-                        builder.add_element(parent_id, &node.name, node.attr("href"))?;
+                    let href = if limits.include_links && node.name == "a" {
+                        node.attr("href")
+                    } else {
+                        None
+                    };
+                    projected_ids[index] = builder.add_element(parent_id, &node.name, href)?;
                 }
             }
             ResearchNodeKind::Text => {
@@ -830,6 +865,545 @@ pub fn project_research_nodes(
         }
     }
     builder.finish(parse_warnings)
+}
+
+fn is_html_tag_delimiter(byte: u8) -> bool {
+    matches!(byte, b'>' | b'/' | b' ' | b'\t' | b'\n' | b'\r' | 0x0c)
+}
+
+fn ends_in_unclosed_html_comment(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!-->") {
+            i += 5;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!--->") {
+            i += 6;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<!--") {
+            if let Some(rel_end) = prefix[i + 4..].find("-->") {
+                i = i + 4 + rel_end + 3;
+                continue;
+            }
+            return true;
+        }
+        let mut raw_close: Option<&[u8]> = None;
+        for (open_tag, close_tag) in [
+            (&b"<script"[..], &b"</script"[..]),
+            (&b"<style"[..], &b"</style"[..]),
+            (&b"<textarea"[..], &b"</textarea"[..]),
+            (&b"<title"[..], &b"</title"[..]),
+            (&b"<xmp"[..], &b"</xmp"[..]),
+        ] {
+            if i + open_tag.len() < bytes.len()
+                && bytes[i..i + open_tag.len()].eq_ignore_ascii_case(open_tag)
+                && is_html_tag_delimiter(bytes[i + open_tag.len()])
+            {
+                raw_close = Some(close_tag);
+                break;
+            }
+        }
+        if let Some(close_tag) = raw_close {
+            i += close_tag.len() - 1;
+            let mut quote = 0u8;
+            let mut prev_slash = false;
+            while i < bytes.len() {
+                let b = bytes[i];
+                i += 1;
+                if quote != 0 {
+                    if b == quote {
+                        quote = 0;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = b;
+                    prev_slash = false;
+                } else if b == b'>' {
+                    break;
+                } else if b == b'/' {
+                    prev_slash = true;
+                } else if !b.is_ascii_whitespace() {
+                    prev_slash = false;
+                }
+            }
+            if i >= bytes.len() {
+                return false;
+            }
+            if prev_slash {
+                continue;
+            }
+            while i + close_tag.len() <= bytes.len() {
+                if bytes[i..i + close_tag.len()].eq_ignore_ascii_case(close_tag)
+                    && (i + close_tag.len() == bytes.len()
+                        || is_html_tag_delimiter(bytes[i + close_tag.len()]))
+                {
+                    i += close_tag.len();
+                    while i < bytes.len() && bytes[i] != b'>' {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if i + 1 < bytes.len() && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'/') {
+            i += 2;
+            let mut quote = 0u8;
+            while i < bytes.len() {
+                let b = bytes[i];
+                i += 1;
+                if quote != 0 {
+                    if b == quote {
+                        quote = 0;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = b;
+                } else if b == b'>' {
+                    break;
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn unwrap_comments_if_enabled(html: &str, policy: CommentUnwrapPolicy) -> Cow<'_, str> {
+    if policy == CommentUnwrapPolicy::None || !html.contains("<!--") {
+        return Cow::Borrowed(html);
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    let mut unwrapped_any = false;
+    while let Some(rel_start) = html[cursor..].find("<!--") {
+        let start = cursor + rel_start;
+        out.push_str(&html[cursor..start]);
+        if html[start..].starts_with("<!-->") {
+            out.push_str("<!-->");
+            cursor = start + 5;
+            continue;
+        }
+        if html[start..].starts_with("<!--->") {
+            out.push_str("<!--->");
+            cursor = start + 6;
+            continue;
+        }
+        let inner_start = start + 4;
+        if let Some(rel_end) = html[inner_start..].find("-->") {
+            let inner_end = inner_start + rel_end;
+            let inner = &html[inner_start..inner_end];
+            let rfind_pos = inner.rfind("<!--");
+            let candidate = match rfind_pos {
+                Some(pos) => &inner[pos + 4..],
+                None => inner,
+            };
+            let lower = candidate.to_ascii_lowercase();
+            if lower.contains("/md5/")
+                && !lower.contains("<script")
+                && !lower.contains("<style")
+                && !lower.contains("<iframe")
+                && !lower.contains("<object")
+                && !lower.contains("<embed")
+                && !lower.contains("<template")
+            {
+                if let Some(pos) = rfind_pos {
+                    out.push_str(&html[start..inner_start + pos]);
+                    if ends_in_unclosed_html_comment(&html[cursor..inner_start + pos]) {
+                        out.push_str("-->");
+                    }
+                }
+                out.push_str(candidate);
+                unwrapped_any = true;
+            } else {
+                out.push_str(&html[start..inner_end + 3]);
+            }
+            cursor = inner_end + 3;
+        } else {
+            out.push_str(&html[start..]);
+            cursor = html.len();
+            break;
+        }
+    }
+    if !unwrapped_any {
+        return Cow::Borrowed(html);
+    }
+    out.push_str(&html[cursor..]);
+    Cow::Owned(out)
+}
+
+fn classify_landmark(dom: &DomArena, node_id: NodeId) -> (bool, bool, bool) {
+    let nodes = dom.nodes();
+    let mut cur = node_id;
+    let mut nearest_decision: Option<bool> = None;
+    let mut inside_main_or_article = false;
+    let mut inside_nav_or_footer = false;
+    while cur != NONE && (cur as usize) < nodes.len() {
+        let node = &nodes[cur as usize];
+        match node.tag {
+            Tag::Nav | Tag::Footer => {
+                inside_nav_or_footer = true;
+                if nearest_decision.is_none() {
+                    nearest_decision = Some(true);
+                }
+            }
+            Tag::Header | Tag::Aside | Tag::Form => {
+                if nearest_decision.is_none() {
+                    nearest_decision = Some(true);
+                }
+            }
+            Tag::Main | Tag::Article => {
+                inside_main_or_article = true;
+                if nearest_decision.is_none() {
+                    nearest_decision = Some(false);
+                }
+            }
+            _ => {}
+        }
+        cur = node.parent;
+    }
+    (
+        nearest_decision.unwrap_or(false),
+        inside_main_or_article,
+        inside_nav_or_footer,
+    )
+}
+
+fn shannon_byte_entropy(text: &str) -> f64 {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+    let len = bytes.len() as f64;
+    let mut entropy = 0.0f64;
+    for &c in &counts {
+        if c > 0 {
+            let p = (c as f64) / len;
+            entropy -= p * p.log2();
+        }
+    }
+    entropy
+}
+
+fn is_boilerplate_chunk(dom: &DomArena, chunk: &Chunk, policy: BoilerplatePolicy) -> bool {
+    let (is_chrome, inside_main_or_article, inside_nav_or_footer) =
+        classify_landmark(dom, chunk.node);
+    if chunk.role == "heading" {
+        return inside_nav_or_footer;
+    }
+    if is_chrome {
+        return true;
+    }
+    if !inside_main_or_article && chunk.links.len() >= 3 && !chunk.text.contains("10.") {
+        let word_count = chunk.text.split_whitespace().count();
+        if word_count <= chunk.links.len().saturating_mul(3) {
+            return true;
+        }
+    }
+    if policy == BoilerplatePolicy::CetdEntropyV1
+        && !inside_main_or_article
+        && chunk.role != "heading"
+        && chunk.role != "table_header"
+        && chunk.role != "table_cell"
+        && !chunk.text.contains("10.")
+    {
+        let word_count = chunk.text.split_whitespace().count();
+        let entropy = shannon_byte_entropy(&chunk.text);
+        let link_density = (chunk.links.len() as f64) / (word_count.max(1) as f64);
+        let effective_entropy = entropy * (1.0 - link_density.min(0.95));
+        if entropy < 3.0 {
+            return true;
+        }
+        if !chunk.links.is_empty() && (link_density >= 0.25 || effective_entropy < 2.8) {
+            return true;
+        }
+        let lower = chunk.text.to_ascii_lowercase();
+        if word_count <= 24
+            && effective_entropy < 4.5
+            && (lower.contains("all rights reserved")
+                || lower.contains("privacy policy")
+                || lower.contains("terms of service")
+                || lower.contains("cookie policy")
+                || lower.contains("sign in | register"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn apply_boilerplate_policy(
+    dom: &DomArena,
+    chunks: &mut Vec<Chunk>,
+    links: &mut Vec<String>,
+    policy: BoilerplatePolicy,
+) {
+    if policy == BoilerplatePolicy::FullDom || chunks.is_empty() {
+        return;
+    }
+    let keep_count = chunks
+        .iter()
+        .filter(|c| !is_boilerplate_chunk(dom, c, policy))
+        .count();
+    if keep_count > 0 && keep_count < chunks.len() {
+        chunks.retain(|c| !is_boilerplate_chunk(dom, c, policy));
+        if !links.is_empty() {
+            let mut remap = vec![NONE; links.len()];
+            let mut new_links = Vec::with_capacity(links.len());
+            for chunk in chunks.iter_mut() {
+                for id in &mut chunk.links {
+                    let old_idx = *id as usize;
+                    if old_idx < links.len() {
+                        if remap[old_idx] == NONE {
+                            remap[old_idx] = new_links.len() as u32;
+                            new_links.push(links[old_idx].clone());
+                        }
+                        *id = remap[old_idx];
+                    }
+                }
+            }
+            *links = new_links;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnasArchiveRecord {
+    pub title: String,
+    pub md5: String,
+    pub doi: Option<String>,
+    pub isbn: Option<String>,
+    pub format: Option<String>,
+    pub download_links: Vec<String>,
+}
+
+fn parse_32_hex_md5(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.len() == 32 && trimmed.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(trimmed.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+fn parse_isbn_token(s: &str) -> Option<String> {
+    let mut rest = s.trim_start_matches([' ', '\t', ':']);
+    if let Some(stripped) = rest
+        .strip_prefix("-13")
+        .or_else(|| rest.strip_prefix("-10"))
+    {
+        rest = stripped;
+    } else if let Some(stripped) = rest
+        .strip_prefix("13:")
+        .or_else(|| rest.strip_prefix("10:"))
+        .or_else(|| rest.strip_prefix("13 "))
+        .or_else(|| rest.strip_prefix("10 "))
+    {
+        rest = stripped;
+    }
+    let candidate: String = rest
+        .trim_start_matches([' ', '\t', ':', '-'])
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-' || *c == 'X' || *c == 'x')
+        .collect();
+    let candidate = candidate.trim_end_matches('-');
+    let compact: Vec<u8> = candidate.bytes().filter(|&b| b != b'-').collect();
+    let valid = match compact.len() {
+        13 => compact.iter().all(|b| b.is_ascii_digit()),
+        10 => {
+            compact[..9].iter().all(|b| b.is_ascii_digit())
+                && (compact[9].is_ascii_digit() || compact[9] == b'X' || compact[9] == b'x')
+        }
+        _ => false,
+    };
+    if valid {
+        Some(candidate.to_owned())
+    } else {
+        None
+    }
+}
+
+fn extract_doi_from_text(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(rel_idx) = text[search_from..].find("10.") {
+        let idx = search_from + rel_idx;
+        let valid_boundary = idx == 0 || {
+            let prev = bytes[idx - 1];
+            !prev.is_ascii_alphanumeric() && prev != b'.'
+        };
+        if valid_boundary {
+            let raw: String = text[idx..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '·')
+                .collect();
+            let candidate = raw.trim_end_matches(['.', ')', ']', ';', ',', '"', '\'']);
+            if let Some(slash_pos) = candidate.find('/') {
+                let registrant = &candidate[3..slash_pos];
+                let suffix = &candidate[slash_pos + 1..];
+                let primary_reg = registrant.split('.').next().unwrap_or("");
+                if primary_reg.len() >= 4
+                    && registrant
+                        .split('.')
+                        .all(|seg| !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_digit()))
+                    && !suffix.is_empty()
+                {
+                    return Some(candidate.to_owned());
+                }
+            }
+        }
+        search_from = idx + 3;
+    }
+    None
+}
+
+fn extract_isbn_from_text(text: &str, next_text: Option<&str>) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut search_from = 0usize;
+    while let Some(rel_idx) = lower[search_from..].find("isbn") {
+        let idx = search_from + rel_idx;
+        if let Some(isbn) = parse_isbn_token(&text[idx + 4..]) {
+            return Some(isbn);
+        }
+        search_from = idx + 4;
+    }
+    if lower.contains("isbn")
+        && let Some(nt) = next_text
+    {
+        return parse_isbn_token(nt);
+    }
+    None
+}
+
+pub fn extract_annas_archive_records(page: &Projection) -> Vec<AnnasArchiveRecord> {
+    let mut records = Vec::<AnnasArchiveRecord>::new();
+    let mut start_indices = Vec::<usize>::new();
+    for (chunk_idx, chunk) in page.chunks.iter().enumerate() {
+        for &link_id in &chunk.links {
+            if let Some(url) = page.links.get(link_id as usize) {
+                let lower_url = url.to_ascii_lowercase();
+                if let Some(pos) = lower_url.find("/md5/") {
+                    let tail = &lower_url[pos + 5..];
+                    let md5: String = tail.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                    if md5.len() == 32 && !records.iter().any(|r| r.md5 == md5) {
+                        start_indices.push(chunk_idx);
+                        records.push(AnnasArchiveRecord {
+                            title: chunk.text.clone(),
+                            md5,
+                            doi: None,
+                            isbn: None,
+                            format: None,
+                            download_links: vec![url.clone()],
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if records.is_empty() {
+        for i in 0..page.chunks.len().saturating_sub(1) {
+            if page.chunks[i].text.eq_ignore_ascii_case("md5")
+                && let Some(md5) = parse_32_hex_md5(&page.chunks[i + 1].text)
+            {
+                let title = page
+                    .chunks
+                    .iter()
+                    .find(|c| c.role == "heading")
+                    .map(|c| c.text.clone())
+                    .unwrap_or_else(|| md5.clone());
+                start_indices.push(0);
+                records.push(AnnasArchiveRecord {
+                    title,
+                    md5,
+                    doi: None,
+                    isbn: None,
+                    format: None,
+                    download_links: Vec::new(),
+                });
+                break;
+            }
+        }
+    }
+    let total_records = records.len();
+    for (rec_idx, record) in records.iter_mut().enumerate() {
+        let slice_start = if total_records <= 1 {
+            0
+        } else {
+            start_indices[rec_idx]
+        };
+        let slice_end = if total_records <= 1 {
+            page.chunks.len()
+        } else {
+            start_indices
+                .get(rec_idx + 1)
+                .copied()
+                .unwrap_or(page.chunks.len())
+        };
+        let chunk_slice = &page.chunks[slice_start..slice_end];
+        for link in &page.links {
+            if link.to_ascii_lowercase().contains(&record.md5)
+                && !record.download_links.contains(link)
+            {
+                record.download_links.push(link.clone());
+            }
+        }
+        for chunk in chunk_slice {
+            for &link_id in &chunk.links {
+                if let Some(link) = page.links.get(link_id as usize) {
+                    let lower_link = link.to_ascii_lowercase();
+                    if (lower_link.contains(&record.md5) || lower_link.contains("doi.org/"))
+                        && !record.download_links.contains(link)
+                    {
+                        record.download_links.push(link.clone());
+                    }
+                }
+            }
+        }
+        for (rel_idx, chunk) in chunk_slice.iter().enumerate() {
+            let text = &chunk.text;
+            let next_text = chunk_slice.get(rel_idx + 1).map(|c| c.text.as_str());
+            if record.doi.is_none() {
+                record.doi = extract_doi_from_text(text);
+            }
+            if record.isbn.is_none() {
+                record.isbn = extract_isbn_from_text(text, next_text);
+            }
+            if record.format.is_none() {
+                let check_text = if (text.eq_ignore_ascii_case("extension")
+                    || text.eq_ignore_ascii_case("format"))
+                    && next_text.is_some()
+                {
+                    next_text.unwrap_or(text)
+                } else {
+                    text
+                };
+                for fmt_token in ["pdf", "epub", "djvu", "mobi", "cbr", "azw3"] {
+                    if check_text
+                        .split(|c: char| !c.is_ascii_alphanumeric())
+                        .any(|w| w.eq_ignore_ascii_case(fmt_token))
+                    {
+                        record.format = Some(fmt_token.to_owned());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    records
 }
 
 #[cfg(test)]
@@ -1079,5 +1653,250 @@ mod tests {
         assert!(p.chunks.iter().any(|c| c.text.contains("Hello world")));
         assert_eq!(p.links, vec!["https://example.org/x"]);
         assert!(p.chunks.iter().all(|c| !c.text.contains("do_not_show")));
+    }
+    #[test]
+    fn optional_links_disabled_skips_link_resolution_and_preserves_chunk_text() {
+        let base = Url::parse("https://example.org/docs/index.html").unwrap();
+        let html = "<main><h1>Spec</h1><p>Read <a href='/guide'>the guide</a> and <a href='https://example.org/api#v2'>API reference</a>.</p></main>";
+        let with_links = parse_html_with_limits(html, &base, ParseLimits::default()).unwrap();
+        let without_links = parse_html_with_limits(
+            html,
+            &base,
+            ParseLimits {
+                include_links: false,
+                max_link_bytes: 0,
+                max_link_url_bytes: 0,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(with_links.links.len(), 2);
+        assert!(without_links.links.is_empty());
+        assert_eq!(with_links.chunks.len(), without_links.chunks.len());
+        for (a, b) in with_links.chunks.iter().zip(without_links.chunks.iter()) {
+            assert_eq!(a.node, b.node);
+            assert_eq!(a.role, b.role);
+            assert_eq!(a.text, b.text);
+            assert!(b.links.is_empty());
+        }
+    }
+    #[test]
+    fn annas_archive_search_results_preserve_md5_doi_and_bibliographic_fields() {
+        let base = Url::parse("https://annas-archive.org/search?q=information+retrieval").unwrap();
+        let html = r#"<nav><ul><li><a href="/login">Login</a></li><li><a href="/donate">Donate</a></li></ul></nav>
+        <main>
+            <h1>Search results for "information retrieval"</h1>
+            <article>
+                <h3><a href="/md5/4f8e9a1b2c3d4e5f6a7b8c9d0e1f2a3b">Introduction to Information Retrieval — Manning, Raghavan, Schütze (2008)</a></h3>
+                <p>English [en] · pdf · 14.2 MB · Cambridge University Press · ISBN 978-0521865715 · DOI 10.1017/CBO9780511809071</p>
+                <ul>
+                    <li><a href="/slow_download/4f8e9a1b2c3d4e5f6a7b8c9d0e1f2a3b/0/0">Slow Partner Server #1</a></li>
+                    <li><a href="https://doi.org/10.1017/CBO9780511809071">DOI Resolver</a></li>
+                </ul>
+            </article>
+            <!-- <article><h3><a href="/md5/9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d">Modern Information Retrieval — Baeza-Yates (2011)</a></h3><p>English [en] · epub · 8.4 MB</p></article> -->
+            <!-- <script>evil()</script><a href="/md5/00000000000000000000000000000000">Blocked</a> -->
+        </main>
+        <footer><p>Anna's Archive footer chrome</p></footer>"#;
+        let default_proj = parse_html(html, &base, 1000, 200).unwrap();
+        assert_eq!(extract_annas_archive_records(&default_proj).len(), 1);
+        assert!(default_proj.chunks.iter().any(|c| c.text == "Login"));
+
+        let unwrapped = parse_html_with_limits(
+            html,
+            &base,
+            ParseLimits {
+                comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+                boilerplate: BoilerplatePolicy::MainContentV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(unwrapped.chunks.iter().all(|c| c.text != "Login"));
+        assert!(
+            unwrapped
+                .chunks
+                .iter()
+                .all(|c| !c.text.contains("footer chrome"))
+        );
+        assert!(unwrapped.chunks.iter().all(|c| !c.text.contains("evil")));
+        let records = extract_annas_archive_records(&unwrapped);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].md5, "4f8e9a1b2c3d4e5f6a7b8c9d0e1f2a3b");
+        assert_eq!(records[0].doi.as_deref(), Some("10.1017/CBO9780511809071"));
+        assert_eq!(records[0].isbn.as_deref(), Some("978-0521865715"));
+        assert_eq!(records[0].format.as_deref(), Some("pdf"));
+        assert_eq!(records[1].md5, "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d");
+        assert_eq!(records[1].doi, None);
+        assert_eq!(records[1].isbn, None);
+        assert_eq!(records[1].format.as_deref(), Some("epub"));
+        assert_eq!(
+            records[1].download_links,
+            vec!["https://annas-archive.org/md5/9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d"]
+        );
+    }
+    #[test]
+    fn annas_archive_detail_table_and_abrupt_or_nested_comments_and_link_density_boilerplate() {
+        let base =
+            Url::parse("https://annas-archive.org/md5/0123456789abcdef0123456789abcdef").unwrap();
+        let detail_html = concat!(
+            "<!doctype html><h1>Quantum Error Correction</h1>",
+            "<table id=\"md5-metadata\"><thead><tr><th>Field</th><th>Value</th></tr></thead>",
+            "<tbody><tr><th>MD5</th><td>0123456789abcdef0123456789abcdef</td></tr>",
+            "<tr><th>DOI</th><td>10.1103/PhysRevLett.132.010601</td></tr>",
+            "<tr><th>ISBN-13</th><td>978-0-521-87996-5</td></tr>",
+            "<tr><th>Extension</th><td>pdf</td></tr></tbody></table>"
+        );
+        let detail_proj = parse_html(detail_html, &base, 1000, 200).unwrap();
+        let detail_records = extract_annas_archive_records(&detail_proj);
+        assert_eq!(detail_records.len(), 1);
+        assert_eq!(detail_records[0].md5, "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            detail_records[0].doi.as_deref(),
+            Some("10.1103/PhysRevLett.132.010601")
+        );
+        assert_eq!(detail_records[0].isbn.as_deref(), Some("978-0-521-87996-5"));
+        assert_eq!(detail_records[0].format.as_deref(), Some("pdf"));
+
+        let edge_html = concat!(
+            "<div class=\"menu\"><p><a href=\"/1\">Home</a> <a href=\"/2\">Docs</a> <a href=\"/3\">Pricing</a> <a href=\"/4\">Login</a></p></div>",
+            "<!--><p>Abrupt comment survivor</p><!--->",
+            "<main><nav><p>Inner nav chrome</p></nav>",
+            "<!-- outer note <!-- <article><p><a href=\"/md5/fedcba9876543210fedcba9876543210\">Unwrapped Card</a></p></article> -->",
+            "<p>Trailing paragraph</p></main>"
+        );
+        let proj = parse_html_with_limits(
+            edge_html,
+            &base,
+            ParseLimits {
+                max_html_bytes: edge_html.len(),
+                comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+                boilerplate: BoilerplatePolicy::MainContentV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let texts: Vec<&str> = proj.chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Abrupt comment survivor",
+                "Unwrapped Card",
+                "Trailing paragraph"
+            ]
+        );
+        let recs = extract_annas_archive_records(&proj);
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].md5, "fedcba9876543210fedcba9876543210");
+
+        let cetd_html = concat!(
+            "<div class=\"utility\"><p><a href=\"/login\">Sign in</a> | <a href=\"/reg\">Register</a></p></div>",
+            "<div class=\"legal\"><p>Copyright 2026 Example Corp. All rights reserved. Privacy Policy.</p></div>",
+            "<main><p>Primary research content on composite text density and entropy filtering.</p></main>"
+        );
+        let cetd_proj = parse_html_with_limits(
+            cetd_html,
+            &base,
+            ParseLimits {
+                max_html_bytes: cetd_html.len(),
+                boilerplate: BoilerplatePolicy::CetdEntropyV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let cetd_texts: Vec<&str> = cetd_proj.chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(
+            cetd_texts,
+            vec!["Primary research content on composite text density and entropy filtering."]
+        );
+    }
+
+    #[test]
+    fn proj_01_02_03_script_comment_prefix_article_header_and_metadata_edge_cases() {
+        let base = Url::parse("https://annas-archive.org/search?q=consensus").unwrap();
+        // PROJ-01: exact prompt string "<script>let s = \"<!--\";</script><main><p>Body</p></main><!-- <a href=\"/md5/0123456789abcdef0123456789abcdef\">Card</a> -->"
+        let html_proj01 = concat!(
+            "<script>let s = \"<!--\";</script><main><p>Body</p></main>",
+            "<!-- <a href=\"/md5/0123456789abcdef0123456789abcdef\">Card</a> -->"
+        );
+        let unwrapped01 =
+            unwrap_comments_if_enabled(html_proj01, CommentUnwrapPolicy::AnnasArchiveScrollCards);
+        assert!(unwrapped01.contains("<main><p>Body</p></main>"));
+        assert!(unwrapped01.contains("<a href=\"/md5/0123456789abcdef0123456789abcdef\">Card</a>"));
+        let p01 = parse_html_with_limits(
+            html_proj01,
+            &base,
+            ParseLimits {
+                max_html_bytes: html_proj01.len() + 64,
+                comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+                boilerplate: BoilerplatePolicy::MainContentV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let texts01: Vec<&str> = p01.chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts01, vec!["Body"]);
+
+        // PROJ-01 adversarial: outer comment containing '<b>tag</b>' ('>') or following <script> before nested '<!--'
+        let html_proj01_adv = concat!(
+            "<script>let s = \"<!--\";</script><main><p>BodyA</p>",
+            "<!-- outer comment with <b>tag</b> <!-- <article><p><a href=\"/md5/0123456789abcdef0123456789abcdef\">CardA</a></p></article> -->",
+            "<p>BodyB</p></main>"
+        );
+        let p01_adv = parse_html_with_limits(
+            html_proj01_adv,
+            &base,
+            ParseLimits {
+                max_html_bytes: html_proj01_adv.len() + 64,
+                comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+                boilerplate: BoilerplatePolicy::MainContentV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let texts01_adv: Vec<&str> = p01_adv.chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts01_adv, vec!["BodyA", "CardA", "BodyB"]);
+
+        // PROJ-02: <main><article><header><h1>Title</h1></header><p>Body</p></article></main> preserves <h1>Title</h1>
+        let html_proj02 = concat!(
+            "<nav><h2>Site Navigation</h2><p><a href=\"/a\">A</a></p></nav>",
+            "<div class=\"sep\"><p>----------------------------------------</p></div>",
+            "<main><article><header><h1>Title</h1></header><p>Body</p></article></main>"
+        );
+        let p02 = parse_html_with_limits(
+            html_proj02,
+            &base,
+            ParseLimits {
+                max_html_bytes: html_proj02.len(),
+                boilerplate: BoilerplatePolicy::CetdEntropyV1,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        let texts02: Vec<&str> = p02.chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts02, vec!["Title", "Body"]);
+
+        // PROJ-03: multi-"10." DOI with version/IP false positives & trailing punctuation, inline ISBN-13/10 vs 11/12-digit & placeholder rejection, and uppercase MD5 links
+        let html_proj03 = concat!(
+            "<main><article>",
+            "<h2><a href=\"/md5/0123456789ABCDEF0123456789ABCDEF\">Distributed Algorithms</a></h2>",
+            "<p>PDF · 10.4 MB · v1.10.2/rel · 192.168.10.1/24 · (10.1007/s00220-024-04900-1). · ISBN: XXXXXXXXXX · isbn-13: 978-0-521-87996-5</p>",
+            "<p><a href=\"/slow_download/0123456789ABCDEF0123456789ABCDEF/0/0\">Mirror 1</a></p>",
+            "</article>",
+            "<article>",
+            "<h2><a href=\"/md5/fedcba9876543210fedcba9876543210\">Invalid ISBN Card</a></h2>",
+            "<p>EPUB · ISBN: 12345678901 · ISBN: 123456789012 · ISBN: XXXXXXXXXX</p>",
+            "</article></main>"
+        );
+        let p03 = parse_html(html_proj03, &base, 1000, 200).unwrap();
+        let recs03 = extract_annas_archive_records(&p03);
+        assert_eq!(recs03.len(), 2);
+        assert_eq!(recs03[0].md5, "0123456789abcdef0123456789abcdef");
+        assert_eq!(recs03[0].doi.as_deref(), Some("10.1007/s00220-024-04900-1"));
+        assert_eq!(recs03[0].isbn.as_deref(), Some("978-0-521-87996-5"));
+        assert_eq!(recs03[0].format.as_deref(), Some("pdf"));
+        assert_eq!(recs03[0].download_links.len(), 2);
+        assert_eq!(recs03[1].md5, "fedcba9876543210fedcba9876543210");
+        assert_eq!(recs03[1].isbn, None);
     }
 }

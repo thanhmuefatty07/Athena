@@ -596,7 +596,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
 
 
 
-def synthetic_cases(split, *, include_harsh_stress=False):
+def synthetic_cases(split, *, include_harsh_stress=False, include_annas_archive=False):
     """Finite causal partitions, with fresh bytes but no domain-generalization claim."""
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown fixture split")
@@ -655,7 +655,13 @@ def synthetic_cases(split, *, include_harsh_stress=False):
     ):
         add("table-" + shape, "table", "", None, ["H06"], rows=rows, max_rows=512, max_cols=max_cols)
     from cloud_experiments import workloads
-    cases.extend(workloads.native_cases(split, include_harsh_stress=include_harsh_stress))
+    cases.extend(
+        workloads.native_cases(
+            split,
+            include_harsh_stress=include_harsh_stress,
+            include_annas_archive=include_annas_archive,
+        )
+    )
     return cases
 
 
@@ -795,14 +801,21 @@ def readiness(design, records):
             "result_authenticity": AUTHENTICITY}
 
 
-def study_cases(files, split, *, include_harsh_stress=False):
+def study_cases(files, split, *, include_harsh_stress=False, include_annas_archive=False):
     from cloud_experiments import workloads
-    return synthetic_cases(split, include_harsh_stress=include_harsh_stress) + workloads.corpus_cases(files, split)
+    return (
+        synthetic_cases(
+            split,
+            include_harsh_stress=include_harsh_stress,
+            include_annas_archive=include_annas_archive,
+        )
+        + workloads.corpus_cases(files, split)
+    )
 
 
 def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
             screen_blocks=None, screen_iterations=None, confirm_blocks=None, confirm_iterations=None,
-            include_harsh_stress=False, slots_per_owner=None):
+            include_harsh_stress=False, include_annas_archive=False, slots_per_owner=None):
     from cloud_experiments import contenders, libraries, workloads
     destination = Path(destination)
 
@@ -848,6 +861,8 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
             design["confirm"]["iterations"] = confirm_iterations
         if include_harsh_stress:
             design["include_harsh_stress"] = True
+        if include_annas_archive:
+            design["include_annas_archive"] = True
         if slots_per_owner is not None:
             if type(slots_per_owner) is not int or not 1 <= slots_per_owner <= 16:
                 raise ValueError("Invalid selection slots_per_owner")
@@ -855,7 +870,7 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
         design.update(source_sha256=hashlib.sha256(archive).hexdigest(),
                       files={k: hashlib.sha256(v).hexdigest() for k, v in sorted(files.items())},
                       variants=contenders.definitions(),
-                      fixtures={split: fixture_inventory(study_cases(files, split, include_harsh_stress=include_harsh_stress), split)
+                      fixtures={split: fixture_inventory(study_cases(files, split, include_harsh_stress=include_harsh_stress, include_annas_archive=include_annas_archive), split)
                                 for split in ("screen", "confirm")},
                       library_dossier=libraries.dossier(ROOT),
                       corpus={"status": "NOT_PROVIDED"} if corpus is None else
@@ -1261,8 +1276,11 @@ def _planned_cargo_cache_variants(design, *, variants=None, pilot_only=False):
     if design.get("native_design") != experimental_design.native_design():
         raise ValueError("Frozen combination design differs from the actual native executor")
     if variants is not None:
-        allowed_variants = set(all_variants) | set(
-            experimental_design.whole_path_core_panel().get("cloud_020_variants", ())
+        panel = experimental_design.whole_path_core_panel()
+        allowed_variants = (
+            set(all_variants)
+            | set(panel.get("cloud_020_variants", ()))
+            | set(panel.get("cloud_021_variants", ()))
         )
         if not variants or len(set(variants)) != len(variants) or any(v not in allowed_variants for v in variants):
             raise ValueError("Unknown/duplicate selected experiment variant")
@@ -3234,7 +3252,16 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
         cache = output.parent / "cargo-target"
         cache.mkdir(exist_ok=True)
         include_harsh_stress = bool(design.get("include_harsh_stress"))
-        phases = {split: study_cases(files, split, include_harsh_stress=include_harsh_stress) for split in ("screen", "confirm")}
+        include_annas_archive = bool(design.get("include_annas_archive"))
+        phases = {
+            split: study_cases(
+                files,
+                split,
+                include_harsh_stress=include_harsh_stress,
+                include_annas_archive=include_annas_archive,
+            )
+            for split in ("screen", "confirm")
+        }
         paths, _ = _write_fixtures(output, phases, limits)
         for split, cases in phases.items():
             if fixture_inventory(cases, split) != design["fixtures"][split]:
@@ -4233,6 +4260,7 @@ def main():
     prepare_parser.add_argument("--confirm-blocks", type=int)
     prepare_parser.add_argument("--confirm-iterations", type=int)
     prepare_parser.add_argument("--include-harsh-stress", action="store_true")
+    prepare_parser.add_argument("--include-annas-archive", action="store_true")
     prepare_parser.add_argument("--slots-per-owner", type=int)
     commands.add_parser("inventory")
     run_parser = commands.add_parser("run-native")
@@ -4279,7 +4307,15 @@ def main():
             "corpus_manifest": args.corpus_manifest,
             "wall_seconds": args.wall_seconds,
         }
-        for key in ("screen_blocks", "screen_iterations", "confirm_blocks", "confirm_iterations", "include_harsh_stress", "slots_per_owner"):
+        for key in (
+            "screen_blocks",
+            "screen_iterations",
+            "confirm_blocks",
+            "confirm_iterations",
+            "include_harsh_stress",
+            "include_annas_archive",
+            "slots_per_owner",
+        ):
             val = getattr(args, key, None)
             if val:
                 prep_kwargs[key] = val

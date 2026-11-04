@@ -654,7 +654,312 @@ def harsh_stress_cases(split):
     return cases
 
 
-def native_cases(split, *, include_harsh_stress=False):
+def annas_archive_cases(split):
+    """Anna's Archive and optional-link (LinkMode::None / LinkMode::HighlightedOnly) benchmark cohorts."""
+    if split not in ("screen", "confirm"):
+        raise ValueError("Unknown workload split")
+    rng = random.Random({"screen": 812709, "confirm": 437941}[split])
+    nonce = "seed" + str(rng.randrange(100000, 1000000))
+    marker = "<!--" + nonce + "-->"
+    cases = []
+
+    def add(name, html, *, stage="pipeline", owners=None, **fields):
+        fixture = {"html": html, "query": None, **fields}
+        cases.append(
+            {
+                "id": name,
+                "stage": stage,
+                "owners": owners or ["H01", "H02", "H04", "H05", "H10"],
+                "fixture": fixture,
+                "lineage": "annas-archive:" + name,
+                "provenance": "project-authored Anna's Archive and LinkMode contract partition",
+            }
+        )
+
+    # 1. annas-search-dense: visible cards + HTML-commented scroll cards + nav/footer chrome
+    annas_parts = [
+        "<header><nav><p>Anna's Archive navigation donate login</p></nav></header><main>",
+        f"<h1>{nonce} Search results for quantum error correction</h1>",
+    ]
+    annas_expected_blocks = [
+        {"role": "heading", "text": f"{nonce} Search results for quantum error correction", "links": []}
+    ]
+    annas_expected_links = []
+    for i in range(32):
+        md5 = f"{i + 1:032x}"
+        card_html = (
+            f'<p><a href="/md5/{md5}">{nonce} Book {i} Quantum Error Correction '
+            f'DOI: 10.1038/s41586-024-{i:04d}-x · ISBN 978-0-387-{i:05d}-2 · pdf · 4.2MB</a></p>'
+        )
+        if i >= 4:
+            annas_parts.append(f"<!-- {card_html} -->")
+        else:
+            annas_parts.append(card_html)
+        annas_expected_blocks.append(
+            {
+                "role": "paragraph",
+                "text": (
+                    f"{nonce} Book {i} Quantum Error Correction "
+                    f"DOI: 10.1038/s41586-024-{i:04d}-x · ISBN 978-0-387-{i:05d}-2 · pdf · 4.2MB"
+                ),
+                "links": [i],
+            }
+        )
+        annas_expected_links.append(f"https://example.org/md5/{md5}")
+    annas_parts.append("</main><footer><p>Footer mirror status</p></footer>" + marker)
+    add(
+        "annas-search-dense",
+        "".join(annas_parts),
+        stage="pipeline",
+        owners=["H01", "H02", "H04", "H05", "H10"],
+        query="Quantum Error Correction",
+        highlight_limit=4,
+        parse_limits={
+            "comment_unwrap": "annas_archive",
+            "boilerplate": "main_content_v1",
+            "include_links": True,
+        },
+        expected_blocks=annas_expected_blocks,
+        expected_links=annas_expected_links,
+    )
+
+    # 2. annas-md5-detail-table: bibliographic metadata table
+    md5_hex = "0123456789abcdef0123456789abcdef"
+    detail_table_html = (
+        f'<!doctype html><table id="md5-metadata"><caption>Bibliographic Metadata {nonce}</caption>'
+        '<thead><tr><th id="field" scope="col">Field</th><th id="val" scope="col">Value</th></tr></thead>'
+        f'<tbody><tr><th scope="row">MD5</th><td headers="field val">{md5_hex}</td></tr>'
+        '<tr><th scope="row">DOI</th><td headers="field val">10.1103/PhysRevLett.132.010601</td></tr>'
+        '<tr><th scope="row">ISBN-13</th><td headers="field val">978-0-521-87996-5</td></tr>'
+        '<tr><th scope="row">Extension</th><td headers="field val">pdf</td></tr></tbody></table>'
+    )
+    expected_detail_table = _html_table(
+        0,
+        "md5-metadata",
+        f"Bibliographic Metadata {nonce}",
+        [
+            {
+                "row_index": 0,
+                "group": 0,
+                "group_type": "thead",
+                "cells": [
+                    _html_cell(0, 0, 0, "th", "Field", scope="col", cell_id="field"),
+                    _html_cell(0, 0, 1, "th", "Value", scope="col", cell_id="val"),
+                ],
+            },
+            {
+                "row_index": 1,
+                "group": 1,
+                "group_type": "tbody",
+                "cells": [
+                    _html_cell(0, 1, 0, "th", "MD5", scope="row"),
+                    _html_cell(0, 1, 1, "td", md5_hex, headers=("field", "val")),
+                ],
+            },
+            {
+                "row_index": 2,
+                "group": 1,
+                "group_type": "tbody",
+                "cells": [
+                    _html_cell(0, 2, 0, "th", "DOI", scope="row"),
+                    _html_cell(0, 2, 1, "td", "10.1103/PhysRevLett.132.010601", headers=("field", "val")),
+                ],
+            },
+            {
+                "row_index": 3,
+                "group": 1,
+                "group_type": "tbody",
+                "cells": [
+                    _html_cell(0, 3, 0, "th", "ISBN-13", scope="row"),
+                    _html_cell(0, 3, 1, "td", "978-0-521-87996-5", headers=("field", "val")),
+                ],
+            },
+            {
+                "row_index": 4,
+                "group": 1,
+                "group_type": "tbody",
+                "cells": [
+                    _html_cell(0, 4, 0, "th", "Extension", scope="row"),
+                    _html_cell(0, 4, 1, "td", "pdf", headers=("field", "val")),
+                ],
+            },
+        ],
+        2,
+        [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9]],
+    )
+    add(
+        "annas-md5-detail-table",
+        detail_table_html,
+        stage="html-table",
+        owners=["H06"],
+        expected_html_tables=[expected_detail_table],
+        expected_html_parse_warnings=0,
+        max_tables=8,
+        max_table_rows=32,
+        max_table_cols=16,
+    )
+
+    # 3. export-links-none: include_links=False omits link resolution and Frame::Link records
+    no_links_html = "".join(
+        f'<p>{nonce} block {i} <a href="/doc/{i}">citation{i}</a></p>' for i in range(64)
+    ) + marker
+    add(
+        "export-links-none",
+        no_links_html,
+        stage="pipeline",
+        owners=["H01", "H04", "H05"],
+        link_mode="none",
+        parse_limits={"include_links": False},
+        expected_blocks=[
+            {"role": "paragraph", "text": f"{nonce} block {i} citation{i}", "links": []}
+            for i in range(64)
+        ],
+        expected_links=[],
+    )
+
+    # 4. export-links-highlighted-only: emits and remaps only links cited by highlighted blocks
+    hl_only_html = (
+        f'<p>{nonce} background0 <a href="/bg/0">bg0</a></p>'
+        f'<p>{nonce} target_alpha <a href="/hit/alpha">hitA</a></p>'
+        f'<p>{nonce} background1 <a href="/bg/1">bg1</a></p>'
+        + marker
+    )
+    add(
+        "export-links-highlighted-only",
+        hl_only_html,
+        stage="export",
+        owners=["H01"],
+        query="target_alpha",
+        highlight_limit=1,
+        link_mode="highlighted_only",
+        expected_blocks=[
+            {"role": "paragraph", "text": f"{nonce} target_alpha hitA", "links": [0]},
+            {"role": "paragraph", "text": f"{nonce} background0 bg0", "links": []},
+            {"role": "paragraph", "text": f"{nonce} background1 bg1", "links": []},
+        ],
+        expected_links=["https://example.org/hit/alpha"],
+    )
+
+    # 5. parse-cetd-entropy-v1: CETD link-entropy boilerplate pruning
+    cetd_menu = "".join(f'<a href="/nav/{i}">Link{i}</a> ' for i in range(16))
+    cetd_html = (
+        f'<div class="top-links"><p>{cetd_menu}</p></div>'
+        f"<article><h1>{nonce} CETD Signal Extraction</h1>"
+        f"<p>{nonce} Dense scholarly prose paragraph on content-to-tag ratio and link entropy filtering.</p></article>"
+        + marker
+    )
+    add(
+        "parse-cetd-entropy-v1",
+        cetd_html,
+        stage="parse",
+        owners=["H04", "H05"],
+        parse_limits={"boilerplate": "cetd_entropy_v1"},
+        expected_blocks=[
+            {"role": "heading", "text": f"{nonce} CETD Signal Extraction", "links": []},
+            {
+                "role": "paragraph",
+                "text": f"{nonce} Dense scholarly prose paragraph on content-to-tag ratio and link entropy filtering.",
+                "links": [],
+            },
+        ],
+        expected_links=[],
+    )
+
+    # 6. select-bm25f-mslp: field-weighted BM25F + minimal-span lexical proximity selection
+    bm25f_html = (
+        f"<h2>{nonce} fault tolerant Logical Qubit Architecture</h2>"
+        f"<p>{nonce} background noise paragraph without target terms.</p>"
+        f"<p>{nonce} logical qubit syndrome decoding and fault tolerant stabilizer measurement.</p>"
+        + marker
+    )
+    add(
+        "select-bm25f-mslp",
+        bm25f_html,
+        stage="highlight",
+        owners=["H02"],
+        query="logical qubit fault tolerant",
+        highlight_limit=2,
+        rank_mode="bm25f",
+        expected_selected=[0, 2],
+    )
+
+    # 7. select-bm25f-simhash64: BM25F + 64-bit SimHash near-duplicate suppression
+    simhash_html = (
+        f"<p>{nonce} surface code syndrome decoding threshold theorem quantum stabilizer check alpha</p>"
+        f"<p>{nonce} surface code syndrome decoding threshold theorem quantum stabilizer check alpha!</p>"
+        f"<p>{nonce} surface code syndrome decoding topological lattice surgery logical gate circuit</p>"
+        + marker
+    )
+    add(
+        "select-bm25f-simhash64",
+        simhash_html,
+        stage="highlight",
+        owners=["H02"],
+        query="surface code syndrome decoding",
+        highlight_limit=2,
+        rank_mode="bm25f_simhash",
+        expected_selected=[0, 2],
+    )
+
+    # 8. rank-bm25-plus: Lv-Zhai lower-bounded TF BM25+ ranking
+    bm25_plus_html = (
+        f"<p>{nonce} unrelated classical thermodynamics paragraph</p>"
+        f"<p>{nonce} topological stabilizer code and topological quantum memory</p>"
+        f"<p>{nonce} stabilizer measurement circuit</p>"
+        + marker
+    )
+    add(
+        "rank-bm25-plus",
+        bm25_plus_html,
+        stage="rank",
+        owners=["H02"],
+        query="topological stabilizer",
+        rank_mode="bm25_plus",
+        expected_rank_order=[1, 2, 0],
+    )
+
+    # 9. rank-bm25f: Field-weighted BM25F + sliding-window MSLP (heading > paragraph with heading_context_boost)
+    rank_bm25f_html = (
+        f"<h2>{nonce} byzantine quorum consensus</h2>"
+        f"<p>{nonce} byzantine quorum consensus</p>"
+        f"<p>{nonce} byzantine filler one two three four five six byzantine</p>"
+        + marker
+    )
+    add(
+        "rank-bm25f",
+        rank_bm25f_html,
+        stage="rank",
+        owners=["H02"],
+        query="byzantine quorum",
+        rank_mode="bm25f",
+        expected_rank_order=[0, 1, 2],
+    )
+
+    # 10. rank-bm25l: Lv-Zhai length-normalized BM25L ranking
+    add(
+        "rank-bm25l",
+        bm25_plus_html,
+        stage="rank",
+        owners=["H02"],
+        query="topological stabilizer",
+        rank_mode="bm25l",
+        expected_rank_order=[1, 2, 0],
+    )
+
+    # 11. rank-ql-dirichlet: Query-Likelihood with Dirichlet prior smoothing
+    add(
+        "rank-ql-dirichlet",
+        bm25_plus_html,
+        stage="rank",
+        owners=["H02"],
+        query="topological stabilizer",
+        rank_mode="ql_dirichlet",
+        expected_rank_order=[1, 2, 0],
+    )
+    return cases
+
+
+def native_cases(split, *, include_harsh_stress=False, include_annas_archive=False):
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown workload split")
     rng = random.Random({"screen": 812709, "confirm": 437941}[split])
@@ -791,6 +1096,8 @@ def native_cases(split, *, include_harsh_stress=False):
         max_tables=8, max_table_rows=32, max_table_cols=16)
     if include_harsh_stress:
         cases.extend(harsh_stress_cases(split))
+    if include_annas_archive:
+        cases.extend(annas_archive_cases(split))
     return cases
 
 
@@ -859,6 +1166,17 @@ def envelope_errors(raw, fixture):
         except (ValueError, UnicodeError):
             return ["Expected a canonical highlight-selection observation"]
         return [] if value == fixture["expected_selected"] else ["Highlight selection oracle differs"]
+    if "expected_rank_order" in fixture:
+        try:
+            value = strict_json_loads(raw)
+        except (ValueError, UnicodeError):
+            return ["Expected a canonical ranking observation"]
+        if not isinstance(value, list) or any(
+            not isinstance(item, list) or len(item) != 2 for item in value
+        ):
+            return ["Malformed ranking observation"]
+        rank_order = [item[0] for item in value]
+        return [] if rank_order == fixture["expected_rank_order"] else ["Rank order oracle differs"]
     if "expected_blocks" not in fixture and "expected_links" not in fixture:
         return []
     try:

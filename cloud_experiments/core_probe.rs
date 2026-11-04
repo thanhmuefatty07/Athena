@@ -1,13 +1,21 @@
 //! Native research boundaries; canonical outputs are produced outside timers.
 #![forbid(unsafe_code)]
 use athena_core_v2::{
-    aae::export_jsonl_with_limit,
+    aae::{
+        LinkMode, export_jsonl_with_limit, export_jsonl_with_link_mode_and_prepared,
+        export_jsonl_with_options,
+    },
     arena::Tag,
+    network::{ContentEncodingMode, decode_content_encoding},
     projection::{
-        Chunk, ParseLimits, Projection, ResearchNode, ResearchNodeKind, parse_html,
+        BoilerplatePolicy, Chunk, CommentUnwrapPolicy, ParseLimits, Projection, ResearchNode,
+        ResearchNodeKind, extract_annas_archive_records, parse_html,
         parse_html_document_with_node_limit, parse_html_with_limits, project_research_nodes,
     },
-    rank::{bm25, highlight_indices},
+    rank::{
+        PreparedRank as CorePreparedRank, bm25, bm25_plus, bm25f, bm25f_highlight_indices,
+        bm25f_simhash_highlight_indices, bm25l, highlight_indices, ql_dirichlet,
+    },
     table::{Cell, Grid, GridError, Row, expand, expand_with_slot_limit},
 };
 use scraper::{ElementRef, Html, Selector};
@@ -18,6 +26,7 @@ use std::{
     env, fs,
     hint::black_box,
     io::{self, Read, Write},
+    sync::Arc,
     time::Instant,
 };
 use url::Url;
@@ -298,6 +307,34 @@ fn content_hash(chunks: &[Chunk], batch: usize) -> [u8; 32] {
             let total_len = chunks
                 .iter()
                 .fold(chunks.len() - 1, |acc, c| acc + c.text.len());
+            if total_len <= 4096 {
+                let mut buf = [0u8; 4096];
+                let first_bytes = first.text.as_bytes();
+                let mut pos = first_bytes.len();
+                buf[..pos].copy_from_slice(first_bytes);
+                for chunk in rest {
+                    buf[pos] = b'\n';
+                    pos += 1;
+                    let bytes = chunk.text.as_bytes();
+                    buf[pos..pos + bytes.len()].copy_from_slice(bytes);
+                    pos += bytes.len();
+                }
+                return *blake3::hash(&buf[..pos]).as_bytes();
+            }
+            if total_len <= 32_768 {
+                let mut buf = [0u8; 32_768];
+                let first_bytes = first.text.as_bytes();
+                let mut pos = first_bytes.len();
+                buf[..pos].copy_from_slice(first_bytes);
+                for chunk in rest {
+                    buf[pos] = b'\n';
+                    pos += 1;
+                    let bytes = chunk.text.as_bytes();
+                    buf[pos..pos + bytes.len()].copy_from_slice(bytes);
+                    pos += bytes.len();
+                }
+                return *blake3::hash(&buf[..pos]).as_bytes();
+            }
             if total_len <= batch.max(262_144) {
                 let mut scratch = Vec::with_capacity(total_len);
                 scratch.extend_from_slice(first.text.as_bytes());
@@ -367,6 +404,7 @@ fn make_frames(
     observed: u64,
     query: Option<&str>,
     limit: usize,
+    link_mode: LinkMode,
 ) -> Vec<Frame> {
     let highlights = query
         .map(|q| highlight_indices(&page.chunks, q, limit))
@@ -374,6 +412,28 @@ fn make_frames(
     let mut selected = vec![false; page.chunks.len()];
     for &index in &highlights {
         selected[index] = true;
+    }
+    let order: Vec<usize> = highlights
+        .into_iter()
+        .chain((0..page.chunks.len()).filter(|&i| !selected[i]))
+        .collect();
+    let mut link_remap: Vec<u32> = Vec::new();
+    let mut active_links: Vec<(u32, String)> = Vec::new();
+    if link_mode == LinkMode::HighlightedOnly && !page.links.is_empty() {
+        link_remap.resize(page.links.len(), u32::MAX);
+        for &index in &order {
+            if !selected[index] {
+                break;
+            }
+            for &old_id in &page.chunks[index].links {
+                let idx = old_id as usize;
+                if idx < page.links.len() && link_remap[idx] == u32::MAX {
+                    let new_id = active_links.len() as u32;
+                    link_remap[idx] = new_id;
+                    active_links.push((new_id, page.links[idx].clone()));
+                }
+            }
+        }
     }
     let mut frames = vec![Frame::Meta {
         version: "aae/1",
@@ -386,24 +446,52 @@ fn make_frames(
         parse_warnings: page.parse_warnings,
     }];
     let ids = block_ids(&page.chunks);
-    for index in highlights
-        .into_iter()
-        .chain((0..page.chunks.len()).filter(|&i| !selected[i]))
-    {
+    for index in order {
         let chunk = &page.chunks[index];
+        let links = match link_mode {
+            LinkMode::All => chunk.links.clone(),
+            LinkMode::None => Vec::new(),
+            LinkMode::HighlightedOnly => {
+                if selected[index] && !chunk.links.is_empty() {
+                    let mut remapped = Vec::with_capacity(chunk.links.len());
+                    for &old_id in &chunk.links {
+                        let idx = old_id as usize;
+                        if idx < link_remap.len() && link_remap[idx] != u32::MAX {
+                            let new_id = link_remap[idx];
+                            if !remapped.contains(&new_id) {
+                                remapped.push(new_id);
+                            }
+                        }
+                    }
+                    remapped
+                } else {
+                    Vec::new()
+                }
+            }
+        };
         frames.push(Frame::Block {
             id: blake3::Hash::from(ids[index]).to_hex().to_string(),
             role: chunk.role,
             text: chunk.text.clone(),
-            links: chunk.links.clone(),
+            links,
             highlight: selected[index],
         });
     }
-    for (index, url) in page.links.iter().enumerate() {
-        frames.push(Frame::Link {
-            id: index as u32,
-            url: url.clone(),
-        });
+    match link_mode {
+        LinkMode::All => {
+            for (index, url) in page.links.iter().enumerate() {
+                frames.push(Frame::Link {
+                    id: index as u32,
+                    url: url.clone(),
+                });
+            }
+        }
+        LinkMode::HighlightedOnly => {
+            for (id, url) in active_links {
+                frames.push(Frame::Link { id, url });
+            }
+        }
+        LinkMode::None => {}
     }
     frames.push(Frame::End {
         block_count: page.chunks.len(),
@@ -1237,6 +1325,34 @@ impl Fixture {
             .unwrap_or(17);
         let value = &input["parse_limits"];
         let defaults = ParseLimits::default();
+        let default_include_links = if input["link_mode"].as_str() == Some("none")
+            || value["link_mode"].as_str() == Some("none")
+        {
+            false
+        } else {
+            defaults.include_links
+        };
+        let include_links = value["include_links"]
+            .as_bool()
+            .or_else(|| input["include_links"].as_bool())
+            .unwrap_or(default_include_links);
+        let comment_unwrap = match value["comment_unwrap"]
+            .as_str()
+            .or_else(|| input["comment_unwrap"].as_str())
+        {
+            Some("annas_archive" | "annas-archive-scroll-cards") => {
+                CommentUnwrapPolicy::AnnasArchiveScrollCards
+            }
+            _ => CommentUnwrapPolicy::None,
+        };
+        let boilerplate = match value["boilerplate"]
+            .as_str()
+            .or_else(|| input["boilerplate"].as_str())
+        {
+            Some("main_content_v1" | "main-content") => BoilerplatePolicy::MainContentV1,
+            Some("cetd_entropy_v1" | "cetd") => BoilerplatePolicy::CetdEntropyV1,
+            _ => BoilerplatePolicy::FullDom,
+        };
         let limits = ParseLimits {
             max_html_bytes: number(value, "max_html_bytes", defaults.max_html_bytes)?,
             max_text_bytes: number(value, "max_text_bytes", defaults.max_text_bytes)?,
@@ -1249,6 +1365,9 @@ impl Fixture {
             )?,
             max_link_bytes: number(value, "max_link_bytes", defaults.max_link_bytes)?,
             max_link_url_bytes: number(value, "max_link_url_bytes", defaults.max_link_url_bytes)?,
+            include_links,
+            comment_unwrap,
+            boilerplate,
         };
         require(
             limits.max_nodes <= 250_000
@@ -1379,12 +1498,21 @@ impl Fixture {
             chunk.text = "\"".repeat(bytes);
         }
         let frames = if stage == "serialization" {
+            let link_mode = match input["link_mode"].as_str() {
+                Some("highlighted_only" | "highlighted-only") if limits.include_links => {
+                    LinkMode::HighlightedOnly
+                }
+                Some("none") => LinkMode::None,
+                _ if !limits.include_links => LinkMode::None,
+                _ => LinkMode::All,
+            };
             make_frames(
                 page.as_ref().ok_or("serialization page missing")?,
                 &url,
                 observed,
                 input["query"].as_str(),
                 highlight_limit,
+                link_mode,
             )
         } else {
             vec![]
@@ -1480,16 +1608,49 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
             .map_err(str::to_string)
     };
     let export = |page: &Projection, table_cells: Option<&[Value]>| {
-        let mut bytes = export_jsonl_with_limit(
-            page,
-            &input.url,
-            input.observed,
-            input.input["query"].as_str(),
-            input.highlight_limit,
-            input.limit,
-        )
-        .map(String::into_bytes)
-        .map_err(|e| e.to_string())?;
+        let exported = match input.input["link_mode"].as_str() {
+            Some("highlighted_only" | "highlighted-only") => {
+                export_jsonl_with_link_mode_and_prepared(
+                    page,
+                    &input.url,
+                    input.observed,
+                    input.input["query"].as_str(),
+                    input.highlight_limit,
+                    input.limit,
+                    LinkMode::HighlightedOnly,
+                    None,
+                )
+            }
+            Some("none") => export_jsonl_with_options(
+                page,
+                &input.url,
+                input.observed,
+                input.input["query"].as_str(),
+                input.highlight_limit,
+                input.limit,
+                false,
+            ),
+            _ if !input.limits.include_links => export_jsonl_with_options(
+                page,
+                &input.url,
+                input.observed,
+                input.input["query"].as_str(),
+                input.highlight_limit,
+                input.limit,
+                false,
+            ),
+            _ => export_jsonl_with_limit(
+                page,
+                &input.url,
+                input.observed,
+                input.input["query"].as_str(),
+                input.highlight_limit,
+                input.limit,
+            ),
+        };
+        let mut bytes = exported
+            .map(String::into_bytes)
+            .map_err(|e| e.to_string())?;
         if let Some(cells) = table_cells {
             append_table_cells_to_aae(&mut bytes, cells, input.limit)?;
         }
@@ -1517,17 +1678,80 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
             )?;
             export(&projection, table_cells.as_deref()).map(Output::Bytes)
         }
-        "rank" => Ok(Output::Rank(bm25(
-            &page()?.chunks,
-            input.input["query"].as_str().unwrap_or(""),
-            1.2,
-            0.75,
-        ))),
-        "selection" | "highlight" => Ok(Output::Selection(highlight_indices(
-            &page()?.chunks,
-            input.input["query"].as_str().unwrap_or(""),
-            input.highlight_limit,
-        ))),
+        "rank" => {
+            let query = input.input["query"].as_str().unwrap_or("");
+            let chunks = &page()?.chunks;
+            let env_model = env::var("ATHENA_RESEARCH_RANK_MODEL").ok();
+            let model = input.input["rank_model"]
+                .as_str()
+                .or_else(|| input.input["rank_mode"].as_str().filter(|&m| m != "bm25"))
+                .or(option_env!("ATHENA_RESEARCH_RANK_MODEL"))
+                .or(env_model.as_deref())
+                .or_else(|| input.input["rank_mode"].as_str());
+            let scores = match model {
+                Some("bm25f" | "bm25f_mslp" | "bm25f-mslp") => bm25f(chunks, query, 1.2, 0.75),
+                Some("bm25_plus" | "bm25+" | "bm25-plus") => {
+                    bm25_plus(chunks, query, 1.2, 0.75, 1.0)
+                }
+                Some("bm25l") => bm25l(chunks, query, 1.2, 0.75, 0.5),
+                Some("ql_dirichlet" | "dirichlet" | "ql-dirichlet") => {
+                    ql_dirichlet(chunks, query, 1000.0)
+                }
+                _ => bm25(chunks, query, 1.2, 0.75),
+            };
+            Ok(Output::Rank(scores))
+        }
+        "selection" | "highlight" => {
+            let query = input.input["query"].as_str().unwrap_or("");
+            let chunks = &page()?.chunks;
+            let env_model = env::var("ATHENA_RESEARCH_RANK_MODEL").ok();
+            let model = input.input["rank_model"]
+                .as_str()
+                .or_else(|| input.input["rank_mode"].as_str().filter(|&m| m != "bm25"))
+                .or(option_env!("ATHENA_RESEARCH_RANK_MODEL"))
+                .or(env_model.as_deref())
+                .or_else(|| input.input["rank_mode"].as_str());
+            let selected = match model {
+                Some("bm25f" | "bm25f_mslp" | "bm25f-mslp") => {
+                    bm25f_highlight_indices(chunks, query, input.highlight_limit)
+                }
+                Some(
+                    "bm25f_simhash"
+                    | "bm25f_simhash_highlight_indices"
+                    | "simhash64"
+                    | "bm25f-simhash",
+                ) => bm25f_simhash_highlight_indices(chunks, query, input.highlight_limit, 3),
+                Some("bm25_plus" | "bm25+" | "bm25-plus") => {
+                    let mut top: Vec<usize> = bm25_plus(chunks, query, 1.2, 0.75, 1.0)
+                        .into_iter()
+                        .take(input.highlight_limit)
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    top.sort_unstable();
+                    top
+                }
+                Some("bm25l") => {
+                    let mut top: Vec<usize> = bm25l(chunks, query, 1.2, 0.75, 0.5)
+                        .into_iter()
+                        .take(input.highlight_limit)
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    top.sort_unstable();
+                    top
+                }
+                Some("ql_dirichlet" | "dirichlet" | "ql-dirichlet") => {
+                    let mut top: Vec<usize> = ql_dirichlet(chunks, query, 1000.0)
+                        .into_iter()
+                        .take(input.highlight_limit)
+                        .map(|(idx, _)| idx)
+                        .collect();
+                    top.sort_unstable();
+                    top
+                }
+                _ => highlight_indices(chunks, query, input.highlight_limit),
+            };
+            Ok(Output::Selection(selected))
+        }
         "hash" => {
             let batch = match option_env!("ATHENA_RESEARCH_HASH").unwrap_or("joined") {
                 "joined" => 0,
@@ -1765,7 +1989,7 @@ fn is_skipped_projection_subtree(name: &str) -> bool {
     )
 }
 
-fn scraper_projection_nodes(document: &Html) -> Vec<ResearchNode> {
+fn scraper_projection_nodes(document: &Html, include_links: bool) -> Vec<ResearchNode> {
     let mut nodes = Vec::with_capacity(document.tree.nodes().count());
     let mut stack = vec![(document.tree.root(), None)];
     while let Some((node, parent)) = stack.pop() {
@@ -1777,7 +2001,7 @@ fn scraper_projection_nodes(document: &Html) -> Vec<ResearchNode> {
                     visit_children = false;
                 } else {
                     let index = nodes.len();
-                    let attributes = if el.name() == "a" {
+                    let attributes = if include_links && el.name() == "a" {
                         el.attr("href")
                             .into_iter()
                             .map(|v| ("href".to_owned(), v.to_owned()))
@@ -1856,7 +2080,7 @@ fn parse_projection_and_table_cells(
         .tree
         .values()
         .any(|node| matches!(node, scraper::Node::Element(el) if el.name() == "table"));
-    let nodes = scraper_projection_nodes(&document);
+    let nodes = scraper_projection_nodes(&document, limits.include_links);
     let projection = project_research_nodes(html.len(), &nodes, url, limits, parse_warnings)
         .map_err(str::to_string)?;
     let cells = if has_table_element {
@@ -2110,6 +2334,10 @@ struct TaskExtractRequest {
     task_id: String,
     source_id: String,
     expected_revision: String,
+    #[serde(default)]
+    include_links: Option<bool>,
+    #[serde(default)]
+    link_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2122,6 +2350,10 @@ struct TaskExpandRequest {
     source_id: String,
     expected_revision: String,
     handle: String,
+    #[serde(default)]
+    include_links: Option<bool>,
+    #[serde(default)]
+    link_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2163,6 +2395,7 @@ fn task_authorize_and_export(
     source_id: &str,
     expected_revision: &str,
     required_handle: Option<&str>,
+    (include_links, link_mode): (Option<bool>, Option<&str>),
 ) -> Result<Vec<u8>, String> {
     let registry: Value = serde_json::from_str(include_str!("mcp_sdk/task_inputs.json"))
         .map_err(|_| "SCOPED_TASK_REGISTRY_INVALID".to_string())?;
@@ -2218,7 +2451,9 @@ fn task_authorize_and_export(
         json!({
             "html":document["html"], "url":document["url"], "query":task["query"],
             "observed_at_unix_ms":document["observed_at_unix_ms"], "limit":131_072,
-            "include_table_cells":true
+            "include_table_cells":true,
+            "include_links":include_links.unwrap_or(true),
+            "link_mode":link_mode.unwrap_or("all"),
         }),
         "export",
     )?;
@@ -2244,7 +2479,13 @@ fn task_export(request_bytes: &[u8]) -> Result<Vec<u8>, String> {
                 &request.expected_revision,
             ]
             .iter()
-            .all(|value| !value.is_empty() && value.len() <= 64),
+            .all(|value| !value.is_empty() && value.len() <= 64)
+            && request.link_mode.as_deref().is_none_or(|mode| {
+                matches!(
+                    mode,
+                    "all" | "highlighted_only" | "highlighted-only" | "none"
+                )
+            }),
         "SCOPED_TASK_REQUEST_INVALID",
     )?;
     task_authorize_and_export(
@@ -2254,6 +2495,7 @@ fn task_export(request_bytes: &[u8]) -> Result<Vec<u8>, String> {
         &request.source_id,
         &request.expected_revision,
         None,
+        (request.include_links, request.link_mode.as_deref()),
     )
 }
 
@@ -2273,7 +2515,13 @@ fn task_expand(request_bytes: &[u8]) -> Result<Vec<u8>, String> {
             .iter()
             .all(|value| !value.is_empty() && value.len() <= 64)
             && !request.handle.is_empty()
-            && request.handle.len() <= 128,
+            && request.handle.len() <= 128
+            && request.link_mode.as_deref().is_none_or(|mode| {
+                matches!(
+                    mode,
+                    "all" | "highlighted_only" | "highlighted-only" | "none"
+                )
+            }),
         "SCOPED_TASK_REQUEST_INVALID",
     )?;
     task_authorize_and_export(
@@ -2283,6 +2531,7 @@ fn task_expand(request_bytes: &[u8]) -> Result<Vec<u8>, String> {
         &request.source_id,
         &request.expected_revision,
         Some(&request.handle),
+        (request.include_links, request.link_mode.as_deref()),
     )
 }
 
@@ -2412,6 +2661,1003 @@ fn task_search(request_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn time_samples(iterations: usize, warmup: usize, mut op: impl FnMut()) -> Value {
+    for _ in 0..warmup {
+        op();
+    }
+    let mut samples = Vec::with_capacity(iterations);
+    for _ in 0..iterations {
+        let t0 = Instant::now();
+        op();
+        samples.push(t0.elapsed().as_nanos().max(1) as u64);
+    }
+    samples.sort_unstable();
+    let n = samples.len();
+    let pct = |q: f64| -> u64 { samples[((n - 1) as f64 * q).ceil() as usize] };
+    let sum: u128 = samples.iter().map(|&v| u128::from(v)).sum();
+    let mean_ns = (sum as f64) / (n as f64);
+    json!({
+        "iterations": n,
+        "p50_ns": pct(0.50),
+        "p95_ns": pct(0.95),
+        "p99_ns": pct(0.99),
+        "mean_ns": (mean_ns * 100.0).round() / 100.0,
+    })
+}
+
+fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
+    let warmup = iterations.clamp(2, 15);
+    let base_url = Url::parse("https://annas-archive.org/search?q=quantum").unwrap();
+
+    // 1. Family 1: Retrieval Ranking & Novelty Selection Models
+    let mut structural_chunks = Vec::with_capacity(256);
+    for i in 0..256usize {
+        let (role, text) = match i {
+            42 => (
+                "heading",
+                "Byzantine fault tolerance quorum safety specification".to_string(),
+            ),
+            43 => (
+                "paragraph",
+                "Following section context: quorum safety liveness proof under partial synchrony"
+                    .to_string(),
+            ),
+            108 => (
+                "table_header",
+                "Byzantine fault tolerance quorum safety benchmark".to_string(),
+            ),
+            _ if i % 16 == 0 => (
+                "paragraph",
+                format!(
+                    "Byzantine background filler {} fault {} tolerance {} quorum {} safety",
+                    "token ".repeat(8),
+                    "alpha ".repeat(8),
+                    "beta ".repeat(8),
+                    "gamma ".repeat(8)
+                ),
+            ),
+            _ => (
+                "paragraph",
+                format!("Unrelated distributed storage telemetry segment {i} with ordinary words"),
+            ),
+        };
+        structural_chunks.push(Chunk {
+            node: (i + 1) as u32,
+            role,
+            text,
+            links: vec![],
+        });
+    }
+    let q_struct = "byzantine quorum safety";
+    let bm25_struct_top = bm25(&structural_chunks, q_struct, 1.2, 0.75);
+    let bm25f_struct_top = bm25f(&structural_chunks, q_struct, 1.2, 0.75);
+    let bm25_plus_struct_top = bm25_plus(&structural_chunks, q_struct, 1.2, 0.75, 1.0);
+    let bm25l_struct_top = bm25l(&structural_chunks, q_struct, 1.2, 0.75, 0.5);
+    let ql_struct_top = ql_dirichlet(&structural_chunks, q_struct, 1000.0);
+
+    let mut skewed_chunks = Vec::with_capacity(256);
+    let long_filler = "comprehensive mathematical derivation lemma corollary ".repeat(55);
+    for i in 0..256usize {
+        let text = if i == 0 {
+            format!(
+                "quantum error correction surface code threshold theorem {} quantum surface code",
+                long_filler
+            )
+        } else if i == 1 {
+            "quantum error correction surface code threshold".to_string()
+        } else {
+            format!("ordinary condensed matter lattice vibration mode {i} prose")
+        };
+        skewed_chunks.push(Chunk {
+            node: (i + 1) as u32,
+            role: "paragraph",
+            text,
+            links: vec![],
+        });
+    }
+    let q_skew = "quantum surface code";
+    let score_of = |scores: &[(usize, f64)], target: usize| -> f64 {
+        scores
+            .iter()
+            .find(|(idx, _)| *idx == target)
+            .map(|(_, s)| *s)
+            .unwrap_or(0.0)
+    };
+    let s_bm25 = bm25(&skewed_chunks, q_skew, 1.2, 0.75);
+    let s_bm25_plus = bm25_plus(&skewed_chunks, q_skew, 1.2, 0.75, 1.0);
+    let s_bm25l = bm25l(&skewed_chunks, q_skew, 1.2, 0.75, 0.5);
+    let s_ql = ql_dirichlet(&skewed_chunks, q_skew, 1000.0);
+
+    let mut novelty_chunks = Vec::with_capacity(512);
+    let punct_variants = [".", "!", ";", " -", "...", " :", " !!", " ?"];
+    for i in 0..512usize {
+        let text = if i < 64 {
+            format!(
+                "Zero-copy consensus replication latency quorum invariant verified{}",
+                punct_variants[i % punct_variants.len()]
+            )
+        } else if i == 100 {
+            "Zero-copy consensus replication Raft leader lease verification".to_string()
+        } else if i == 200 {
+            "Zero-copy consensus replication Paxos acceptor quorum commit".to_string()
+        } else if i == 300 {
+            "Zero-copy consensus replication Viewstamped state machine log".to_string()
+        } else if i == 400 {
+            "Zero-copy consensus replication EPaxos egalitarian dependency graph".to_string()
+        } else {
+            format!("Background telemetry metric {i} disk throughput")
+        };
+        novelty_chunks.push(Chunk {
+            node: (i + 1) as u32,
+            role: "paragraph",
+            text,
+            links: vec![],
+        });
+    }
+    let q_novelty = "zero-copy consensus replication";
+    let sel_bm25_exact = highlight_indices(&novelty_chunks, q_novelty, 5);
+    let sel_bm25f_exact = bm25f_highlight_indices(&novelty_chunks, q_novelty, 5);
+    let sel_bm25f_simhash = bm25f_simhash_highlight_indices(&novelty_chunks, q_novelty, 5, 3);
+
+    let retrieval_family = json!({
+        "structural_authority_256": {
+            "bm25": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25(black_box(&structural_chunks), q_struct, 1.2, 0.75));
+                }),
+                "top1_index": bm25_struct_top[0].0,
+                "top1_role": structural_chunks[bm25_struct_top[0].0].role,
+            },
+            "bm25f_mslp": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25f(black_box(&structural_chunks), q_struct, 1.2, 0.75));
+                }),
+                "top1_index": bm25f_struct_top[0].0,
+                "top1_role": structural_chunks[bm25f_struct_top[0].0].role,
+                "top3_roles": bm25f_struct_top.iter().take(3).map(|(idx, _)| structural_chunks[*idx].role).collect::<Vec<_>>(),
+            },
+            "bm25_plus": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25_plus(black_box(&structural_chunks), q_struct, 1.2, 0.75, 1.0));
+                }),
+                "top1_index": bm25_plus_struct_top[0].0,
+            },
+            "bm25l": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25l(black_box(&structural_chunks), q_struct, 1.2, 0.75, 0.5));
+                }),
+                "top1_index": bm25l_struct_top[0].0,
+            },
+            "ql_dirichlet": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(ql_dirichlet(black_box(&structural_chunks), q_struct, 1000.0));
+                }),
+                "top1_index": ql_struct_top[0].0,
+            },
+        },
+        "skewed_length_256": {
+            "bm25_long_to_short_ratio": score_of(&s_bm25, 0) / score_of(&s_bm25, 1),
+            "bm25_plus_long_to_short_ratio": score_of(&s_bm25_plus, 0) / score_of(&s_bm25_plus, 1),
+            "bm25l_long_to_short_ratio": score_of(&s_bm25l, 0) / score_of(&s_bm25l, 1),
+            "ql_dirichlet_long_to_short_ratio": score_of(&s_ql, 0) / score_of(&s_ql, 1),
+            "bm25_timing": time_samples(iterations, warmup, || {
+                black_box(bm25(black_box(&skewed_chunks), q_skew, 1.2, 0.75));
+            }),
+            "bm25_plus_timing": time_samples(iterations, warmup, || {
+                black_box(bm25_plus(black_box(&skewed_chunks), q_skew, 1.2, 0.75, 1.0));
+            }),
+            "bm25l_timing": time_samples(iterations, warmup, || {
+                black_box(bm25l(black_box(&skewed_chunks), q_skew, 1.2, 0.75, 0.5));
+            }),
+            "ql_dirichlet_timing": time_samples(iterations, warmup, || {
+                black_box(ql_dirichlet(black_box(&skewed_chunks), q_skew, 1000.0));
+            }),
+        },
+        "near_duplicate_novelty_trap_512": {
+            "bm25_exact_dedup": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(highlight_indices(black_box(&novelty_chunks), q_novelty, 5));
+                }),
+                "selected_indices": sel_bm25_exact,
+                "unique_non_boilerplate_topics": sel_bm25_exact.iter().filter(|&&idx| idx >= 64).count() + 1,
+            },
+            "bm25f_exact_dedup": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25f_highlight_indices(black_box(&novelty_chunks), q_novelty, 5));
+                }),
+                "selected_indices": sel_bm25f_exact,
+                "unique_non_boilerplate_topics": sel_bm25f_exact.iter().filter(|&&idx| idx >= 64).count() + 1,
+            },
+            "bm25f_simhash64": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25f_simhash_highlight_indices(black_box(&novelty_chunks), q_novelty, 5, 3));
+                }),
+                "selected_indices": sel_bm25f_simhash,
+                "unique_non_boilerplate_topics": sel_bm25f_simhash.iter().filter(|&&idx| idx >= 64).count() + 1,
+            },
+        }
+    });
+
+    // 2. Family 2: Boilerplate Stripping Policies (FullDom vs MainContentV1 vs CetdEntropyV1)
+    let mut semantic_html = String::from("<header><nav>");
+    for i in 0..32 {
+        semantic_html.push_str(&format!("<p><a href='/nav/{i}'>Menu link {i}</a></p>"));
+    }
+    semantic_html.push_str("</nav></header><main>");
+    for i in 0..32 {
+        semantic_html.push_str(&format!(
+            "<p>Main scientific evidence paragraph {i} with detailed experimental observations and methodology.</p>"
+        ));
+    }
+    semantic_html.push_str("</main><footer>");
+    for i in 0..32 {
+        semantic_html.push_str(&format!("<p><a href='/foot/{i}'>Footer policy {i}</a></p>"));
+    }
+    semantic_html.push_str("</footer>");
+
+    let mut div_soup_html = String::from("<div class='page-wrapper'><div class='top-chrome'>");
+    for i in 0..32 {
+        div_soup_html.push_str(&format!(
+            "<p><a href='/m1/{i}'>NavA</a> <a href='/m2/{i}'>NavB</a> <a href='/m3/{i}'>NavC</a></p>"
+        ));
+    }
+    div_soup_html.push_str("</div><div class='article-body'>");
+    for i in 0..32 {
+        div_soup_html.push_str(&format!(
+            "<p>Unsemantic div-soup core research finding {i}: deterministic state-machine execution and verified memory bounds across multi-core workloads without semantic main tags.</p>"
+        ));
+    }
+    div_soup_html.push_str("</div><div class='bottom-chrome'>");
+    for i in 0..32 {
+        div_soup_html.push_str(&format!(
+            "<p><a href='/f1/{i}'>FootA</a> <a href='/f2/{i}'>FootB</a> <a href='/f3/{i}'>FootC</a></p>"
+        ));
+    }
+    div_soup_html.push_str("</div></div>");
+
+    let bench_boilerplate = |html: &str, policy: BoilerplatePolicy| -> Result<Value, String> {
+        let limits = ParseLimits {
+            boilerplate: policy,
+            ..ParseLimits::default()
+        };
+        let proj = parse_html_with_limits(html, &base_url, limits).map_err(str::to_string)?;
+        let aae = export_jsonl_with_limit(
+            &proj,
+            &base_url,
+            17,
+            Some("research finding evidence"),
+            5,
+            4 * 1024 * 1024,
+        )
+        .map_err(|e| e.to_string())?;
+        let parse_timing = time_samples(iterations, warmup, || {
+            black_box(parse_html_with_limits(black_box(html), &base_url, limits).unwrap());
+        });
+        let pipeline_timing = time_samples(iterations, warmup, || {
+            let p = parse_html_with_limits(black_box(html), &base_url, limits).unwrap();
+            black_box(
+                export_jsonl_with_limit(
+                    &p,
+                    &base_url,
+                    17,
+                    Some("research finding evidence"),
+                    5,
+                    4 * 1024 * 1024,
+                )
+                .unwrap(),
+            );
+        });
+        Ok(json!({
+            "retained_chunks": proj.chunks.len(),
+            "aae_output_bytes": aae.len(),
+            "parse_timing": parse_timing,
+            "pipeline_timing": pipeline_timing,
+        }))
+    };
+
+    let sem_full = bench_boilerplate(&semantic_html, BoilerplatePolicy::FullDom)?;
+    let sem_main = bench_boilerplate(&semantic_html, BoilerplatePolicy::MainContentV1)?;
+    let sem_cetd = bench_boilerplate(&semantic_html, BoilerplatePolicy::CetdEntropyV1)?;
+    let soup_full = bench_boilerplate(&div_soup_html, BoilerplatePolicy::FullDom)?;
+    let soup_main = bench_boilerplate(&div_soup_html, BoilerplatePolicy::MainContentV1)?;
+    let soup_cetd = bench_boilerplate(&div_soup_html, BoilerplatePolicy::CetdEntropyV1)?;
+
+    let boilerplate_family = json!({
+        "semantic_main_with_chrome_96_blocks": {
+            "full_dom": sem_full,
+            "main_content_v1": sem_main,
+            "cetd_entropy_v1": sem_cetd,
+        },
+        "unsemantic_div_soup_96_blocks": {
+            "full_dom": soup_full,
+            "main_content_v1": soup_main,
+            "cetd_entropy_v1": soup_cetd,
+        }
+    });
+
+    // 3. Family 3: Optional Link Extraction & LinkMode Emission (256 links & 4,096 links)
+    let mut links_256_html = String::new();
+    for i in 0..256 {
+        links_256_html.push_str(&format!(
+            "<p>Block {i} {} <a href='/cite/{i}'>citation-{i}</a></p>",
+            if i < 5 {
+                "target_query_term"
+            } else {
+                "background_prose"
+            }
+        ));
+    }
+    let mut links_4096_html = String::new();
+    for i in 0..256 {
+        links_4096_html.push_str(&format!(
+            "<p>Block {i} {}",
+            if i < 5 {
+                "target_query_term"
+            } else {
+                "background_prose"
+            }
+        ));
+        for j in 0..16 {
+            let lid = i * 16 + j;
+            links_4096_html.push_str(&format!(" <a href='/cite/{lid}'>c{lid}</a>"));
+        }
+        links_4096_html.push_str("</p>");
+    }
+
+    let bench_link_mode =
+        |html: &str, include_links: bool, mode: LinkMode| -> Result<Value, String> {
+            let limits = ParseLimits {
+                include_links,
+                ..ParseLimits::default()
+            };
+            let proj = parse_html_with_limits(html, &base_url, limits).map_err(str::to_string)?;
+            let aae = export_jsonl_with_link_mode_and_prepared(
+                &proj,
+                &base_url,
+                17,
+                Some("target_query_term"),
+                5,
+                8 * 1024 * 1024,
+                mode,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+            let link_frames = aae
+                .lines()
+                .filter(|line| line.contains("\"type\":\"link\""))
+                .count();
+            let parse_timing = time_samples(iterations, warmup, || {
+                black_box(parse_html_with_limits(black_box(html), &base_url, limits).unwrap());
+            });
+            let export_timing = time_samples(iterations, warmup, || {
+                black_box(
+                    export_jsonl_with_link_mode_and_prepared(
+                        black_box(&proj),
+                        &base_url,
+                        17,
+                        Some("target_query_term"),
+                        5,
+                        8 * 1024 * 1024,
+                        mode,
+                        None,
+                    )
+                    .unwrap(),
+                );
+            });
+            let pipeline_timing = time_samples(iterations, warmup, || {
+                let p = parse_html_with_limits(black_box(html), &base_url, limits).unwrap();
+                black_box(
+                    export_jsonl_with_link_mode_and_prepared(
+                        &p,
+                        &base_url,
+                        17,
+                        Some("target_query_term"),
+                        5,
+                        8 * 1024 * 1024,
+                        mode,
+                        None,
+                    )
+                    .unwrap(),
+                );
+            });
+            Ok(json!({
+                "include_links": include_links,
+                "link_mode": format!("{mode:?}"),
+                "resolved_catalog_links": proj.links.len(),
+                "emitted_link_frames": link_frames,
+                "aae_output_bytes": aae.len(),
+                "parse_timing": parse_timing,
+                "export_timing": export_timing,
+                "pipeline_timing": pipeline_timing,
+            }))
+        };
+
+    let link_modes_family = json!({
+        "article_256_links": {
+            "all": bench_link_mode(&links_256_html, true, LinkMode::All)?,
+            "highlighted_only": bench_link_mode(&links_256_html, true, LinkMode::HighlightedOnly)?,
+            "none_export_only": bench_link_mode(&links_256_html, true, LinkMode::None)?,
+            "none_skip_parse_and_export": bench_link_mode(&links_256_html, false, LinkMode::None)?,
+        },
+        "dense_4096_links": {
+            "all": bench_link_mode(&links_4096_html, true, LinkMode::All)?,
+            "highlighted_only": bench_link_mode(&links_4096_html, true, LinkMode::HighlightedOnly)?,
+            "none_export_only": bench_link_mode(&links_4096_html, true, LinkMode::None)?,
+            "none_skip_parse_and_export": bench_link_mode(&links_4096_html, false, LinkMode::None)?,
+        }
+    });
+
+    // 4. Family 4: Anna's Archive Scroll-Card Unwrapping & Structured Bibliographic Extraction
+    let mut annas_html = String::from(
+        "<header><nav><p>Anna's Archive donate login</p></nav></header><main><h1>Search results for quantum error correction</h1>",
+    );
+    for i in 0..32usize {
+        let md5 = format!("{:032x}", i + 1);
+        let card = format!(
+            "<p><a href=\"/md5/{md5}\">Book {i} Quantum Error Correction DOI: 10.1038/s41586-024-{i:04}-x · ISBN 978-0-387-{i:05}-2 · pdf · 4.2MB</a></p>"
+        );
+        if i >= 4 {
+            annas_html.push_str(&format!("<!-- {card} -->"));
+        } else {
+            annas_html.push_str(&card);
+        }
+    }
+    annas_html.push_str("</main><footer><p>Mirror status</p></footer>");
+
+    let annas_default_proj = parse_html_with_limits(&annas_html, &base_url, ParseLimits::default())
+        .map_err(str::to_string)?;
+    let annas_default_records = extract_annas_archive_records(&annas_default_proj);
+    let annas_unwrap_limits = ParseLimits {
+        comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+        boilerplate: BoilerplatePolicy::MainContentV1,
+        include_links: true,
+        ..ParseLimits::default()
+    };
+    let annas_unwrap_proj = parse_html_with_limits(&annas_html, &base_url, annas_unwrap_limits)
+        .map_err(str::to_string)?;
+    let annas_unwrap_records = extract_annas_archive_records(&annas_unwrap_proj);
+
+    let annas_family = json!({
+        "default_no_comment_unwrap": {
+            "chunks": annas_default_proj.chunks.len(),
+            "links": annas_default_proj.links.len(),
+            "records_extracted": annas_default_records.len(),
+            "timing": time_samples(iterations, warmup, || {
+                let p = parse_html_with_limits(black_box(&annas_html), &base_url, ParseLimits::default()).unwrap();
+                black_box(extract_annas_archive_records(&p));
+            }),
+        },
+        "annas_archive_scroll_cards_plus_main_content": {
+            "chunks": annas_unwrap_proj.chunks.len(),
+            "links": annas_unwrap_proj.links.len(),
+            "records_extracted": annas_unwrap_records.len(),
+            "sample_record_0": annas_unwrap_records.first().map(|r| json!({
+                "md5": r.md5,
+                "title": r.title,
+                "doi": r.doi,
+                "isbn": r.isbn,
+                "format": r.format,
+                "download_links": r.download_links,
+            })),
+            "timing": time_samples(iterations, warmup, || {
+                let p = parse_html_with_limits(black_box(&annas_html), &base_url, annas_unwrap_limits).unwrap();
+                black_box(extract_annas_archive_records(&p));
+            }),
+        }
+    });
+
+    // 5. Family 5: 16-Shard SourceCache + Conditional ETag 304 + PreparedRank Reuse
+    #[derive(Clone)]
+    struct BenchCacheEntry {
+        url: String,
+        projection: Arc<Projection>,
+        prepared_rank: Arc<CorePreparedRank>,
+        etag: Option<String>,
+        cached_at_ms: u64,
+    }
+    let shards: [std::sync::Mutex<Vec<BenchCacheEntry>>; 16] =
+        std::array::from_fn(|_| std::sync::Mutex::new(Vec::new()));
+    let shard_of = |key: &str| -> usize {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        key.hash(&mut h);
+        (h.finish() as usize) & 15
+    };
+    let cache_url = "https://annas-archive.org/cache-bench";
+    let cold_timing = time_samples(iterations, warmup, || {
+        let proj = Arc::new(
+            parse_html_with_limits(
+                black_box(&links_256_html),
+                &base_url,
+                ParseLimits::default(),
+            )
+            .unwrap(),
+        );
+        let prep = Arc::new(CorePreparedRank::new(&proj.chunks));
+        {
+            let mut guard = shards[shard_of(cache_url)].lock().unwrap();
+            if let Some(pos) = guard.iter().position(|e| e.url == cache_url) {
+                guard.remove(pos);
+            }
+            guard.push(BenchCacheEntry {
+                url: cache_url.to_string(),
+                projection: Arc::clone(&proj),
+                prepared_rank: Arc::clone(&prep),
+                etag: Some("\"etag-v1\"".to_string()),
+                cached_at_ms: 1_000,
+            });
+        }
+        black_box(
+            export_jsonl_with_link_mode_and_prepared(
+                &proj,
+                &base_url,
+                1_000,
+                Some("target_query_term"),
+                5,
+                4 * 1024 * 1024,
+                LinkMode::HighlightedOnly,
+                Some(&prep),
+            )
+            .unwrap(),
+        );
+    });
+    let etag_304_timing = time_samples(iterations, warmup, || {
+        let entry = {
+            let mut guard = shards[shard_of(cache_url)].lock().unwrap();
+            let pos = guard.iter().position(|e| e.url == cache_url).unwrap();
+            let mut e = guard.remove(pos);
+            let _etag = e.etag.as_deref();
+            e.cached_at_ms = 65_000;
+            let cloned = e.clone();
+            guard.push(e);
+            cloned
+        };
+        black_box(
+            export_jsonl_with_link_mode_and_prepared(
+                &entry.projection,
+                &base_url,
+                65_000,
+                Some("target_query_term"),
+                5,
+                4 * 1024 * 1024,
+                LinkMode::HighlightedOnly,
+                Some(&entry.prepared_rank),
+            )
+            .unwrap(),
+        );
+    });
+    let ttl_hit_timing = time_samples(iterations, warmup, || {
+        let entry = {
+            let mut guard = shards[shard_of(cache_url)].lock().unwrap();
+            let pos = guard.iter().position(|e| e.url == cache_url).unwrap();
+            let mut e = guard.remove(pos);
+            e.cached_at_ms = 65_100;
+            let cloned = e.clone();
+            guard.push(e);
+            cloned
+        };
+        black_box(
+            export_jsonl_with_link_mode_and_prepared(
+                &entry.projection,
+                &base_url,
+                65_100,
+                Some("target_query_term"),
+                5,
+                4 * 1024 * 1024,
+                LinkMode::HighlightedOnly,
+                Some(&entry.prepared_rank),
+            )
+            .unwrap(),
+        );
+    });
+
+    let cache_family = json!({
+        "cold_miss_parse_index_export": cold_timing,
+        "expired_ttl_etag_304_revalidation_export": etag_304_timing,
+        "fresh_ttl_hit_prepared_export": ttl_hit_timing,
+    });
+
+    // 6. Family 6: BoundedOutputBuf Streaming Compressed Transfer (gzip / deflate vs identity)
+    fn encode_deflate_fixed(data: &[u8]) -> Vec<u8> {
+        const LENGTH_BASE: [u16; 29] = [
+            3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99,
+            115, 131, 163, 195, 227, 258,
+        ];
+        const LENGTH_EXTRA: [u8; 29] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+        ];
+        const DIST_BASE: [u16; 30] = [
+            1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025,
+            1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+        ];
+        const DIST_EXTRA: [u8; 30] = [
+            0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12,
+            12, 13, 13,
+        ];
+        struct BitOut {
+            buf: Vec<u8>,
+            acc: u32,
+            bits: u8,
+        }
+        impl BitOut {
+            fn write_lsb(&mut self, val: u32, count: u8) {
+                if count == 0 {
+                    return;
+                }
+                self.acc |= (val & ((1u32 << count) - 1)) << self.bits;
+                self.bits += count;
+                while self.bits >= 8 {
+                    self.buf.push(self.acc as u8);
+                    self.acc >>= 8;
+                    self.bits -= 8;
+                }
+            }
+            fn write_msb(&mut self, code: u16, len: u8) {
+                for shift in (0..len).rev() {
+                    self.write_lsb(u32::from((code >> shift) & 1), 1);
+                }
+            }
+            fn write_lit(&mut self, b: u8) {
+                if b <= 143 {
+                    self.write_msb(0x30 + u16::from(b), 8);
+                } else {
+                    self.write_msb(0x190 + u16::from(b - 144), 9);
+                }
+            }
+            fn write_match(&mut self, length: usize, distance: usize) {
+                let mut l_idx = 28usize;
+                for i in 0..28 {
+                    if length < usize::from(LENGTH_BASE[i + 1]) {
+                        l_idx = i;
+                        break;
+                    }
+                }
+                let sym = 257 + l_idx as u16;
+                if sym <= 279 {
+                    self.write_msb(sym - 256, 7);
+                } else {
+                    self.write_msb(0xc0 + (sym - 280), 8);
+                }
+                self.write_lsb(
+                    (length - usize::from(LENGTH_BASE[l_idx])) as u32,
+                    LENGTH_EXTRA[l_idx],
+                );
+                let mut d_idx = 29usize;
+                for i in 0..29 {
+                    if distance < usize::from(DIST_BASE[i + 1]) {
+                        d_idx = i;
+                        break;
+                    }
+                }
+                self.write_msb(d_idx as u16, 5);
+                self.write_lsb(
+                    (distance - usize::from(DIST_BASE[d_idx])) as u32,
+                    DIST_EXTRA[d_idx],
+                );
+            }
+        }
+        let mut out = BitOut {
+            buf: Vec::with_capacity(data.len() / 2 + 16),
+            acc: 0,
+            bits: 0,
+        };
+        // bfinal = 1, btype = 1 (fixed Huffman)
+        out.write_lsb(1, 1);
+        out.write_lsb(1, 2);
+        let mut head = [-1i32; 4096];
+        let hash4 = |s: &[u8]| -> usize {
+            let v = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
+            ((v.wrapping_mul(0x1e35_a7bd)) >> 20) as usize
+        };
+        let mut pos = 0usize;
+        while pos < data.len() {
+            if pos + 4 <= data.len() {
+                let h = hash4(&data[pos..pos + 4]);
+                let prev = head[h];
+                head[h] = pos as i32;
+                if prev >= 0 {
+                    let prev_pos = prev as usize;
+                    let dist = pos - prev_pos;
+                    if (1..=32_768).contains(&dist)
+                        && data[prev_pos..prev_pos + 4] == data[pos..pos + 4]
+                    {
+                        let max_len = (data.len() - pos).min(258);
+                        let mut mlen = 4usize;
+                        while mlen < max_len && data[prev_pos + mlen] == data[pos + mlen] {
+                            mlen += 1;
+                        }
+                        out.write_match(mlen, dist);
+                        for step in 1..mlen {
+                            if pos + step + 4 <= data.len() {
+                                head[hash4(&data[pos + step..pos + step + 4])] =
+                                    (pos + step) as i32;
+                            }
+                        }
+                        pos += mlen;
+                        continue;
+                    }
+                }
+            }
+            out.write_lit(data[pos]);
+            pos += 1;
+        }
+        // End of block (256 -> 7 zero bits)
+        out.write_msb(0, 7);
+        if out.bits > 0 {
+            out.buf.push(out.acc as u8);
+        }
+        out.buf
+    }
+    fn encode_gzip_fixed(data: &[u8]) -> Vec<u8> {
+        let deflate = encode_deflate_fixed(data);
+        let mut out = Vec::with_capacity(10 + deflate.len() + 8);
+        out.extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 2, 255]);
+        out.extend_from_slice(&deflate);
+        let mut crc = 0xffff_ffffu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        out.extend_from_slice(&(!crc).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out
+    }
+    fn encode_zlib_fixed(data: &[u8]) -> Vec<u8> {
+        let deflate = encode_deflate_fixed(data);
+        let mut out = Vec::with_capacity(2 + deflate.len() + 4);
+        out.extend_from_slice(&[0x78, 0x9c]);
+        out.extend_from_slice(&deflate);
+        let mut a = 1u32;
+        let mut b = 0u32;
+        for &byte in data {
+            a = (a + u32::from(byte)) % 65_521;
+            b = (b + a) % 65_521;
+        }
+        out.extend_from_slice(&((b << 16) | a).to_be_bytes());
+        out
+    }
+
+    let raw_html_bytes = links_4096_html.as_bytes();
+    let gzip_wire = encode_gzip_fixed(raw_html_bytes);
+    let deflate_zlib_wire = encode_zlib_fixed(raw_html_bytes);
+    let deflate_raw_wire = encode_deflate_fixed(raw_html_bytes);
+    let gzip_bomb_wire = encode_gzip_fixed(&vec![b'A'; 2 * 1024 * 1024]);
+
+    let max_body = 4 * 1024 * 1024;
+    let compression_family = json!({
+        "raw_html_bytes": raw_html_bytes.len(),
+        "identity": {
+            "wire_bytes": raw_html_bytes.len(),
+            "compression_ratio": 1.0,
+            "decode_timing": time_samples(iterations, warmup, || {
+                black_box(decode_content_encoding(black_box(raw_html_bytes), ContentEncodingMode::Identity, max_body).unwrap());
+            }),
+        },
+        "gzip": {
+            "wire_bytes": gzip_wire.len(),
+            "compression_ratio": (raw_html_bytes.len() as f64) / (gzip_wire.len() as f64),
+            "wire_byte_savings_pct": (1.0 - (gzip_wire.len() as f64) / (raw_html_bytes.len() as f64)) * 100.0,
+            "decode_timing": time_samples(iterations, warmup, || {
+                black_box(decode_content_encoding(black_box(&gzip_wire), ContentEncodingMode::Gzip, max_body).unwrap());
+            }),
+        },
+        "deflate_zlib": {
+            "wire_bytes": deflate_zlib_wire.len(),
+            "compression_ratio": (raw_html_bytes.len() as f64) / (deflate_zlib_wire.len() as f64),
+            "wire_byte_savings_pct": (1.0 - (deflate_zlib_wire.len() as f64) / (raw_html_bytes.len() as f64)) * 100.0,
+            "decode_timing": time_samples(iterations, warmup, || {
+                black_box(decode_content_encoding(black_box(&deflate_zlib_wire), ContentEncodingMode::Deflate, max_body).unwrap());
+            }),
+        },
+        "deflate_raw": {
+            "wire_bytes": deflate_raw_wire.len(),
+            "compression_ratio": (raw_html_bytes.len() as f64) / (deflate_raw_wire.len() as f64),
+            "wire_byte_savings_pct": (1.0 - (deflate_raw_wire.len() as f64) / (raw_html_bytes.len() as f64)) * 100.0,
+            "decode_timing": time_samples(iterations, warmup, || {
+                black_box(decode_content_encoding(black_box(&deflate_raw_wire), ContentEncodingMode::Deflate, max_body).unwrap());
+            }),
+        },
+        "zip_bomb_early_abort_64kib_cap": {
+            "compressed_wire_bytes": gzip_bomb_wire.len(),
+            "uncompressed_bomb_bytes": 2 * 1024 * 1024,
+            "cap_bytes": 65_536,
+            "abort_timing": time_samples(iterations, warmup, || {
+                let res = decode_content_encoding(black_box(&gzip_bomb_wire), ContentEncodingMode::Gzip, 65_536);
+                assert!(res.is_err());
+            }),
+        }
+    });
+
+    // 7. Family 7: Multi-Core Hardware Saturation (100% parallel threads via std::thread::scope)
+    let hw_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let single_thread_composite = time_samples(iterations, warmup, || {
+        let decoded =
+            decode_content_encoding(black_box(&gzip_wire), ContentEncodingMode::Gzip, max_body)
+                .unwrap();
+        let html_str = std::str::from_utf8(&decoded).unwrap();
+        let p = parse_html_with_limits(html_str, &base_url, ParseLimits::default()).unwrap();
+        let top = bm25f_simhash_highlight_indices(&p.chunks, "target_query_term", 5, 3);
+        black_box(top);
+        black_box(
+            export_jsonl_with_link_mode_and_prepared(
+                &p,
+                &base_url,
+                17,
+                Some("target_query_term"),
+                5,
+                4 * 1024 * 1024,
+                LinkMode::HighlightedOnly,
+                None,
+            )
+            .unwrap(),
+        );
+    });
+    let par_start = Instant::now();
+    let per_thread_p50s: Vec<u64> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(hw_threads);
+        for _ in 0..hw_threads {
+            let gz_ref = &gzip_wire;
+            let url_ref = &base_url;
+            handles.push(scope.spawn(move || {
+                let mut local_samples = Vec::with_capacity(iterations);
+                for _ in 0..iterations {
+                    let t0 = Instant::now();
+                    let decoded = decode_content_encoding(
+                        black_box(gz_ref),
+                        ContentEncodingMode::Gzip,
+                        max_body,
+                    )
+                    .unwrap();
+                    let html_str = std::str::from_utf8(&decoded).unwrap();
+                    let p =
+                        parse_html_with_limits(html_str, url_ref, ParseLimits::default()).unwrap();
+                    let top = bm25f_simhash_highlight_indices(&p.chunks, "target_query_term", 5, 3);
+                    black_box(top);
+                    black_box(
+                        export_jsonl_with_link_mode_and_prepared(
+                            &p,
+                            url_ref,
+                            17,
+                            Some("target_query_term"),
+                            5,
+                            4 * 1024 * 1024,
+                            LinkMode::HighlightedOnly,
+                            None,
+                        )
+                        .unwrap(),
+                    );
+                    local_samples.push(t0.elapsed().as_nanos().max(1) as u64);
+                }
+                local_samples.sort_unstable();
+                local_samples[(local_samples.len() - 1) / 2]
+            }));
+        }
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let par_wall_ns = par_start.elapsed().as_nanos().max(1) as f64;
+    let total_par_ops = (hw_threads * iterations) as f64;
+    let par_ops_per_sec = total_par_ops / (par_wall_ns / 1e9);
+    let single_p50_ns = single_thread_composite["p50_ns"]
+        .as_u64()
+        .unwrap_or(1)
+        .max(1) as f64;
+    let single_ops_per_sec = 1e9 / single_p50_ns;
+
+    // 8. Family 8: Round 2 Adversarial Red-Team Stress & Unified Cohort Verification
+    let mut multi_member_gzip = Vec::with_capacity(gzip_wire.len() * 2);
+    multi_member_gzip.extend_from_slice(&gzip_wire);
+    multi_member_gzip.extend_from_slice(&gzip_wire);
+    let multi_member_timing = time_samples(iterations, warmup, || {
+        let dec = decode_content_encoding(
+            black_box(&multi_member_gzip),
+            ContentEncodingMode::Gzip,
+            max_body * 2,
+        )
+        .unwrap();
+        assert_eq!(dec.len(), raw_html_bytes.len() * 2);
+    });
+    let mut empty_block_bomb = Vec::with_capacity(360);
+    for _ in 0..70 {
+        empty_block_bomb.extend_from_slice(&[0x00, 0x00, 0x00, 0xff, 0xff]);
+    }
+    empty_block_bomb.extend_from_slice(&[0x01, 0x00, 0x00, 0xff, 0xff]);
+    let empty_block_bomb_timing = time_samples(iterations, warmup, || {
+        let res = decode_content_encoding(
+            black_box(&empty_block_bomb),
+            ContentEncodingMode::Deflate,
+            65_536,
+        );
+        assert!(res.is_err());
+    });
+    let mut corrupt_gzip = gzip_wire.clone();
+    if corrupt_gzip.len() >= 8 {
+        let crc_idx = corrupt_gzip.len() - 8;
+        corrupt_gzip[crc_idx] ^= 0xff;
+    }
+    let mut corrupt_zlib = deflate_zlib_wire.clone();
+    if let Some(last) = corrupt_zlib.last_mut() {
+        *last ^= 0xff;
+    }
+    assert!(decode_content_encoding(&corrupt_gzip, ContentEncodingMode::Gzip, max_body).is_err());
+    assert!(
+        decode_content_encoding(&corrupt_zlib, ContentEncodingMode::Deflate, max_body).is_err()
+    );
+    let red_team_html = concat!(
+        "<script>let s = \"<!--\";</script>",
+        "<nav><h2>Menu</h2><p><a href=\"/1\">A</a> <a href=\"/2\">B</a> <a href=\"/3\">C</a></p></nav>",
+        "<main><article><header><h1>Distributed Consensus &amp; Quorum Systems</h1></header>",
+        "<p>Body prose with adjacent byzantine quorum terms and later repeated byzantine token.</p>",
+        "</article>",
+        "<!-- outer comment with <b>tag</b> <!-- <article><h2><a href=\"/md5/0123456789ABCDEF0123456789ABCDEF\">Byzantine Quorum Card</a></h2>",
+        "<p>PDF · 10.4 MB · v1.10.2/rel · 192.168.10.1/24 · (10.1007/s00220-024-04900-1). · ISBN: XXXXXXXXXX · ISBN-13: 978-0-521-87996-5</p></article> -->",
+        "</main>"
+    );
+    let red_team_limits = ParseLimits {
+        comment_unwrap: CommentUnwrapPolicy::AnnasArchiveScrollCards,
+        boilerplate: BoilerplatePolicy::CetdEntropyV1,
+        include_links: true,
+        ..ParseLimits::default()
+    };
+    let red_team_proj = parse_html_with_limits(red_team_html, &base_url, red_team_limits)
+        .map_err(str::to_string)?;
+    let red_team_records = extract_annas_archive_records(&red_team_proj);
+    assert_eq!(
+        red_team_records.first().and_then(|r| r.doi.as_deref()),
+        Some("10.1007/s00220-024-04900-1")
+    );
+    assert_eq!(
+        red_team_records.first().and_then(|r| r.isbn.as_deref()),
+        Some("978-0-521-87996-5")
+    );
+    let red_team_timing = time_samples(iterations, warmup, || {
+        let p =
+            parse_html_with_limits(black_box(red_team_html), &base_url, red_team_limits).unwrap();
+        let recs = extract_annas_archive_records(&p);
+        let scores = bm25f(&p.chunks, "byzantine quorum", 1.2, 0.75);
+        black_box((recs, scores));
+    });
+
+    Ok(json!({
+        "protocol": "athena-theory-matrix/1",
+        "iterations_per_cell": iterations,
+        "hardware_threads": hw_threads,
+        "retrieval_ranking_and_selection": retrieval_family,
+        "boilerplate_policies": boilerplate_family,
+        "link_modes": link_modes_family,
+        "annas_archive_extraction": annas_family,
+        "source_cache_and_etag_304": cache_family,
+        "compressed_transfer_bounded_decode": compression_family,
+        "adversarial_red_team_and_unified_cohorts": {
+            "multi_member_gzip_decode": multi_member_timing,
+            "empty_deflate_block_bomb_guard": empty_block_bomb_timing,
+            "proj_01_02_03_rank_01_end_to_end": {
+                "retained_chunks": red_team_proj.chunks.len(),
+                "retained_links": red_team_proj.links.len(),
+                "extracted_doi": red_team_records.first().and_then(|r| r.doi.clone()),
+                "extracted_isbn": red_team_records.first().and_then(|r| r.isbn.clone()),
+                "crc32_adler32_verified": true,
+                "timing": red_team_timing,
+            }
+        },
+        "parallel_multicore_saturation": {
+            "hardware_threads": hw_threads,
+            "operations_per_thread": iterations,
+            "total_operations": hw_threads * iterations,
+            "wall_ms": par_wall_ns / 1e6,
+            "single_thread_composite_timing": single_thread_composite,
+            "single_thread_ops_per_sec": (single_ops_per_sec * 100.0).round() / 100.0,
+            "parallel_aggregate_ops_per_sec": (par_ops_per_sec * 100.0).round() / 100.0,
+            "parallel_speedup_factor": ((par_ops_per_sec / single_ops_per_sec) * 100.0).round() / 100.0,
+            "per_thread_p50_ns": per_thread_p50s,
+        }
+    }))
+}
+
 fn run() -> Result<(), String> {
     let args = env::args().collect::<Vec<_>>();
     require(
@@ -2419,6 +3665,18 @@ fn run() -> Result<(), String> {
         "usage: core_probe <stage> <fixture.json|-> <iterations>",
     )?;
     let iterations = args[3].parse::<usize>().map_err(|e| e.to_string())?;
+    if args[1] == "theory-matrix" {
+        require(
+            (1..=5000).contains(&iterations),
+            "theory-matrix iterations must be in 1..=5000",
+        )?;
+        let report = run_theory_matrix(iterations)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     require(iterations <= 250, "iterations exceed hard probe admission")?;
     const MAX_FIXTURE_BYTES: usize = 8 * 1024 * 1024;
     let fixture_bytes = if args[2] == "-" {
@@ -3092,5 +4350,164 @@ mod tests {
                 assert_eq!(content_hash(&chunks, batch), expected);
             }
         }
+    }
+
+    #[test]
+    fn serialization_and_task_primitives_honor_include_links_and_highlighted_only() {
+        let fixture = Fixture::new(
+            json!({
+                "html": "<main><p><a href='/bg'>Background</a></p><p><a href='/target'>Target passage</a> and <a href='/target'>repeat</a></p></main>",
+                "url": "https://evidence.example/doc",
+                "query": "Target",
+                "highlight_limit": 1,
+                "link_mode": "highlighted_only"
+            }),
+            "serialization",
+        )
+        .unwrap();
+        let Output::Bytes(serialized) = execute("serialization", &fixture).unwrap() else {
+            panic!("expected bytes");
+        };
+        let text = String::from_utf8(serialized).unwrap();
+        assert!(text.contains("https://evidence.example/target"));
+        assert!(!text.contains("https://evidence.example/bg"));
+
+        let req_no_links = serde_json::to_vec(&json!({
+            "schema": "athena-task-extract/1",
+            "principal_tenant": "tenant_alpha",
+            "bound_task_id": "task_alpha",
+            "task_id": "task_alpha",
+            "source_id": "doc_primary",
+            "expected_revision": "rev_200_v1",
+            "include_links": false
+        }))
+        .unwrap();
+        let out_no_links = String::from_utf8(task_export(&req_no_links).unwrap()).unwrap();
+        assert!(!out_no_links.contains("\"type\":\"link\""));
+
+        let req_bad_mode = serde_json::to_vec(&json!({
+            "schema": "athena-task-extract/1",
+            "principal_tenant": "tenant_alpha",
+            "bound_task_id": "task_alpha",
+            "task_id": "task_alpha",
+            "source_id": "doc_primary",
+            "expected_revision": "rev_200_v1",
+            "link_mode": "invalid_mode"
+        }))
+        .unwrap();
+        assert_eq!(
+            task_export(&req_bad_mode).unwrap_err(),
+            "SCOPED_TASK_REQUEST_INVALID"
+        );
+    }
+
+    #[test]
+    fn theory_matrix_and_new_contender_modes_execute_cleanly() {
+        let report = run_theory_matrix(2).unwrap();
+        assert_eq!(report["protocol"], "athena-theory-matrix/1");
+        assert_eq!(
+            report["retrieval_ranking_and_selection"]["structural_authority_256"]["bm25f_mslp"]["top1_role"],
+            "heading"
+        );
+        assert_eq!(
+            report["retrieval_ranking_and_selection"]["near_duplicate_novelty_trap_512"]["bm25f_simhash64"]
+                ["unique_non_boilerplate_topics"],
+            5
+        );
+        assert_eq!(
+            report["boilerplate_policies"]["unsemantic_div_soup_96_blocks"]["cetd_entropy_v1"]["retained_chunks"],
+            32
+        );
+        assert_eq!(
+            report["annas_archive_extraction"]["annas_archive_scroll_cards_plus_main_content"]["records_extracted"],
+            32
+        );
+
+        let cetd_fixture = Fixture::new(
+            json!({
+                "html": "<div class='menu'><p><a href='/a'>A</a> <a href='/b'>B</a> <a href='/c'>C</a></p></div><div class='article'><p>Deterministic entropy pruning retains high density prose.</p></div>",
+                "boilerplate": "cetd_entropy_v1"
+            }),
+            "parse",
+        )
+        .unwrap();
+        let Output::Projection(proj) = execute("parse", &cetd_fixture).unwrap() else {
+            panic!("expected projection");
+        };
+        assert_eq!(proj.chunks.len(), 1);
+        assert_eq!(
+            proj.chunks[0].text,
+            "Deterministic entropy pruning retains high density prose."
+        );
+
+        for mode in ["bm25", "bm25f", "bm25_plus", "bm25l", "ql_dirichlet"] {
+            let f = Fixture::new(
+                json!({
+                    "html": "<h1>Byzantine Quorum</h1><p>Byzantine quorum safety protocol</p>",
+                    "query": "byzantine quorum",
+                    "rank_mode": mode
+                }),
+                "rank",
+            )
+            .unwrap();
+            let Output::Rank(scores) = execute("rank", &f).unwrap() else {
+                panic!("expected rank");
+            };
+            assert_eq!(scores.len(), 2);
+            assert!(scores[0].1 > 0.0);
+        }
+
+        for mode in ["bm25", "bm25f", "bm25f_simhash"] {
+            let f = Fixture::new(
+                json!({
+                    "html": "<p>Byzantine quorum safety.</p><p>Byzantine quorum safety!</p><p>Byzantine quorum liveness proof</p>",
+                    "query": "byzantine quorum",
+                    "highlight_limit": 2,
+                    "rank_mode": mode
+                }),
+                "highlight",
+            )
+            .unwrap();
+            let Output::Selection(sel) = execute("highlight", &f).unwrap() else {
+                panic!("expected selection");
+            };
+            if mode == "bm25f_simhash" {
+                assert_eq!(sel, vec![0, 2]);
+            } else {
+                assert_eq!(sel, vec![0, 1]);
+            }
+        }
+
+        // BENCH-01: link_mode="none" defaults limits.include_links to false in parse stage
+        let link_none_fixture = Fixture::new(
+            json!({
+                "html": "<main><p>Read <a href='/docs'>docs</a></p></main>",
+                "link_mode": "none"
+            }),
+            "parse",
+        )
+        .unwrap();
+        assert!(!link_none_fixture.limits.include_links);
+        let Output::Projection(proj_no_links) = execute("parse", &link_none_fixture).unwrap()
+        else {
+            panic!("expected projection");
+        };
+        assert!(proj_no_links.links.is_empty());
+
+        let rank_model_fixture = Fixture::new(
+            json!({
+                "html": "<p>Byzantine quorum safety.</p><p>Byzantine quorum safety!</p><p>Byzantine quorum liveness proof</p>",
+                "query": "byzantine quorum",
+                "highlight_limit": 2,
+                "rank_model": "bm25f_simhash_highlight_indices"
+            }),
+            "selection",
+        )
+        .unwrap();
+        let Output::Selection(sel_model) = execute("selection", &rank_model_fixture).unwrap()
+        else {
+            panic!("expected selection");
+        };
+        assert_eq!(sel_model, vec![0, 2]);
     }
 }

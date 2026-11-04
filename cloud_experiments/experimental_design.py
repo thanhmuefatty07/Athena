@@ -612,12 +612,24 @@ def whole_path_core_panel():
         "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
         "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+build-native+lib-scraper-modern",
     ]
+    cloud_021_variants = [
+        "baseline",
+        "projection-fused",
+        "projection-fused+links-btree",
+        "rank-binary+rank-select",
+        "table-html-selectors",
+        "aae-batched16384",
+        "rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+        "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+        "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+build-native+lib-scraper-modern",
+    ]
     for name in (
         set(variants)
         | set(cloud_017_variants)
         | set(cloud_018_variants)
         | set(cloud_019_variants)
         | set(cloud_020_variants)
+        | set(cloud_021_variants)
     ):
         contenders.metadata(name)
     return {
@@ -631,6 +643,7 @@ def whole_path_core_panel():
         "cloud_018_variants": cloud_018_variants,
         "cloud_019_variants": cloud_019_variants,
         "cloud_020_variants": cloud_020_variants,
+        "cloud_021_variants": cloud_021_variants,
         "active_owners": ["H01", "H02", "H03", "H06", "H07", "H08", "H09", "H14"],
         "complete_interaction_panels": ["I-RANK", "I-HTML-TABLE"],
         "efficiency_within_active_subspace": evaluate_design_efficiency(
