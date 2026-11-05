@@ -440,7 +440,11 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                 prefix[np.arange(1, len(values) + 1), groups] = 1
                 np.cumsum(prefix, axis=0, out=prefix)
                 prefix_off = np.ascontiguousarray(prefix[1:])
-                if 512 < len(values) <= 16_777_216:
+                if 512 < len(values) <= 16_384 and count <= 255:
+                    prefix_off = np.ascontiguousarray(prefix_off, dtype=np.float32)
+                    coarse_idx = np.append(np.arange(31, len(values) - 1, 32), len(values) - 1)
+                    coarse_T = np.ascontiguousarray(prefix_off[coarse_idx].T, dtype=np.float32)
+                elif 512 < len(values) <= 16_777_216:
                     coarse_idx = np.append(np.arange(255, len(values) - 1, 256), len(values) - 1)
                     coarse_T = np.ascontiguousarray(prefix_off[coarse_idx].T, dtype=np.float32)
             arrays[arm] = values, groups, prefix_off, coarse_T
@@ -561,14 +565,24 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                         weight_f32 = weight_array.astype(np.float32)
                     coarse_mass = weight_f32 @ coarse_T
                     c_idx = (coarse_mass[:, None, :] > pos_array[None, :, None]).argmax(axis=2).astype(np.int32)
-                    low = c_idx << 8
-                    high = np.minimum(low + 255, len(values) - 1)
-                    for _ in range(8):
-                        middle = (low + high) >> 1
-                        mass = np.einsum("bqk,bk->bq", prefix_off[middle], weight_array)
-                        found = mass > pos_array
-                        high = np.where(found, middle, high)
-                        low = np.where(found, low, middle + 1)
+                    if prefix_off.dtype == np.float32:
+                        low = c_idx << 5
+                        high = np.minimum(low + 31, len(values) - 1)
+                        for _ in range(5):
+                            middle = (low + high) >> 1
+                            mass = np.einsum("bqk,bk->bq", prefix_off[middle], weight_f32)
+                            found = mass > pos_array
+                            high = np.where(found, middle, high)
+                            low = np.where(found, low, middle + 1)
+                    else:
+                        low = c_idx << 8
+                        high = np.minimum(low + 255, len(values) - 1)
+                        for _ in range(8):
+                            middle = (low + high) >> 1
+                            mass = np.einsum("bqk,bk->bq", prefix_off[middle], weight_array)
+                            found = mass > pos_array
+                            high = np.where(found, middle, high)
+                            low = np.where(found, low, middle + 1)
                     sampled_np[arm] = values[low]
                 else:
                     low = np.zeros((cur_batch, len(positions)), dtype=np.int32)
@@ -581,7 +595,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
                         low = np.where(found, low, middle + 1)
                     sampled_np[arm] = values[low]
             diff = sampled_np["candidate"] - sampled_np["baseline"]
-            yield {q: diff[:, i].tolist() for i, q in enumerate(probabilities)}
+            yield {q: diff[:, i] if yield_numpy else diff[:, i].tolist() for i, q in enumerate(probabilities)}
         else:
             sampled = {
                 arm: [protocol._weighted_quantiles(values, groups, row, probabilities) for row in weights]
@@ -1281,6 +1295,7 @@ def _planned_cargo_cache_variants(design, *, variants=None, pilot_only=False):
             set(all_variants)
             | set(panel.get("cloud_020_variants", ()))
             | set(panel.get("cloud_021_variants", ()))
+            | set(panel.get("cloud_022_variants", ()))
         )
         if not variants or len(set(variants)) != len(variants) or any(v not in allowed_variants for v in variants):
             raise ValueError("Unknown/duplicate selected experiment variant")

@@ -14,6 +14,7 @@ use athena_core_v2::{
     },
     rank::{
         PreparedRank as CorePreparedRank, bm25, bm25_plus, bm25f, bm25f_highlight_indices,
+        bm25f_plus_mslp, bm25f_plus_mslp_simhash_highlight_indices,
         bm25f_simhash_highlight_indices, bm25l, highlight_indices, ql_dirichlet,
     },
     table::{Cell, Grid, GridError, Row, expand, expand_with_slot_limit},
@@ -1690,6 +1691,12 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
                 .or_else(|| input.input["rank_mode"].as_str());
             let scores = match model {
                 Some("bm25f" | "bm25f_mslp" | "bm25f-mslp") => bm25f(chunks, query, 1.2, 0.75),
+                Some(
+                    "bm25f_plus_mslp"
+                    | "bm25f_plus"
+                    | "bm25f-plus-mslp"
+                    | "bm25f_plus_mslp_simhash64",
+                ) => bm25f_plus_mslp(chunks, query, 1.2, 0.75, 1.0),
                 Some("bm25_plus" | "bm25+" | "bm25-plus") => {
                     bm25_plus(chunks, query, 1.2, 0.75, 1.0)
                 }
@@ -1721,6 +1728,18 @@ fn execute(stage: &str, fixture: &Fixture) -> Result<Output, String> {
                     | "simhash64"
                     | "bm25f-simhash",
                 ) => bm25f_simhash_highlight_indices(chunks, query, input.highlight_limit, 3),
+                Some(
+                    "bm25f_plus_mslp_simhash64"
+                    | "bm25f_plus_mslp_simhash_highlight_indices"
+                    | "bm25f_plus_mslp"
+                    | "bm25f-plus-mslp-simhash64",
+                ) => bm25f_plus_mslp_simhash_highlight_indices(
+                    chunks,
+                    query,
+                    input.highlight_limit,
+                    1.0,
+                    3,
+                ),
                 Some("bm25_plus" | "bm25+" | "bm25-plus") => {
                     let mut top: Vec<usize> = bm25_plus(chunks, query, 1.2, 0.75, 1.0)
                         .into_iter()
@@ -2731,6 +2750,7 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
     let q_struct = "byzantine quorum safety";
     let bm25_struct_top = bm25(&structural_chunks, q_struct, 1.2, 0.75);
     let bm25f_struct_top = bm25f(&structural_chunks, q_struct, 1.2, 0.75);
+    let bm25f_plus_struct_top = bm25f_plus_mslp(&structural_chunks, q_struct, 1.2, 0.75, 1.0);
     let bm25_plus_struct_top = bm25_plus(&structural_chunks, q_struct, 1.2, 0.75, 1.0);
     let bm25l_struct_top = bm25l(&structural_chunks, q_struct, 1.2, 0.75, 0.5);
     let ql_struct_top = ql_dirichlet(&structural_chunks, q_struct, 1000.0);
@@ -2765,6 +2785,7 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
     };
     let s_bm25 = bm25(&skewed_chunks, q_skew, 1.2, 0.75);
     let s_bm25_plus = bm25_plus(&skewed_chunks, q_skew, 1.2, 0.75, 1.0);
+    let s_bm25f_plus = bm25f_plus_mslp(&skewed_chunks, q_skew, 1.2, 0.75, 1.0);
     let s_bm25l = bm25l(&skewed_chunks, q_skew, 1.2, 0.75, 0.5);
     let s_ql = ql_dirichlet(&skewed_chunks, q_skew, 1000.0);
 
@@ -2798,6 +2819,8 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
     let sel_bm25_exact = highlight_indices(&novelty_chunks, q_novelty, 5);
     let sel_bm25f_exact = bm25f_highlight_indices(&novelty_chunks, q_novelty, 5);
     let sel_bm25f_simhash = bm25f_simhash_highlight_indices(&novelty_chunks, q_novelty, 5, 3);
+    let sel_bm25f_plus_simhash =
+        bm25f_plus_mslp_simhash_highlight_indices(&novelty_chunks, q_novelty, 5, 1.0, 3);
 
     let retrieval_family = json!({
         "structural_authority_256": {
@@ -2815,6 +2838,14 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
                 "top1_index": bm25f_struct_top[0].0,
                 "top1_role": structural_chunks[bm25f_struct_top[0].0].role,
                 "top3_roles": bm25f_struct_top.iter().take(3).map(|(idx, _)| structural_chunks[*idx].role).collect::<Vec<_>>(),
+            },
+            "bm25f_plus_mslp": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25f_plus_mslp(black_box(&structural_chunks), q_struct, 1.2, 0.75, 1.0));
+                }),
+                "top1_index": bm25f_plus_struct_top[0].0,
+                "top1_role": structural_chunks[bm25f_plus_struct_top[0].0].role,
+                "top3_roles": bm25f_plus_struct_top.iter().take(3).map(|(idx, _)| structural_chunks[*idx].role).collect::<Vec<_>>(),
             },
             "bm25_plus": {
                 "timing": time_samples(iterations, warmup, || {
@@ -2838,6 +2869,7 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
         "skewed_length_256": {
             "bm25_long_to_short_ratio": score_of(&s_bm25, 0) / score_of(&s_bm25, 1),
             "bm25_plus_long_to_short_ratio": score_of(&s_bm25_plus, 0) / score_of(&s_bm25_plus, 1),
+            "bm25f_plus_mslp_long_to_short_ratio": score_of(&s_bm25f_plus, 0) / score_of(&s_bm25f_plus, 1),
             "bm25l_long_to_short_ratio": score_of(&s_bm25l, 0) / score_of(&s_bm25l, 1),
             "ql_dirichlet_long_to_short_ratio": score_of(&s_ql, 0) / score_of(&s_ql, 1),
             "bm25_timing": time_samples(iterations, warmup, || {
@@ -2845,6 +2877,9 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
             }),
             "bm25_plus_timing": time_samples(iterations, warmup, || {
                 black_box(bm25_plus(black_box(&skewed_chunks), q_skew, 1.2, 0.75, 1.0));
+            }),
+            "bm25f_plus_mslp_timing": time_samples(iterations, warmup, || {
+                black_box(bm25f_plus_mslp(black_box(&skewed_chunks), q_skew, 1.2, 0.75, 1.0));
             }),
             "bm25l_timing": time_samples(iterations, warmup, || {
                 black_box(bm25l(black_box(&skewed_chunks), q_skew, 1.2, 0.75, 0.5));
@@ -2874,6 +2909,13 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
                 }),
                 "selected_indices": sel_bm25f_simhash,
                 "unique_non_boilerplate_topics": sel_bm25f_simhash.iter().filter(|&&idx| idx >= 64).count() + 1,
+            },
+            "bm25f_plus_mslp_simhash64": {
+                "timing": time_samples(iterations, warmup, || {
+                    black_box(bm25f_plus_mslp_simhash_highlight_indices(black_box(&novelty_chunks), q_novelty, 5, 1.0, 3));
+                }),
+                "selected_indices": sel_bm25f_plus_simhash,
+                "unique_non_boilerplate_topics": sel_bm25f_plus_simhash.iter().filter(|&&idx| idx >= 64).count() + 1,
             },
         }
     });
@@ -3622,6 +3664,386 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
         black_box((recs, scores));
     });
 
+    // 9. Family 9: Full 126-Cell Multi-Dimensional Combinatorial Matrix (7 Rankers x 3 Boilerplate x 3 LinkModes x 2 CommentUnwrap)
+    let mut combo_html = String::with_capacity(16_384);
+    combo_html.push_str(concat!(
+        "<header><nav><p>byzantine quorum consensus replication menu ",
+        "<a href=\"/nav/home\">Home</a> <a href=\"/nav/login\">Login</a> <a href=\"/nav/account\">Account</a></p></nav></header>",
+        "<div class=\"sidebar-menu\"><p>byzantine quorum ",
+        "<a href=\"/side/1\">MenuA</a> <a href=\"/side/2\">MenuB</a> <a href=\"/side/3\">MenuC</a></p></div>",
+        "<div class=\"sep\"><p>------------------------------------------------------------</p></div>",
+        "<div class=\"promo-links\"><p><a href=\"/p/1\">Donate</a> <a href=\"/p/2\">Mirrors</a> <a href=\"/p/3\">FAQ</a> <a href=\"/p/4\">Contact</a></p></div>",
+        "<main><article>",
+        "<h2>Byzantine Quorum Consensus Replication Safety Liveness Specification</h2>"
+    ));
+    for i in 0..16 {
+        combo_html.push_str(&format!(
+            "<p>Background distributed storage telemetry observation {i} with disk latency metrics and <a href=\"/bg/{i}\">reference-{i}</a>.</p>"
+        ));
+    }
+    let long_derivation = "formal asynchronous network model state machine proof ".repeat(22);
+    combo_html.push_str(&format!(
+        "<p>TOPIC_1_LONG_COMPLETE: byzantine quorum consensus replication safety liveness theorem {long_derivation} byzantine quorum consensus replication safety liveness.</p>"
+    ));
+    combo_html.push_str(concat!(
+        "<p>TOPIC_2_NEAR_DUP: byzantine quorum consensus replication invariant verified.</p>",
+        "<p>TOPIC_2_NEAR_DUP: byzantine quorum consensus replication invariant verified!</p>",
+        "<p>TOPIC_2_NEAR_DUP: byzantine quorum consensus replication invariant verified;</p>"
+    ));
+    combo_html.push_str(concat!(
+        "<!-- <article class=\"scroll-card\">",
+        "<h3><a href=\"/md5/0123456789abcdef0123456789abcdef\">TOPIC_5_COMMENT_CARD: Byzantine Quorum Consensus Replication Safety Liveness in Distributed Databases</a></h3>",
+        "<p>PDF · 14.2 MB · DOI: 10.1007/s00220-024-04900-1 · ISBN: 978-0-521-86571-5</p>",
+        "<p><a href=\"/slow_download/0123456789abcdef0123456789abcdef/0/0\">Slow Partner Server #1</a></p>",
+        "</article> -->",
+        "</article></main>",
+        "<div class=\"annas-div-card\">",
+        "<h3><a href=\"/md5/fedcba9876543210fedcba9876543210\">TOPIC_4_DIV_CARD: Practical Byzantine Quorum Consensus Replication Safety Liveness Systems</a></h3>",
+        "<p>EPUB · 8.4 MB · DOI: 10.1109/TPDS.2025.9988776 · ISBN: 978-0-262-03384-8</p>",
+        "<p><a href=\"/slow_download/fedcba9876543210fedcba9876543210/0/0\">Slow Partner Server #2</a> ",
+        "<a href=\"/fast_download/fedcba9876543210fedcba9876543210/0/0\">Fast Partner Server #1</a></p>",
+        "</div>",
+        "<div class=\"legal-notice\"><p>All rights reserved. Privacy policy and terms of service apply.</p></div>",
+        "<footer><p>byzantine quorum consensus replication footer <a href=\"/f/1\">Privacy</a> <a href=\"/f/2\">Terms</a> <a href=\"/f/3\">Cookies</a></p></footer>"
+    ));
+
+    let combo_query = "byzantine quorum consensus replication safety liveness";
+    let select_by_model = |chunks: &[Chunk], model: &str, k: usize| -> Vec<usize> {
+        let exact_dedup_from_scores = |scores: Vec<(usize, f64)>| -> Vec<usize> {
+            let mut out = Vec::with_capacity(k);
+            let mut seen = std::collections::HashSet::<String>::new();
+            for (idx, sc) in scores {
+                if out.len() >= k || sc <= 0.0 {
+                    break;
+                }
+                if seen.insert(chunks[idx].text.to_lowercase()) {
+                    out.push(idx);
+                }
+            }
+            out
+        };
+        match model {
+            "bm25" => highlight_indices(chunks, combo_query, k),
+            "bm25f" => bm25f_highlight_indices(chunks, combo_query, k),
+            "bm25_plus" => exact_dedup_from_scores(bm25_plus(chunks, combo_query, 1.2, 0.75, 1.0)),
+            "bm25l" => exact_dedup_from_scores(bm25l(chunks, combo_query, 1.2, 0.75, 0.5)),
+            "ql_dirichlet" => exact_dedup_from_scores(ql_dirichlet(chunks, combo_query, 1000.0)),
+            "bm25f_simhash" => bm25f_simhash_highlight_indices(chunks, combo_query, k, 3),
+            "bm25f_plus_mslp_simhash64" => {
+                bm25f_plus_mslp_simhash_highlight_indices(chunks, combo_query, k, 1.0, 3)
+            }
+            _ => highlight_indices(chunks, combo_query, k),
+        }
+    };
+    let classify_chunk_topic = |text: &str, role: &str| -> (Option<u8>, u8, bool) {
+        // Returns (topic_id: Option<1..=5>, relevance_grade: 0..=3, is_boilerplate_chrome: bool)
+        if text.contains("TOPIC_1_LONG_COMPLETE") {
+            (Some(1), 2, false)
+        } else if role == "heading"
+            && text.contains("Byzantine Quorum Consensus Replication Safety Liveness Specification")
+        {
+            (Some(3), 3, false)
+        } else if text.contains("TOPIC_5_COMMENT_CARD") {
+            (Some(5), 3, false)
+        } else if text.contains("TOPIC_4_DIV_CARD") {
+            (Some(4), 3, false)
+        } else if text.contains("TOPIC_2_NEAR_DUP") {
+            (Some(2), 2, false)
+        } else if text.contains("menu")
+            || text.contains("MenuA")
+            || text.contains("----")
+            || text.contains("Donate")
+            || text.contains("All rights reserved")
+            || text.contains("footer")
+        {
+            (None, 0, true)
+        } else {
+            (None, 0, false)
+        }
+    };
+    // Ideal DCG@5 for grades [3, 3, 3, 2, 2]
+    let ideal_grades = [3u8, 3, 3, 2, 2];
+    let idcg_at_5: f64 = ideal_grades
+        .iter()
+        .enumerate()
+        .map(|(rank_idx, &g)| ((1u32 << g) as f64 - 1.0) / ((rank_idx as f64 + 2.0).log2()))
+        .sum();
+
+    let rank_models = [
+        "bm25",
+        "bm25f",
+        "bm25_plus",
+        "bm25l",
+        "ql_dirichlet",
+        "bm25f_simhash",
+        "bm25f_plus_mslp_simhash64",
+    ];
+    let boilerplate_models = [
+        ("none", BoilerplatePolicy::FullDom),
+        ("main_content", BoilerplatePolicy::MainContentV1),
+        ("cetd_entropy", BoilerplatePolicy::CetdEntropyV1),
+    ];
+    let link_models = [
+        ("all", true, LinkMode::All),
+        ("highlighted_only", true, LinkMode::HighlightedOnly),
+        ("none", false, LinkMode::None),
+    ];
+    let comment_models = [
+        ("none", CommentUnwrapPolicy::None),
+        (
+            "annas_archive",
+            CommentUnwrapPolicy::AnnasArchiveScrollCards,
+        ),
+    ];
+
+    let cell_iters = (iterations / 5).clamp(5, 50);
+    let cell_warmup = (warmup / 3).clamp(1, 5);
+    let mut matrix_cells = Vec::with_capacity(126);
+    for &(comment_name, comment_policy) in &comment_models {
+        for &(bp_name, bp_policy) in &boilerplate_models {
+            for &(link_name, include_links, link_mode) in &link_models {
+                let limits = ParseLimits {
+                    max_html_bytes: combo_html.len() + 1024,
+                    comment_unwrap: comment_policy,
+                    boilerplate: bp_policy,
+                    include_links,
+                    ..ParseLimits::default()
+                };
+                let proj = parse_html_with_limits(&combo_html, &base_url, limits)
+                    .map_err(str::to_string)?;
+                let annas_recs = extract_annas_archive_records(&proj);
+                let leaked_bp_chunks = proj
+                    .chunks
+                    .iter()
+                    .filter(|c| classify_chunk_topic(&c.text, c.role).2)
+                    .count();
+                let retained_relevant_topics: std::collections::HashSet<u8> = proj
+                    .chunks
+                    .iter()
+                    .filter_map(|c| classify_chunk_topic(&c.text, c.role).0)
+                    .collect();
+                let expected_relevant_topics =
+                    if comment_policy == CommentUnwrapPolicy::AnnasArchiveScrollCards {
+                        5usize
+                    } else {
+                        4usize
+                    };
+                let tp_bp = 6usize.saturating_sub(leaked_bp_chunks);
+                let fn_bp = leaked_bp_chunks;
+                let fp_bp = expected_relevant_topics.saturating_sub(retained_relevant_topics.len());
+                let bp_f1 = if tp_bp == 0 {
+                    0.0
+                } else {
+                    (2.0 * tp_bp as f64) / (2.0 * tp_bp as f64 + fp_bp as f64 + fn_bp as f64)
+                };
+                let bp_leakage_rate = (leaked_bp_chunks as f64) / (proj.chunks.len().max(1) as f64);
+
+                for &rank_name in &rank_models {
+                    let selected = select_by_model(&proj.chunks, rank_name, 5);
+                    let mut credited_topics = std::collections::HashSet::<u8>::new();
+                    let mut dcg = 0.0f64;
+                    let mut mrr = 0.0f64;
+                    for (rank_pos, &chunk_idx) in selected.iter().take(5).enumerate() {
+                        if let Some(chunk) = proj.chunks.get(chunk_idx) {
+                            let (topic_opt, grade, _) =
+                                classify_chunk_topic(&chunk.text, chunk.role);
+                            let effective_grade = match topic_opt {
+                                Some(tid) if credited_topics.insert(tid) => grade,
+                                _ => 0,
+                            };
+                            if effective_grade >= 2 && mrr == 0.0 {
+                                mrr = 1.0 / ((rank_pos + 1) as f64);
+                            }
+                            dcg += ((1u32 << effective_grade) as f64 - 1.0)
+                                / ((rank_pos as f64 + 2.0).log2());
+                        }
+                    }
+                    let ndcg_at_5 = (dcg / idcg_at_5).min(1.0);
+                    let recall_at_5 = (credited_topics.len() as f64) / 5.0;
+                    let aae = export_jsonl_with_link_mode_and_prepared(
+                        &proj,
+                        &base_url,
+                        17,
+                        Some(combo_query),
+                        5,
+                        4 * 1024 * 1024,
+                        link_mode,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let aae_bytes = aae.len();
+                    let compression_vs_raw = (combo_html.len() as f64) / (aae_bytes.max(1) as f64);
+                    let bytes_per_fact = (aae_bytes as f64) / (credited_topics.len().max(1) as f64);
+
+                    let cell_timing = time_samples(cell_iters, cell_warmup, || {
+                        let p = parse_html_with_limits(black_box(&combo_html), &base_url, limits)
+                            .unwrap();
+                        let sel = select_by_model(&p.chunks, rank_name, 5);
+                        black_box(sel);
+                        black_box(
+                            export_jsonl_with_link_mode_and_prepared(
+                                &p,
+                                &base_url,
+                                17,
+                                Some(combo_query),
+                                5,
+                                4 * 1024 * 1024,
+                                link_mode,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    });
+
+                    matrix_cells.push(json!({
+                        "cell_id": format!("{rank_name}__{bp_name}__{link_name}__{comment_name}"),
+                        "rank_model": rank_name,
+                        "boilerplate_policy": bp_name,
+                        "link_mode": link_name,
+                        "comment_unwrap": comment_name,
+                        "ndcg_at_5": (ndcg_at_5 * 10000.0).round() / 10000.0,
+                        "mrr_at_5": (mrr * 10000.0).round() / 10000.0,
+                        "recall_at_5": (recall_at_5 * 10000.0).round() / 10000.0,
+                        "unique_relevant_topics_in_top5": credited_topics.len(),
+                        "boilerplate_leakage_rate": (bp_leakage_rate * 10000.0).round() / 10000.0,
+                        "boilerplate_removal_f1": (bp_f1 * 10000.0).round() / 10000.0,
+                        "extracted_annas_records": annas_recs.len(),
+                        "retained_chunks": proj.chunks.len(),
+                        "retained_links": proj.links.len(),
+                        "aae_output_bytes": aae_bytes,
+                        "output_compression_ratio_vs_raw_html": (compression_vs_raw * 1000.0).round() / 1000.0,
+                        "bytes_per_fact": (bytes_per_fact * 100.0).round() / 100.0,
+                        "timing": cell_timing,
+                    }));
+                }
+            }
+        }
+    }
+
+    // Parallel execution across all hardware threads over all 126 combinatorial cells
+    let mut all_126_specs = Vec::with_capacity(126);
+    for &(comment_name, comment_policy) in &comment_models {
+        for &(bp_name, bp_policy) in &boilerplate_models {
+            for &(link_name, include_links, link_mode) in &link_models {
+                for &rank_name in &rank_models {
+                    all_126_specs.push((
+                        rank_name,
+                        bp_name,
+                        bp_policy,
+                        link_name,
+                        include_links,
+                        link_mode,
+                        comment_name,
+                        comment_policy,
+                    ));
+                }
+            }
+        }
+    }
+    let par_126_start = Instant::now();
+    std::thread::scope(|scope| {
+        let chunk_size = all_126_specs.len().div_ceil(hw_threads);
+        for spec_slice in all_126_specs.chunks(chunk_size) {
+            let html_ref = &combo_html;
+            let url_ref = &base_url;
+            scope.spawn(move || {
+                for &(_, _, bp_policy, _, include_links, link_mode, _, comment_policy) in spec_slice
+                {
+                    let limits = ParseLimits {
+                        max_html_bytes: html_ref.len() + 1024,
+                        comment_unwrap: comment_policy,
+                        boilerplate: bp_policy,
+                        include_links,
+                        ..ParseLimits::default()
+                    };
+                    for _ in 0..cell_iters {
+                        let p =
+                            parse_html_with_limits(black_box(html_ref), url_ref, limits).unwrap();
+                        let top = bm25f_plus_mslp_simhash_highlight_indices(
+                            &p.chunks,
+                            combo_query,
+                            5,
+                            1.0,
+                            3,
+                        );
+                        black_box(top);
+                        black_box(
+                            export_jsonl_with_link_mode_and_prepared(
+                                &p,
+                                url_ref,
+                                17,
+                                Some(combo_query),
+                                5,
+                                4 * 1024 * 1024,
+                                link_mode,
+                                None,
+                            )
+                            .unwrap(),
+                        );
+                    }
+                }
+            });
+        }
+    });
+    let par_126_wall_ms = (par_126_start.elapsed().as_nanos().max(1) as f64) / 1e6;
+    let par_126_cells_per_sec =
+        ((all_126_specs.len() * cell_iters) as f64) / (par_126_wall_ms / 1000.0);
+
+    let mut model_ir_summary = serde_json::Map::new();
+    for &rank_name in &rank_models {
+        let matching: Vec<&Value> = matrix_cells
+            .iter()
+            .filter(|c| c["rank_model"] == rank_name)
+            .collect();
+        let mean_ndcg = matching
+            .iter()
+            .filter_map(|c| c["ndcg_at_5"].as_f64())
+            .sum::<f64>()
+            / (matching.len().max(1) as f64);
+        let max_ndcg = matching
+            .iter()
+            .filter_map(|c| c["ndcg_at_5"].as_f64())
+            .fold(0.0f64, f64::max);
+        let mean_mrr = matching
+            .iter()
+            .filter_map(|c| c["mrr_at_5"].as_f64())
+            .sum::<f64>()
+            / (matching.len().max(1) as f64);
+        let mean_recall = matching
+            .iter()
+            .filter_map(|c| c["recall_at_5"].as_f64())
+            .sum::<f64>()
+            / (matching.len().max(1) as f64);
+        let mean_p50_ns = matching
+            .iter()
+            .filter_map(|c| c["timing"]["p50_ns"].as_u64())
+            .sum::<u64>() as f64
+            / (matching.len().max(1) as f64);
+        model_ir_summary.insert(
+            rank_name.to_string(),
+            json!({
+                "cells": matching.len(),
+                "mean_ndcg_at_5": (mean_ndcg * 10000.0).round() / 10000.0,
+                "max_ndcg_at_5": (max_ndcg * 10000.0).round() / 10000.0,
+                "mean_mrr_at_5": (mean_mrr * 10000.0).round() / 10000.0,
+                "mean_recall_at_5": (mean_recall * 10000.0).round() / 10000.0,
+                "mean_p50_ns": (mean_p50_ns * 100.0).round() / 100.0,
+            }),
+        );
+    }
+
+    let combinatorial_matrix_family = json!({
+        "total_factorial_retrieval_extraction_cells": matrix_cells.len(),
+        "total_decompression_and_cache_cells": 7,
+        "grand_total_evaluated_cells": matrix_cells.len() + 7,
+        "raw_corpus_html_bytes": combo_html.len(),
+        "iterations_per_cell": cell_iters,
+        "parallel_126_cells_wall_ms": (par_126_wall_ms * 100.0).round() / 100.0,
+        "parallel_126_cell_executions_per_sec": (par_126_cells_per_sec * 100.0).round() / 100.0,
+        "by_rank_model_summary": model_ir_summary,
+        "cells": matrix_cells,
+    });
+
     Ok(json!({
         "protocol": "athena-theory-matrix/1",
         "iterations_per_cell": iterations,
@@ -3632,6 +4054,7 @@ fn run_theory_matrix(iterations: usize) -> Result<Value, String> {
         "annas_archive_extraction": annas_family,
         "source_cache_and_etag_304": cache_family,
         "compressed_transfer_bounded_decode": compression_family,
+        "combinatorial_matrix_126_and_ir_quality": combinatorial_matrix_family,
         "adversarial_red_team_and_unified_cohorts": {
             "multi_member_gzip_decode": multi_member_timing,
             "empty_deflate_block_bomb_guard": empty_block_bomb_timing,
@@ -4509,5 +4932,34 @@ mod tests {
             panic!("expected selection");
         };
         assert_eq!(sel_model, vec![0, 2]);
+
+        assert_eq!(
+            report["combinatorial_matrix_126_and_ir_quality"]["total_factorial_retrieval_extraction_cells"],
+            126
+        );
+        assert_eq!(
+            report["combinatorial_matrix_126_and_ir_quality"]["grand_total_evaluated_cells"],
+            133
+        );
+        assert_eq!(
+            report["combinatorial_matrix_126_and_ir_quality"]["by_rank_model_summary"]["bm25f_plus_mslp_simhash64"]
+                ["max_ndcg_at_5"],
+            1.0
+        );
+
+        let hybrid_fixture = Fixture::new(
+            json!({
+                "html": "<p>Byzantine quorum safety.</p><p>Byzantine quorum safety!</p><p>Byzantine quorum liveness proof</p>",
+                "query": "byzantine quorum",
+                "highlight_limit": 2,
+                "rank_model": "bm25f_plus_mslp_simhash64"
+            }),
+            "selection",
+        )
+        .unwrap();
+        let Output::Selection(sel_hybrid) = execute("selection", &hybrid_fixture).unwrap() else {
+            panic!("expected selection");
+        };
+        assert_eq!(sel_hybrid, vec![0, 2]);
     }
 }

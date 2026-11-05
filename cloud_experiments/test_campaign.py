@@ -5291,6 +5291,55 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
                         f"core_probe output failed envelope_errors for {cohort['id']}",
                     )
 
+    def test_cloud_022_variants_and_6000_sample_tail_gate(self):
+        from cloud_experiments import experimental_design
+        panel = experimental_design.whole_path_core_panel()
+        self.assertEqual(
+            panel["cloud_022_variants"],
+            [
+                "baseline",
+                "rank-binary",
+                "rank-linear",
+                "rank-select",
+                "rank-binary+rank-select",
+                "rank-linear+rank-select",
+                "table-html-selectors",
+            ],
+        )
+        design = {
+            "native_design": experimental_design.native_design(),
+            "limits": {"max_variants": 128},
+        }
+        planned, _, _ = research._planned_cargo_cache_variants(
+            design, variants=panel["cloud_022_variants"]
+        )
+        self.assertEqual(planned, panel["cloud_022_variants"])
+
+        # 24 blocks x 250 iterations = 6,000 samples satisfies samples * 0.01 >= 50 for p99
+        groups_6000 = {
+            "cohort-6000": [
+                {
+                    "baseline": [1000 + i for i in range(250)],
+                    "candidate": [850 + i for i in range(250)],
+                }
+                for _ in range(24)
+            ]
+        }
+        rss_6000 = {
+            "cohort-6000": {
+                b: {"baseline": 48_000, "candidate": 46_000} for b in range(24)
+            }
+        }
+        analysis = research.analyze_groups(
+            groups_6000, rss_6000, family=4, draws=30_000, alpha=0.05, seed=20261105
+        )
+        self.assertEqual(analysis["performance_decision"], "PASS_PERFORMANCE")
+        self.assertEqual(analysis["cases"]["cohort-6000"]["decision"], "PASS_PERFORMANCE")
+        self.assertEqual(analysis["cases"]["cohort-6000"]["warnings"], [])
+        self.assertEqual(analysis["cases"]["cohort-6000"]["baseline"]["samples"], 6000)
+        self.assertEqual(analysis["cases"]["cohort-6000/rss"]["decision"], "PASS_PERFORMANCE")
+        self.assertEqual(analysis["cases"]["cohort-6000/rss"]["warnings"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

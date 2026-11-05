@@ -225,6 +225,17 @@ impl QueryFilter {
 
 #[inline(always)]
 fn score_chunks_bm25f(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {
+    score_chunks_bm25f_with_delta(chunks, query, k1, b, 0.0)
+}
+
+#[inline(always)]
+fn score_chunks_bm25f_with_delta(
+    chunks: &[Chunk],
+    query: &str,
+    k1: f64,
+    b: f64,
+    delta: f64,
+) -> Vec<(usize, f64)> {
     if chunks.is_empty() {
         return Vec::new();
     }
@@ -318,7 +329,13 @@ fn score_chunks_bm25f(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(us
         for (doc_idx, frequency) in matches {
             let weight = role_weight(chunks[doc_idx].role);
             let freq = frequency as f64 * weight;
-            ranked[doc_idx].1 += idf * freq * (k1 + 1.0) / (freq + norms[doc_idx]);
+            let tf_gain = freq * (k1 + 1.0) / (freq + norms[doc_idx]);
+            ranked[doc_idx].1 += idf
+                * if delta > 0.0 {
+                    tf_gain + delta
+                } else {
+                    tf_gain
+                };
         }
     }
     for (doc_idx, entry) in ranked.iter_mut().enumerate() {
@@ -544,6 +561,75 @@ pub fn bm25f_simhash_highlight_indices(
         return Vec::new();
     }
     let mut ranked = score_chunks_bm25f(chunks, query, 1.2, 0.75);
+    ranked.retain(|(_, score)| *score > 0.0);
+    if ranked.is_empty() {
+        return Vec::new();
+    }
+    let cmp =
+        |(a, sa): &(usize, f64), (b, sb): &(usize, f64)| sb.total_cmp(sa).then_with(|| a.cmp(b));
+    let cap = (limit * 8).max(32).min(ranked.len());
+    if ranked.len() > cap {
+        ranked.select_nth_unstable_by(cap - 1, cmp);
+    }
+    ranked[..cap].sort_unstable_by(cmp);
+    let mut selected = Vec::with_capacity(limit.min(ranked.len()));
+    let mut seen_exact = HashSet::<String>::new();
+    let mut seen_sketches = Vec::<u64>::new();
+    let mut try_select = |index: usize, selected: &mut Vec<usize>| -> bool {
+        let exact = chunks[index].text.to_lowercase();
+        if !seen_exact.insert(exact) {
+            return false;
+        }
+        let sketch = simhash_64(&chunks[index].text);
+        if seen_sketches
+            .iter()
+            .any(|&prev| (prev ^ sketch).count_ones() <= max_hamming)
+        {
+            return false;
+        }
+        seen_sketches.push(sketch);
+        selected.push(index);
+        selected.len() >= limit
+    };
+    for &(index, _) in &ranked[..cap] {
+        if try_select(index, &mut selected) {
+            return selected;
+        }
+    }
+    if ranked.len() > cap {
+        ranked[cap..].sort_unstable_by(cmp);
+        for &(index, _) in &ranked[cap..] {
+            if try_select(index, &mut selected) {
+                break;
+            }
+        }
+    }
+    selected
+}
+
+pub fn bm25f_plus_mslp(
+    chunks: &[Chunk],
+    query: &str,
+    k1: f64,
+    b: f64,
+    delta: f64,
+) -> Vec<(usize, f64)> {
+    let mut ranked = score_chunks_bm25f_with_delta(chunks, query, k1, b, delta);
+    ranked.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));
+    ranked
+}
+
+pub fn bm25f_plus_mslp_simhash_highlight_indices(
+    chunks: &[Chunk],
+    query: &str,
+    limit: usize,
+    delta: f64,
+    max_hamming: u32,
+) -> Vec<usize> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut ranked = score_chunks_bm25f_with_delta(chunks, query, 1.2, 0.75, delta);
     ranked.retain(|(_, score)| *score > 0.0);
     if ranked.is_empty() {
         return Vec::new();
@@ -868,5 +954,71 @@ mod tests {
             mslp_ranked[0].0, 1,
             "adjacent match with later repeated term must outscore wide-span match"
         );
+    }
+
+    #[test]
+    fn bm25f_plus_mslp_simhash64_rescues_long_complete_chunk_and_suppresses_near_duplicates() {
+        let filler = "metadata archive record entry ".repeat(45);
+        let docs = vec![
+            Chunk {
+                node: 1,
+                role: "heading",
+                text: "Byzantine Quorum Consensus Handbook".into(),
+                links: vec![],
+            },
+            Chunk {
+                node: 2,
+                role: "paragraph",
+                text: format!("Byzantine quorum consensus safety liveness proof {filler}"),
+                links: vec![],
+            },
+            Chunk {
+                node: 3,
+                role: "paragraph",
+                text: format!("Byzantine quorum consensus safety liveness proof! {filler}"),
+                links: vec![],
+            },
+            Chunk {
+                node: 4,
+                role: "paragraph",
+                text: "Byzantine quorum short stub".into(),
+                links: vec![],
+            },
+        ];
+        let f_only = bm25f(
+            &docs,
+            "byzantine quorum consensus safety liveness",
+            1.2,
+            0.75,
+        );
+        let f_plus = bm25f_plus_mslp(
+            &docs,
+            "byzantine quorum consensus safety liveness",
+            1.2,
+            0.75,
+            1.0,
+        );
+        // Under BM25F+MSLP+delta=1.0, the long paragraph matching all 5 query terms (doc 1)
+        // receives a higher relative score against the short 3-term heading (doc 0).
+        let f_only_ratio = f_only.iter().find(|(i, _)| *i == 1).unwrap().1
+            / f_only.iter().find(|(i, _)| *i == 0).unwrap().1;
+        let f_plus_ratio = f_plus.iter().find(|(i, _)| *i == 1).unwrap().1
+            / f_plus.iter().find(|(i, _)| *i == 0).unwrap().1;
+        assert!(f_plus_ratio > f_only_ratio);
+
+        let selected = bm25f_plus_mslp_simhash_highlight_indices(
+            &docs,
+            "byzantine quorum consensus safety liveness",
+            3,
+            1.0,
+            3,
+        );
+        assert!(selected.contains(&0));
+        assert!(selected.contains(&1));
+        assert!(
+            !selected.contains(&2),
+            "near-duplicate doc 2 must be suppressed by SimHash-64"
+        );
+        assert_eq!(selected.len(), 3);
     }
 }

@@ -1099,7 +1099,35 @@ fn shannon_byte_entropy(text: &str) -> f64 {
     entropy
 }
 
-fn is_boilerplate_chunk(dom: &DomArena, chunk: &Chunk, policy: BoilerplatePolicy) -> bool {
+fn has_bibliographic_signal(chunk: &Chunk, links: &[String]) -> bool {
+    if chunk.role == "table_header" || chunk.role == "table_cell" {
+        return true;
+    }
+    if chunk.text.contains("10.") || parse_32_hex_md5(&chunk.text).is_some() {
+        return true;
+    }
+    let lower = chunk.text.to_ascii_lowercase();
+    if lower.contains("isbn") || lower.contains("doi:") || lower.contains("md5:") {
+        return true;
+    }
+    chunk.links.iter().any(|&id| {
+        links.get(id as usize).is_some_and(|url| {
+            let u = url.to_ascii_lowercase();
+            u.contains("/md5/")
+                || u.contains("/doi/")
+                || u.contains("/isbn/")
+                || u.contains("/slow_download/")
+                || u.contains("/fast_download/")
+        })
+    })
+}
+
+fn is_boilerplate_chunk(
+    dom: &DomArena,
+    chunk: &Chunk,
+    links: &[String],
+    policy: BoilerplatePolicy,
+) -> bool {
     let (is_chrome, inside_main_or_article, inside_nav_or_footer) =
         classify_landmark(dom, chunk.node);
     if chunk.role == "heading" {
@@ -1108,7 +1136,8 @@ fn is_boilerplate_chunk(dom: &DomArena, chunk: &Chunk, policy: BoilerplatePolicy
     if is_chrome {
         return true;
     }
-    if !inside_main_or_article && chunk.links.len() >= 3 && !chunk.text.contains("10.") {
+    let bib_signal = has_bibliographic_signal(chunk, links);
+    if !inside_main_or_article && chunk.links.len() >= 3 && !bib_signal {
         let word_count = chunk.text.split_whitespace().count();
         if word_count <= chunk.links.len().saturating_mul(3) {
             return true;
@@ -1117,9 +1146,7 @@ fn is_boilerplate_chunk(dom: &DomArena, chunk: &Chunk, policy: BoilerplatePolicy
     if policy == BoilerplatePolicy::CetdEntropyV1
         && !inside_main_or_article
         && chunk.role != "heading"
-        && chunk.role != "table_header"
-        && chunk.role != "table_cell"
-        && !chunk.text.contains("10.")
+        && !bib_signal
     {
         let word_count = chunk.text.split_whitespace().count();
         let entropy = shannon_byte_entropy(&chunk.text);
@@ -1157,10 +1184,10 @@ fn apply_boilerplate_policy(
     }
     let keep_count = chunks
         .iter()
-        .filter(|c| !is_boilerplate_chunk(dom, c, policy))
+        .filter(|c| !is_boilerplate_chunk(dom, c, links, policy))
         .count();
     if keep_count > 0 && keep_count < chunks.len() {
-        chunks.retain(|c| !is_boilerplate_chunk(dom, c, policy));
+        chunks.retain(|c| !is_boilerplate_chunk(dom, c, links, policy));
         if !links.is_empty() {
             let mut remap = vec![NONE; links.len()];
             let mut new_links = Vec::with_capacity(links.len());
@@ -1898,5 +1925,42 @@ mod tests {
         assert_eq!(recs03[0].download_links.len(), 2);
         assert_eq!(recs03[1].md5, "fedcba9876543210fedcba9876543210");
         assert_eq!(recs03[1].isbn, None);
+
+        // PROJ-04: Div-soup Anna's Archive book cards outside <main>/<article> preserve MD5, ISBN, and download mirrors under CetdEntropyV1 and MainContentV1
+        let html_proj04 = concat!(
+            "<nav><p><a href=\"/home\">Home</a> <a href=\"/donate\">Donate</a> <a href=\"/faq\">FAQ</a></p></nav>",
+            "<div class=\"menu\"><p><a href=\"/login\">Login</a> <a href=\"/register\">Register</a> <a href=\"/terms\">Terms</a></p></div>",
+            "<div class=\"card\">",
+            "<h3><a href=\"/md5/abcdef0123456789abcdef0123456789\">Information Retrieval Handbook</a></h3>",
+            "<p>PDF · ISBN: 978-0-521-86571-5</p>",
+            "<p><a href=\"/slow_download/abcdef0123456789abcdef0123456789/0/0\">Slow #1</a> <a href=\"/slow_download/abcdef0123456789abcdef0123456789/0/1\">Slow #2</a> <a href=\"/fast_download/abcdef0123456789abcdef0123456789/0/0\">Fast #1</a></p>",
+            "</div>"
+        );
+        for policy in [
+            BoilerplatePolicy::MainContentV1,
+            BoilerplatePolicy::CetdEntropyV1,
+        ] {
+            let p04 = parse_html_with_limits(
+                html_proj04,
+                &base,
+                ParseLimits {
+                    max_html_bytes: html_proj04.len() + 64,
+                    boilerplate: policy,
+                    ..ParseLimits::default()
+                },
+            )
+            .unwrap();
+            let recs04 = extract_annas_archive_records(&p04);
+            assert_eq!(recs04.len(), 1);
+            assert_eq!(recs04[0].md5, "abcdef0123456789abcdef0123456789");
+            assert_eq!(recs04[0].isbn.as_deref(), Some("978-0-521-86571-5"));
+            assert_eq!(recs04[0].download_links.len(), 4);
+            assert!(
+                !p04.chunks
+                    .iter()
+                    .any(|c| c.text.contains("Donate") || c.text.contains("Register")),
+                "navigation and menu links must still be removed under {policy:?}"
+            );
+        }
     }
 }
