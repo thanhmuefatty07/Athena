@@ -5361,12 +5361,13 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             source[f"cloud_experiments/locks/{lock_path.name}"] = lock_path.read_bytes()
 
         self.assertIn(b"pub struct ProxyPoolRouter", source["src/bandit.rs"])
-        self.assertIn(b"pub enum SoftBlockKind", source["src/network.rs"])
+        self.assertIn(b"pub struct SoftBlockDetector", source["src/bandit.rs"])
+        self.assertIn(b"pub enum FetchOutcomeKind", source["src/bandit.rs"])
         self.assertIn(b"pub fn detect_soft_block", source["src/network.rs"])
-        self.assertIn(b"SoftBlocked(SoftBlockKind)", source["src/orchestrator.rs"])
+        self.assertIn(b"SoftBlocked(&'static str)", source["src/orchestrator.rs"])
         self.assertIn(b"unindexed_bib_hrefs", source["src/arena.rs"])
-        self.assertIn(b"unindexed_link_counts", source["src/arena.rs"])
-        self.assertIn(b"record_unindexed_link", source["src/projection.rs"])
+        self.assertIn(b"set_pending_bib_hrefs", source["src/arena.rs"])
+        self.assertIn(b"collect_unindexed_bib_hrefs", source["src/projection.rs"])
         self.assertIn(b"hybrid_rrf_simhash_highlight_indices", source["src/rank.rs"])
         self.assertIn(b"reciprocal_rank_fusion", source["src/rank.rs"])
         self.assertIn(b"stress-campaign", source["cloud_experiments/core_probe.rs"])
@@ -5383,8 +5384,8 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             proj_txt = out["src/projection.rs"].decode("utf-8")
             rank_txt = out["src/rank.rs"].decode("utf-8")
             self.assertIn("unindexed_bib_hrefs: Vec<(NodeId, String)>", arena_txt, variant_id)
-            self.assertIn("unindexed_link_counts: Vec<u16>", arena_txt, variant_id)
-            self.assertIn("self.dom.record_unindexed_link(", proj_txt, variant_id)
+            self.assertIn("set_pending_bib_hrefs", arena_txt, variant_id)
+            self.assertIn("collect_unindexed_bib_hrefs(", proj_txt, variant_id)
             self.assertIn("hybrid_rrf_simhash_highlight_indices", rank_txt, variant_id)
 
 
