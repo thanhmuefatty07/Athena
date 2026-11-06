@@ -149,6 +149,35 @@ impl PreparedRank {
         }
         selected
     }
+
+    pub fn top_indices_simhash(&self, query: &str, limit: usize, max_hamming: u32) -> Vec<usize> {
+        if limit == 0 || self.lengths.is_empty() {
+            return Vec::new();
+        }
+        let ranked = self.scores(query, 1.2, 0.75);
+        let mut selected = Vec::new();
+        let mut seen = HashSet::<&str>::new();
+        let mut sketches = Vec::<u64>::new();
+        for (index, score) in ranked {
+            if selected.len() >= limit || score <= 0.0 {
+                break;
+            }
+            let fp = self.fingerprints[index].as_ref();
+            if !seen.insert(fp) {
+                continue;
+            }
+            let sketch = simhash_64(fp);
+            if sketches
+                .iter()
+                .any(|&prev| (prev ^ sketch).count_ones() <= max_hamming)
+            {
+                continue;
+            }
+            sketches.push(sketch);
+            selected.push(index);
+        }
+        selected
+    }
 }
 
 struct QueryFilter {
@@ -350,6 +379,14 @@ fn score_chunks_bm25f_with_delta(
                 entry.1 *= 1.35;
             } else {
                 entry.1 *= 1.0 + heading_context_boost[doc_idx];
+                let link_count = chunks[doc_idx].links.len();
+                if link_count >= 3
+                    && lengths[doc_idx] <= link_count.saturating_mul(4)
+                    && !chunks[doc_idx].text.contains("10.")
+                    && !chunks[doc_idx].text.to_ascii_lowercase().contains("isbn")
+                {
+                    entry.1 *= 0.65;
+                }
             }
         }
     }
@@ -513,9 +550,15 @@ pub fn ql_dirichlet(chunks: &[Chunk], query: &str, mu: f64) -> Vec<(usize, f64)>
         }
         let p_collection = (cf[term_idx] as f64 / total_tokens).max(1e-12);
         for (doc_idx, frequency) in matches {
-            let gain = (1.0 + (frequency as f64) / (mu_prior * p_collection)).ln();
+            let weight = role_weight(chunks[doc_idx].role);
+            let gain = (1.0 + (frequency as f64 * weight) / (mu_prior * p_collection)).ln();
             let len_penalty = 1.0 + (1.0 + doc_lengths[doc_idx] as f64 / mu_prior).ln();
             ranked[doc_idx].1 += gain / len_penalty;
+        }
+    }
+    for (doc_idx, entry) in ranked.iter_mut().enumerate() {
+        if entry.1 > 0.0 && chunks[doc_idx].role == "heading" {
+            entry.1 *= 1.35;
         }
     }
     ranked.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then(a.cmp(b)));
@@ -674,6 +717,172 @@ pub fn bm25f_plus_mslp_simhash_highlight_indices(
         }
     }
     selected
+}
+
+/// Reciprocal Rank Fusion (Cormack, Clarke, & Büttcher, SIGIR):
+/// fuses multiple ordered `(doc_idx, score)` rankings scale-invariantly using
+/// `sum_r weight_r / (k_rrf + rank_r(d))` over positive-scoring documents.
+pub fn reciprocal_rank_fusion(
+    rankings: &[(&[(usize, f64)], f64)],
+    doc_count: usize,
+    k_rrf: f64,
+) -> Vec<(usize, f64)> {
+    if doc_count == 0 {
+        return Vec::new();
+    }
+    let k = k_rrf.max(1.0);
+    let mut fused: Vec<(usize, f64)> = (0..doc_count).map(|i| (i, 0.0)).collect();
+    for &(ranking, weight) in rankings {
+        if !weight.is_finite() || weight <= 0.0 {
+            continue;
+        }
+        for (rank_zero_based, &(doc_idx, score)) in ranking.iter().enumerate() {
+            if score <= 0.0 || doc_idx >= doc_count {
+                continue;
+            }
+            let r = (rank_zero_based + 1) as f64;
+            fused[doc_idx].1 += weight / (k + r);
+        }
+    }
+    fused.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then_with(|| a.cmp(b)));
+    fused
+}
+
+fn select_simhash_from_ranked(
+    chunks: &[Chunk],
+    mut ranked: Vec<(usize, f64)>,
+    limit: usize,
+    max_hamming: u32,
+) -> Vec<usize> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    ranked.retain(|(_, score)| *score > 0.0);
+    if ranked.is_empty() {
+        return Vec::new();
+    }
+    let cmp =
+        |(a, sa): &(usize, f64), (b, sb): &(usize, f64)| sb.total_cmp(sa).then_with(|| a.cmp(b));
+    let cap = (limit * 8).max(32).min(ranked.len());
+    if ranked.len() > cap {
+        ranked.select_nth_unstable_by(cap - 1, cmp);
+    }
+    ranked[..cap].sort_unstable_by(cmp);
+    let mut selected = Vec::with_capacity(limit.min(ranked.len()));
+    let mut seen_exact = HashSet::<String>::new();
+    let mut seen_sketches = Vec::<u64>::new();
+    let mut try_select = |index: usize, selected: &mut Vec<usize>| -> bool {
+        let exact = chunks[index].text.to_lowercase();
+        if !seen_exact.insert(exact) {
+            return false;
+        }
+        let sketch = simhash_64(&chunks[index].text);
+        if seen_sketches
+            .iter()
+            .any(|&prev| (prev ^ sketch).count_ones() <= max_hamming)
+        {
+            return false;
+        }
+        seen_sketches.push(sketch);
+        selected.push(index);
+        selected.len() >= limit
+    };
+    for &(index, _) in &ranked[..cap] {
+        if try_select(index, &mut selected) {
+            return selected;
+        }
+    }
+    if ranked.len() > cap {
+        ranked[cap..].sort_unstable_by(cmp);
+        for &(index, _) in &ranked[cap..] {
+            if try_select(index, &mut selected) {
+                break;
+            }
+        }
+    }
+    selected
+}
+
+/// Fuses structural-proximity `BM25F+MSLP+delta` (`weight = 2.5`), `BM25L` (`weight = 1.0`),
+/// and language-model `QL-Dirichlet` (`weight = 1.0`) via Reciprocal Rank Fusion (`k = 12.0`)
+/// with structural role-weight prior and 64-bit SimHash Hamming novelty deduplication.
+pub fn hybrid_rrf_simhash_highlight_indices(
+    chunks: &[Chunk],
+    query: &str,
+    limit: usize,
+    max_hamming: u32,
+) -> Vec<usize> {
+    if limit == 0 || chunks.is_empty() {
+        return Vec::new();
+    }
+    let r_bm25f_plus = bm25f_plus_mslp(chunks, query, 1.2, 0.75, 1.0);
+    let r_bm25l = bm25l(chunks, query, 1.2, 0.75, 0.5);
+    let r_qld = ql_dirichlet(chunks, query, 1000.0);
+    let mut fused = reciprocal_rank_fusion(
+        &[(&r_bm25f_plus, 2.5), (&r_bm25l, 1.0), (&r_qld, 1.0)],
+        chunks.len(),
+        12.0,
+    );
+    for (doc_idx, score) in &mut fused {
+        if *score > 0.0 {
+            let ch = &chunks[*doc_idx];
+            let rw = 1.0 + 0.35 * (role_weight(ch.role) - 1.0).max(0.0);
+            let link_pen = if ch.links.len() >= 3 && ch.role == "paragraph" {
+                0.65
+            } else {
+                1.0
+            };
+            *score *= rw * link_pen;
+        }
+    }
+    fused.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then_with(|| a.cmp(b)));
+    select_simhash_from_ranked(chunks, fused, limit, max_hamming)
+}
+
+#[inline]
+pub fn bm25f_mslp_rrf_simhash_highlight_indices(
+    chunks: &[Chunk],
+    query: &str,
+    limit: usize,
+    max_hamming: u32,
+) -> Vec<usize> {
+    hybrid_rrf_simhash_highlight_indices(chunks, query, limit, max_hamming)
+}
+
+/// Fuses multiple query formulations or sub-aspect queries over `chunks` using
+/// `BM25F+MSLP+delta` per sub-query + Reciprocal Rank Fusion (`k_rrf`) + structural role prior
+/// + 64-bit SimHash deduplication.
+pub fn multi_query_rrf_simhash_highlight_indices(
+    chunks: &[Chunk],
+    queries: &[&str],
+    limit: usize,
+    delta: f64,
+    k_rrf: f64,
+    max_hamming: u32,
+) -> Vec<usize> {
+    if limit == 0 || chunks.is_empty() || queries.is_empty() {
+        return Vec::new();
+    }
+    let per_query: Vec<Vec<(usize, f64)>> = queries
+        .iter()
+        .map(|&q| bm25f_plus_mslp(chunks, q, 1.2, 0.75, delta))
+        .collect();
+    let refs: Vec<(&[(usize, f64)], f64)> = per_query.iter().map(|v| (v.as_slice(), 1.0)).collect();
+    let mut fused = reciprocal_rank_fusion(&refs, chunks.len(), k_rrf);
+    for (doc_idx, score) in &mut fused {
+        if *score > 0.0 {
+            let ch = &chunks[*doc_idx];
+            let rw = 1.0 + 0.35 * (role_weight(ch.role) - 1.0).max(0.0);
+            let link_pen = if ch.links.len() >= 3 && ch.role == "paragraph" {
+                0.65
+            } else {
+                1.0
+            };
+            *score *= rw * link_pen;
+        }
+    }
+    fused.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then_with(|| a.cmp(b)));
+    select_simhash_from_ranked(chunks, fused, limit, max_hamming)
 }
 
 pub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {
@@ -1020,5 +1229,70 @@ mod tests {
             "near-duplicate doc 2 must be suppressed by SimHash-64"
         );
         assert_eq!(selected.len(), 3);
+    }
+
+    #[test]
+    fn reciprocal_rank_fusion_and_multi_query_rrf_simhash_cover_orthogonal_aspects() {
+        let docs = vec![
+            Chunk {
+                node: 1,
+                role: "heading",
+                text: "Byzantine Fault Tolerant State Machine Replication".into(),
+                links: vec![],
+            },
+            Chunk {
+                node: 2,
+                role: "paragraph",
+                text: "Threshold BLS signature aggregation reduces authenticator bandwidth to O(1) bytes per view change.".into(),
+                links: vec![],
+            },
+            Chunk {
+                node: 3,
+                role: "paragraph",
+                text: "Threshold BLS signature aggregation reduces authenticator bandwidth to O(1) bytes per view change!".into(),
+                links: vec![],
+            },
+            Chunk {
+                node: 4,
+                role: "paragraph",
+                text: "Optimistic responsiveness guarantees commit latency proportional to actual network delay delta.".into(),
+                links: vec![],
+            },
+            Chunk {
+                node: 5,
+                role: "paragraph",
+                text: "Unrelated culinary recipe for sourdough bread.".into(),
+                links: vec![],
+            },
+        ];
+        let hybrid = hybrid_rrf_simhash_highlight_indices(
+            &docs,
+            "byzantine state machine replication threshold signature optimistic responsiveness",
+            3,
+            3,
+        );
+        assert_eq!(hybrid.len(), 3);
+        assert!(hybrid.contains(&0));
+        assert!(hybrid.contains(&1));
+        assert!(
+            !hybrid.contains(&2),
+            "SimHash-64 must suppress near-duplicate doc 2"
+        );
+        assert!(hybrid.contains(&3));
+
+        let multi = multi_query_rrf_simhash_highlight_indices(
+            &docs,
+            &[
+                "byzantine fault tolerant state machine",
+                "threshold bls signature aggregation bandwidth",
+                "optimistic responsiveness network delay",
+            ],
+            3,
+            1.0,
+            12.0,
+            3,
+        );
+        assert_eq!(multi.len(), 3);
+        assert!(multi.contains(&0) && multi.contains(&1) && multi.contains(&3));
     }
 }

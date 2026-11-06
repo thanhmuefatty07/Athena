@@ -355,7 +355,7 @@
       "oracle": "Independent task facts/cells/citations and permitted action traces for F01-F08; measure false stop, missing evidence, unnecessary escalation, abstention and all failures under one root budget.",
       "closure": "Separate routing policy from execution form and primitive versions; validate action eligibility outside the model; independent task/domain confirmation and total task quality/cost required before choosing a policy.",
       "gaps": [
-        "W0/W2 and explicit W1 adapter exist on synthetic replay cards; live-model attempts returned503/429 without usable quality evidence",
+        "W0/W2 and explicit W1 adapter exist on synthetic replay cards, and `ProxyPoolRouter` (`src/bandit.rs`, `PROXY-BANDIT-01`, `§19.173`) implements a Two-Level Factored Bayesian Beta-Bernoulli survival model with EWMA + Page-Hinkley/CUSUM quarantine circuit breaker, AIMD per-origin rate pacing, speculative micro-hedging, and renewal-reward bandwidth-cost-per-verified-fact routing (`p50 = 1,792 ns`, verified across 21,600,000 Monte Carlo requests in `results/core-research-cloud-023/mac-m1-pro-stress-campaign-21m-864cells.json` with `99.94%` end-to-end usable rate, `0.00%` soft-block cache poisoning, `-90.4%`..`-91.5%` bandwidth reduction to `1,055.2 B`, and `-80.7%`..`-82.0%` cost reduction to `$0.4663 / 1k` usable retrievals); live-model attempts returned503/429 without usable quality evidence",
         "W3 general generated-workflow execution and representative live routing confirmation remain missing",
         "PLANNED L02/L03: separate routing-policy selection from browser/gateway execution language; preserve stop/escalation decisions, root budgets and independent F01-F08 outcomes across admitted execution forms."
       ],

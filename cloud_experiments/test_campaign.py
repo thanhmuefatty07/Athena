@@ -5340,6 +5340,53 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
         self.assertEqual(analysis["cases"]["cohort-6000/rss"]["decision"], "PASS_PERFORMANCE")
         self.assertEqual(analysis["cases"]["cohort-6000/rss"]["warnings"], [])
 
+    def test_cloud_023_proxy_bandit_softblock_rrf_and_link_none_decoupling(self):
+        from cloud_experiments import contenders
+        root = Path(__file__).resolve().parents[1]
+        names = [
+            "src/aae.rs",
+            "src/arena.rs",
+            "src/bandit.rs",
+            "src/network.rs",
+            "src/orchestrator.rs",
+            "src/rank.rs",
+            "src/projection.rs",
+            "src/table.rs",
+            "cloud_experiments/core_probe.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+        ]
+        source = {name: (root / name).read_bytes() for name in names}
+        for lock_path in (root / "cloud_experiments/locks").glob("*.lock"):
+            source[f"cloud_experiments/locks/{lock_path.name}"] = lock_path.read_bytes()
+
+        self.assertIn(b"pub struct ProxyPoolRouter", source["src/bandit.rs"])
+        self.assertIn(b"pub enum SoftBlockKind", source["src/network.rs"])
+        self.assertIn(b"pub fn detect_soft_block", source["src/network.rs"])
+        self.assertIn(b"SoftBlocked(SoftBlockKind)", source["src/orchestrator.rs"])
+        self.assertIn(b"unindexed_bib_hrefs", source["src/arena.rs"])
+        self.assertIn(b"unindexed_link_counts", source["src/arena.rs"])
+        self.assertIn(b"record_unindexed_link", source["src/projection.rs"])
+        self.assertIn(b"hybrid_rrf_simhash_highlight_indices", source["src/rank.rs"])
+        self.assertIn(b"reciprocal_rank_fusion", source["src/rank.rs"])
+        self.assertIn(b"stress-campaign", source["cloud_experiments/core_probe.rs"])
+
+        for variant_id in (
+            "projection-fused",
+            "links-btree",
+            "projection-fused+links-btree",
+            "rank-binary+rank-select",
+            "aae-batched16384+rank-binary+rank-select+projection-fused+links-btree+lib-scraper-modern",
+        ):
+            out = contenders.transform(source, variant_id)
+            arena_txt = out["src/arena.rs"].decode("utf-8")
+            proj_txt = out["src/projection.rs"].decode("utf-8")
+            rank_txt = out["src/rank.rs"].decode("utf-8")
+            self.assertIn("unindexed_bib_hrefs: Vec<(NodeId, String)>", arena_txt, variant_id)
+            self.assertIn("unindexed_link_counts: Vec<u16>", arena_txt, variant_id)
+            self.assertIn("self.dom.record_unindexed_link(", proj_txt, variant_id)
+            self.assertIn("hybrid_rrf_simhash_highlight_indices", rank_txt, variant_id)
+
 
 if __name__ == "__main__":
     unittest.main()

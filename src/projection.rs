@@ -771,6 +771,11 @@ pub fn parse_html_with_limits(
     let html = html_cow.as_ref();
     let (parsed, parse_warnings) = parse_html_document_bounded(html, limits.max_parser_nodes)
         .map_err(|_| "max DOM nodes exceeded")?;
+    if !limits.include_links {
+        collect_unindexed_bib_hrefs(&parsed, base);
+    } else {
+        crate::arena::set_pending_bib_hrefs(Vec::new());
+    }
     let mut builder = ProjectionBuilder::new(base, limits);
     let mut stack = vec![(parsed.tree.root(), 0u32)];
     while let Some((node, parent)) = stack.pop() {
@@ -1099,26 +1104,148 @@ fn shannon_byte_entropy(text: &str) -> f64 {
     entropy
 }
 
-fn has_bibliographic_signal(chunk: &Chunk, links: &[String]) -> bool {
+fn extract_md5_after_segment(lower_url: &str, segment: &str) -> Option<String> {
+    let mut search_from = 0usize;
+    while let Some(rel_pos) = lower_url[search_from..].find(segment) {
+        let start = search_from + rel_pos + segment.len();
+        let tail = &lower_url[start..];
+        let md5: String = tail.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        if md5.len() == 32 {
+            return Some(md5);
+        }
+        search_from = start;
+    }
+    None
+}
+
+fn is_bibliographic_url(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    if extract_md5_after_segment(&u, "/md5/").is_some()
+        || extract_md5_after_segment(&u, "/slow_download/").is_some()
+        || extract_md5_after_segment(&u, "/fast_download/").is_some()
+    {
+        return true;
+    }
+    if (u.contains("/doi/") || u.contains("doi.org/")) && extract_doi_from_text(url).is_some() {
+        return true;
+    }
+    if let Some(pos) = u.find("/isbn/")
+        && parse_isbn_token(&url[pos + 6..]).is_some()
+    {
+        return true;
+    }
+    false
+}
+
+fn collect_unindexed_bib_hrefs(parsed: &Html, base: &Url) {
+    let mut bib_hrefs = Vec::<(NodeId, String)>::new();
+    let mut stack = vec![parsed.tree.root()];
+    let mut next_id = 0u32;
+    while let Some(node) = stack.pop() {
+        let mut visit_children = true;
+        match node.value() {
+            HtmlNode::Element(el) => {
+                let name = el.name();
+                if skip_subtree(name) {
+                    visit_children = false;
+                } else {
+                    next_id = next_id.saturating_add(1);
+                    if name == "a"
+                        && let Some(href) = el.attr("href")
+                        && is_bibliographic_url(href)
+                        && bib_hrefs.len() < 256
+                    {
+                        let resolved = base
+                            .join(href)
+                            .ok()
+                            .filter(|u| {
+                                u.scheme() == "https"
+                                    && u.username().is_empty()
+                                    && u.password().is_none()
+                            })
+                            .map(|u| u.into())
+                            .unwrap_or_else(|| href.to_owned());
+                        bib_hrefs.push((next_id, resolved));
+                    }
+                }
+            }
+            HtmlNode::Text(content) => {
+                if !content.text.is_empty() {
+                    next_id = next_id.saturating_add(1);
+                }
+                visit_children = false;
+            }
+            _ => {}
+        }
+        if visit_children {
+            for child in node.children().rev() {
+                stack.push(child);
+            }
+        }
+    }
+    crate::arena::set_pending_bib_hrefs(bib_hrefs);
+}
+
+fn compute_dom_link_metadata(dom: &DomArena) -> (Vec<NodeId>, Vec<u32>) {
+    let nodes = dom.nodes();
+    let mut owner_of_node = vec![NONE; nodes.len()];
+    let mut anchor_counts = vec![0u32; nodes.len()];
+    for (id, node) in nodes.iter().enumerate() {
+        let inherited = if node.parent == NONE {
+            NONE
+        } else {
+            owner_of_node[node.parent as usize]
+        };
+        let owner = if role(node.tag).is_some() {
+            id as u32
+        } else {
+            inherited
+        };
+        owner_of_node[id] = owner;
+        if node.tag == Tag::A && owner != NONE {
+            anchor_counts[owner as usize] = anchor_counts[owner as usize].saturating_add(1);
+        }
+    }
+    (owner_of_node, anchor_counts)
+}
+
+fn has_bibliographic_signal(
+    dom: &DomArena,
+    chunk: &Chunk,
+    links: &[String],
+    owner_of_node: &[NodeId],
+) -> bool {
     if chunk.role == "table_header" || chunk.role == "table_cell" {
         return true;
     }
-    if chunk.text.contains("10.") || parse_32_hex_md5(&chunk.text).is_some() {
+    if extract_doi_from_text(&chunk.text).is_some()
+        || extract_isbn_from_text(&chunk.text, None).is_some()
+        || parse_32_hex_md5(&chunk.text).is_some()
+    {
         return true;
     }
     let lower = chunk.text.to_ascii_lowercase();
-    if lower.contains("isbn") || lower.contains("doi:") || lower.contains("md5:") {
+    if let Some(pos) = lower.find("md5:") {
+        let token: String = chunk.text[pos + 4..]
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        if token.len() == 32 {
+            return true;
+        }
+    }
+    if chunk.links.iter().any(|&id| {
+        links
+            .get(id as usize)
+            .is_some_and(|url| is_bibliographic_url(url))
+    }) {
         return true;
     }
-    chunk.links.iter().any(|&id| {
-        links.get(id as usize).is_some_and(|url| {
-            let u = url.to_ascii_lowercase();
-            u.contains("/md5/")
-                || u.contains("/doi/")
-                || u.contains("/isbn/")
-                || u.contains("/slow_download/")
-                || u.contains("/fast_download/")
-        })
+    dom.unindexed_bib_hrefs().iter().any(|(node_id, url)| {
+        (owner_of_node.get(*node_id as usize).copied() == Some(chunk.node)
+            || is_dom_ancestor_or_self(dom, *node_id, chunk.node))
+            && is_bibliographic_url(url)
     })
 }
 
@@ -1126,6 +1253,8 @@ fn is_boilerplate_chunk(
     dom: &DomArena,
     chunk: &Chunk,
     links: &[String],
+    owner_of_node: &[NodeId],
+    anchor_counts: &[u32],
     policy: BoilerplatePolicy,
 ) -> bool {
     let (is_chrome, inside_main_or_article, inside_nav_or_footer) =
@@ -1136,10 +1265,12 @@ fn is_boilerplate_chunk(
     if is_chrome {
         return true;
     }
-    let bib_signal = has_bibliographic_signal(chunk, links);
-    if !inside_main_or_article && chunk.links.len() >= 3 && !bib_signal {
+    let dom_anchors = anchor_counts.get(chunk.node as usize).copied().unwrap_or(0) as usize;
+    let effective_link_count = chunk.links.len().max(dom_anchors);
+    let bib_signal = has_bibliographic_signal(dom, chunk, links, owner_of_node);
+    if !inside_main_or_article && effective_link_count >= 3 && !bib_signal {
         let word_count = chunk.text.split_whitespace().count();
-        if word_count <= chunk.links.len().saturating_mul(3) {
+        if word_count <= effective_link_count.saturating_mul(3) {
             return true;
         }
     }
@@ -1150,12 +1281,12 @@ fn is_boilerplate_chunk(
     {
         let word_count = chunk.text.split_whitespace().count();
         let entropy = shannon_byte_entropy(&chunk.text);
-        let link_density = (chunk.links.len() as f64) / (word_count.max(1) as f64);
+        let link_density = (effective_link_count as f64) / (word_count.max(1) as f64);
         let effective_entropy = entropy * (1.0 - link_density.min(0.95));
         if entropy < 3.0 {
             return true;
         }
-        if !chunk.links.is_empty() && (link_density >= 0.25 || effective_entropy < 2.8) {
+        if effective_link_count > 0 && (link_density >= 0.25 || effective_entropy < 2.8) {
             return true;
         }
         let lower = chunk.text.to_ascii_lowercase();
@@ -1182,12 +1313,15 @@ fn apply_boilerplate_policy(
     if policy == BoilerplatePolicy::FullDom || chunks.is_empty() {
         return;
     }
+    let (owner_of_node, anchor_counts) = compute_dom_link_metadata(dom);
     let keep_count = chunks
         .iter()
-        .filter(|c| !is_boilerplate_chunk(dom, c, links, policy))
+        .filter(|c| !is_boilerplate_chunk(dom, c, links, &owner_of_node, &anchor_counts, policy))
         .count();
     if keep_count > 0 && keep_count < chunks.len() {
-        chunks.retain(|c| !is_boilerplate_chunk(dom, c, links, policy));
+        chunks.retain(|c| {
+            !is_boilerplate_chunk(dom, c, links, &owner_of_node, &anchor_counts, policy)
+        });
         if !links.is_empty() {
             let mut remap = vec![NONE; links.len()];
             let mut new_links = Vec::with_capacity(links.len());
@@ -1316,32 +1450,129 @@ fn extract_isbn_from_text(text: &str, next_text: Option<&str>) -> Option<String>
     None
 }
 
+fn is_dom_ancestor_or_self(dom: &DomArena, anc: NodeId, mut cur: NodeId) -> bool {
+    let nodes = dom.nodes();
+    while cur != NONE && (cur as usize) < nodes.len() {
+        if cur == anc {
+            return true;
+        }
+        cur = nodes[cur as usize].parent;
+    }
+    false
+}
+
+fn dom_subtree_normalized_text(dom: &DomArena, root_id: NodeId) -> String {
+    let mut raw = String::new();
+    for (id, node) in dom.nodes().iter().enumerate() {
+        if node.tag == Tag::Text
+            && is_dom_ancestor_or_self(dom, root_id, id as u32)
+            && let Ok(seg) = dom.raw_text(id as u32)
+        {
+            if !raw.is_empty() {
+                raw.push(' ');
+            }
+            raw.push_str(seg);
+        }
+    }
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub fn extract_annas_archive_records(page: &Projection) -> Vec<AnnasArchiveRecord> {
-    let mut records = Vec::<AnnasArchiveRecord>::new();
-    let mut start_indices = Vec::<usize>::new();
+    let mut discovered = Vec::<(NodeId, Option<usize>, AnnasArchiveRecord)>::new();
     for (chunk_idx, chunk) in page.chunks.iter().enumerate() {
         for &link_id in &chunk.links {
             if let Some(url) = page.links.get(link_id as usize) {
                 let lower_url = url.to_ascii_lowercase();
-                if let Some(pos) = lower_url.find("/md5/") {
-                    let tail = &lower_url[pos + 5..];
-                    let md5: String = tail.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
-                    if md5.len() == 32 && !records.iter().any(|r| r.md5 == md5) {
-                        start_indices.push(chunk_idx);
-                        records.push(AnnasArchiveRecord {
+                if let Some(md5) = extract_md5_after_segment(&lower_url, "/md5/")
+                    && !discovered.iter().any(|(_, _, r)| r.md5 == md5)
+                {
+                    discovered.push((
+                        chunk.node,
+                        Some(chunk_idx),
+                        AnnasArchiveRecord {
                             title: chunk.text.clone(),
                             md5,
                             doi: None,
                             isbn: None,
                             format: None,
                             download_links: vec![url.clone()],
-                        });
-                    }
+                        },
+                    ));
                 }
             }
         }
     }
-    if records.is_empty() {
+    // Support LinkMode::None (unindexed_bib_hrefs), outer-anchor `<a href="/md5/..."><h3>Title</h3></a>`,
+    // and pure `<div>`-only Anna's Archive cards.
+    let mut dom_anchor_urls = Vec::<(NodeId, String)>::new();
+    for (id, node) in page.dom.nodes().iter().enumerate() {
+        if node.tag == Tag::A
+            && node.attributes_id != NONE
+            && let Some(url) = page.links.get(node.attributes_id as usize)
+        {
+            dom_anchor_urls.push((id as u32, url.clone()));
+        }
+    }
+    for (node_id, url) in page.dom.unindexed_bib_hrefs() {
+        dom_anchor_urls.push((*node_id, url.clone()));
+    }
+    for (a_node_id, url) in &dom_anchor_urls {
+        let lower_url = url.to_ascii_lowercase();
+        if let Some(md5) = extract_md5_after_segment(&lower_url, "/md5/")
+            && !discovered.iter().any(|(_, _, r)| r.md5 == md5)
+        {
+            if let Some((chunk_idx, chunk)) = page.chunks.iter().enumerate().find(|(_, c)| {
+                is_dom_ancestor_or_self(&page.dom, c.node, *a_node_id)
+                    || is_dom_ancestor_or_self(&page.dom, *a_node_id, c.node)
+            }) {
+                discovered.push((
+                    chunk.node.min(*a_node_id),
+                    Some(chunk_idx),
+                    AnnasArchiveRecord {
+                        title: chunk.text.clone(),
+                        md5,
+                        doi: None,
+                        isbn: None,
+                        format: None,
+                        download_links: vec![url.clone()],
+                    },
+                ));
+            } else {
+                let title = dom_subtree_normalized_text(&page.dom, *a_node_id);
+                let card_root = page
+                    .dom
+                    .nodes()
+                    .get(*a_node_id as usize)
+                    .map(|n| n.parent)
+                    .filter(|&p| p != NONE)
+                    .unwrap_or(*a_node_id);
+                let card_text = dom_subtree_normalized_text(&page.dom, card_root);
+                let doi = extract_doi_from_text(&card_text);
+                let isbn = extract_isbn_from_text(&card_text, None);
+                let format = ["pdf", "epub", "djvu", "mobi", "cbr", "azw3"]
+                    .into_iter()
+                    .find(|&fmt_token| {
+                        card_text
+                            .split(|c: char| !c.is_ascii_alphanumeric())
+                            .any(|w| w.eq_ignore_ascii_case(fmt_token))
+                    })
+                    .map(str::to_owned);
+                discovered.push((
+                    *a_node_id,
+                    None,
+                    AnnasArchiveRecord {
+                        title: if title.is_empty() { md5.clone() } else { title },
+                        md5,
+                        doi,
+                        isbn,
+                        format,
+                        download_links: vec![url.clone()],
+                    },
+                ));
+            }
+        }
+    }
+    if discovered.is_empty() {
         for i in 0..page.chunks.len().saturating_sub(1) {
             if page.chunks[i].text.eq_ignore_ascii_case("md5")
                 && let Some(md5) = parse_32_hex_md5(&page.chunks[i + 1].text)
@@ -1352,36 +1583,57 @@ pub fn extract_annas_archive_records(page: &Projection) -> Vec<AnnasArchiveRecor
                     .find(|c| c.role == "heading")
                     .map(|c| c.text.clone())
                     .unwrap_or_else(|| md5.clone());
-                start_indices.push(0);
-                records.push(AnnasArchiveRecord {
-                    title,
-                    md5,
-                    doi: None,
-                    isbn: None,
-                    format: None,
-                    download_links: Vec::new(),
-                });
+                discovered.push((
+                    0,
+                    Some(0),
+                    AnnasArchiveRecord {
+                        title,
+                        md5,
+                        doi: None,
+                        isbn: None,
+                        format: None,
+                        download_links: Vec::new(),
+                    },
+                ));
                 break;
             }
         }
     }
+    discovered.sort_by_key(|(dom_order, _, _)| *dom_order);
+    let chunk_starts: Vec<Option<usize>> = discovered.iter().map(|(_, cs, _)| *cs).collect();
+    let mut records: Vec<AnnasArchiveRecord> = discovered.into_iter().map(|(_, _, r)| r).collect();
     let total_records = records.len();
     for (rec_idx, record) in records.iter_mut().enumerate() {
-        let slice_start = if total_records <= 1 {
-            0
-        } else {
-            start_indices[rec_idx]
+        let chunk_slice = match chunk_starts[rec_idx] {
+            None => &[][..],
+            Some(start) => {
+                let slice_start = if total_records <= 1 {
+                    0
+                } else {
+                    start.min(page.chunks.len())
+                };
+                let slice_end = if total_records <= 1 {
+                    page.chunks.len()
+                } else {
+                    chunk_starts[rec_idx + 1..]
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .find(|&s| s >= slice_start)
+                        .unwrap_or(page.chunks.len())
+                        .min(page.chunks.len())
+                };
+                &page.chunks[slice_start..slice_end]
+            }
         };
-        let slice_end = if total_records <= 1 {
-            page.chunks.len()
-        } else {
-            start_indices
-                .get(rec_idx + 1)
-                .copied()
-                .unwrap_or(page.chunks.len())
-        };
-        let chunk_slice = &page.chunks[slice_start..slice_end];
         for link in &page.links {
+            if link.to_ascii_lowercase().contains(&record.md5)
+                && !record.download_links.contains(link)
+            {
+                record.download_links.push(link.clone());
+            }
+        }
+        for (_, link) in page.dom.unindexed_bib_hrefs() {
             if link.to_ascii_lowercase().contains(&record.md5)
                 && !record.download_links.contains(link)
             {
@@ -1391,6 +1643,16 @@ pub fn extract_annas_archive_records(page: &Projection) -> Vec<AnnasArchiveRecor
         for chunk in chunk_slice {
             for &link_id in &chunk.links {
                 if let Some(link) = page.links.get(link_id as usize) {
+                    let lower_link = link.to_ascii_lowercase();
+                    if (lower_link.contains(&record.md5) || lower_link.contains("doi.org/"))
+                        && !record.download_links.contains(link)
+                    {
+                        record.download_links.push(link.clone());
+                    }
+                }
+            }
+            for (node_id, link) in page.dom.unindexed_bib_hrefs() {
+                if is_dom_ancestor_or_self(&page.dom, chunk.node, *node_id) {
                     let lower_link = link.to_ascii_lowercase();
                     if (lower_link.contains(&record.md5) || lower_link.contains("doi.org/"))
                         && !record.download_links.contains(link)
@@ -1961,6 +2223,86 @@ mod tests {
                     .any(|c| c.text.contains("Donate") || c.text.contains("Register")),
                 "navigation and menu links must still be removed under {policy:?}"
             );
+
+            // PROJ-05: include_links=false (LinkMode::None) achieves identical boilerplate pruning
+            // and Anna's Archive MD5 record extraction while keeping page.links & chunk.links empty!
+            let p05_no_links = parse_html_with_limits(
+                html_proj04,
+                &base,
+                ParseLimits {
+                    max_html_bytes: html_proj04.len() + 64,
+                    boilerplate: policy,
+                    include_links: false,
+                    max_link_bytes: 0,
+                    max_link_url_bytes: 0,
+                    ..ParseLimits::default()
+                },
+            )
+            .unwrap();
+            assert!(p05_no_links.links.is_empty());
+            assert!(p05_no_links.chunks.iter().all(|c| c.links.is_empty()));
+            assert_eq!(p05_no_links.chunks.len(), p04.chunks.len());
+            let recs05 = extract_annas_archive_records(&p05_no_links);
+            assert_eq!(recs05.len(), 1);
+            assert_eq!(recs05[0].md5, "abcdef0123456789abcdef0123456789");
+            assert_eq!(recs05[0].isbn.as_deref(), Some("978-0-521-86571-5"));
+            assert_eq!(recs05[0].download_links.len(), 4);
+        }
+
+        // PROJ-05b: outer `<a href="/md5/..."><h3>Title</h3></a>` card and false-positive sidebar rejection
+        let html_proj05b = concat!(
+            "<div class=\"fake-bib-sidebar\"><p>v10.2 · Search by ISBN · <a href=\"/md5/faq\">MD5 Help</a> <a href=\"/login\">Login</a> <a href=\"/donate\">Donate</a></p></div>",
+            "<div class=\"outer-anchor-card\"><a href=\"/md5/11223344556677889900aabbccddeeff\"><h3>Outer Anchor Card Title</h3></a><p>PDF · DOI: 10.1007/s00220-024-04900-1</p></div>"
+        );
+        let p05b = parse_html_with_limits(
+            html_proj05b,
+            &base,
+            ParseLimits {
+                max_html_bytes: html_proj05b.len() + 64,
+                boilerplate: BoilerplatePolicy::CetdEntropyV1,
+                include_links: false,
+                ..ParseLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !p05b.chunks.iter().any(|c| c.text.contains("MD5 Help")),
+            "false-positive v10.2 / Search by ISBN / /md5/faq sidebar must be stripped"
+        );
+        let recs05b = extract_annas_archive_records(&p05b);
+        assert_eq!(recs05b.len(), 1);
+        assert_eq!(recs05b[0].md5, "11223344556677889900aabbccddeeff");
+        assert_eq!(recs05b[0].title, "Outer Anchor Card Title");
+        assert_eq!(
+            recs05b[0].doi.as_deref(),
+            Some("10.1007/s00220-024-04900-1")
+        );
+
+        // PROJ-05c: mixed outer-anchor, div-only, and standard heading-anchor cards in DOM order
+        let html_proj05c = concat!(
+            "<div class=\"card-1\"><a href=\"/md5/11112222333344445555666677778888\"><h3>First Outer Anchor Card</h3></a><p>PDF · DOI: 10.1007/s00220-024-04900-1</p></div>",
+            "<div class=\"card-2\"><a href=\"/md5/9999aaaabbbbccccddddeeeeffff0000\">Second Div Only Card</a><div>EPUB · ISBN 978-0-387-94880-5</div></div>",
+            "<div class=\"card-3\"><h3><a href=\"/md5/abcdefabcdefabcdefabcdefabcdef12\">Third Standard Heading Card</a></h3><p>DJVU · DOI: 10.1145/3581784.3607090</p></div>"
+        );
+        for include_links in [true, false] {
+            let p05c = parse_html_with_limits(
+                html_proj05c,
+                &base,
+                ParseLimits {
+                    max_html_bytes: html_proj05c.len() + 64,
+                    boilerplate: BoilerplatePolicy::CetdEntropyV1,
+                    include_links,
+                    ..ParseLimits::default()
+                },
+            )
+            .unwrap();
+            let recs05c = extract_annas_archive_records(&p05c);
+            assert_eq!(recs05c.len(), 3);
+            assert_eq!(recs05c[0].md5, "11112222333344445555666677778888");
+            assert_eq!(recs05c[1].md5, "9999aaaabbbbccccddddeeeeffff0000");
+            assert_eq!(recs05c[2].md5, "abcdefabcdefabcdefabcdefabcdef12");
+            assert_eq!(recs05c[1].isbn.as_deref(), Some("978-0-387-94880-5"));
+            assert_eq!(recs05c[2].doi.as_deref(), Some("10.1145/3581784.3607090"));
         }
     }
 }

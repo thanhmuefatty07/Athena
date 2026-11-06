@@ -938,7 +938,17 @@ async fn fetch_pinned(
         return Err(FetchError::TooLarge);
     }
     // A non-2xx response is observable evidence (including 304 and 429), not
-    // automatically a successful content fetch. Upper layer classifies it.
+    // automatically a successful content fetch. Upper layer classifies it without
+    // downloading or inflating error/challenge bodies.
+    if status != 200 {
+        return Ok(Fetched {
+            final_url: url.clone(),
+            status,
+            content_type,
+            etag,
+            payload: Bytes::new(),
+        });
+    }
     let mut stream = response.bytes_stream();
     let mut wire = BoundedOutputBuf::new(policy.max_body_bytes);
     while let Some(next) = stream.next().await {
@@ -957,6 +967,40 @@ async fn fetch_pinned(
         etag,
         payload,
     })
+}
+
+/// Classifies stealth HTTP 200 WAF/CAPTCHA/bot-shield trap bodies before they can
+/// poison downstream caches or waste projection CPU.
+pub fn detect_soft_block(html: &[u8]) -> Option<&'static str> {
+    if html.is_empty() {
+        return Some("empty_http_200_payload");
+    }
+    if html.len() > 32_768 {
+        return None;
+    }
+    let lower = String::from_utf8_lossy(html).to_ascii_lowercase();
+    if lower.contains("cf-chl-bypass")
+        || lower.contains("cf-turnstile")
+        || lower.contains("_cf_chl_opt")
+        || lower.contains("/cdn-cgi/challenge-platform/")
+        || lower.contains("attention required! | cloudflare")
+        || lower.contains("<title>just a moment...</title>")
+    {
+        return Some("cloudflare_turnstile_or_js_challenge");
+    }
+    if lower.contains("g-recaptcha") || lower.contains("h-captcha") {
+        return Some("captcha_widget_challenge");
+    }
+    if lower.contains("datadome") && lower.contains("captcha") {
+        return Some("datadome_bot_shield");
+    }
+    if lower.contains("px-captcha") || lower.contains("_pxhd") {
+        return Some("perimeterx_human_challenge");
+    }
+    if lower.contains("ddos-guard") && lower.contains("check") {
+        return Some("ddos_guard_interstitial");
+    }
+    None
 }
 
 #[cfg(test)]

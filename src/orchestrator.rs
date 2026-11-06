@@ -154,6 +154,7 @@ pub enum PipelineError {
     BadUrl,
     Transport(FetchError),
     HttpStatus(u16),
+    SoftBlocked(&'static str),
     UnsupportedMediaType,
     InvalidUtf8,
     Parse(&'static str),
@@ -600,6 +601,12 @@ impl Engine {
                     .run_blocking(move || {
                         let html = std::str::from_utf8(&response.payload)
                             .map_err(|_| PipelineError::InvalidUtf8)?;
+                        if !html.is_empty()
+                            && html.len() <= 32_768
+                            && let Some(reason) = crate::network::detect_soft_block(html.as_bytes())
+                        {
+                            return Err(PipelineError::SoftBlocked(reason));
+                        }
                         let page =
                             projection::parse_html_with_limits(html, &page_url, parse_limits)
                                 .map_err(PipelineError::Parse)?;
@@ -1247,5 +1254,66 @@ mod tests {
             cached_after_second.unwrap().prepared_rank.get().is_some(),
             "PreparedRank must be initialized on the second evaluation"
         );
+    }
+
+    #[tokio::test]
+    async fn soft_blocked_http_200_challenge_does_not_poison_source_cache() {
+        let mut engine = Engine::with_cache(
+            2,
+            100,
+            CacheConfig {
+                max_entries: 4,
+                max_bytes: 1024 * 1024,
+                ttl: Duration::from_secs(60),
+            },
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_ref = Arc::clone(&calls);
+        engine.test_transport = Some(Arc::new(move |url, _etag, _permit| {
+            let url = url.clone();
+            let call_idx = calls_ref.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if call_idx == 0 {
+                    Ok(crate::network::Fetched {
+                        final_url: url,
+                        status: 200,
+                        content_type: Some("text/html".into()),
+                        etag: Some("\"cf-trap\"".into()),
+                        payload: Bytes::from_static(
+                            b"<html><head><title>Just a moment...</title></head><body><div class=\"cf-turnstile\">Verify</div></body></html>",
+                        ),
+                    })
+                } else {
+                    Ok(crate::network::Fetched {
+                        final_url: url,
+                        status: 200,
+                        content_type: Some("text/html".into()),
+                        etag: Some("\"real-v1\"".into()),
+                        payload: Bytes::from_static(
+                            b"<main><article><h1>Real Consensus Paper</h1><p>Byzantine quorum safety verified.</p></article></main>",
+                        ),
+                    })
+                }
+            })
+        }));
+        let policy = FetchPolicy::for_host("example.org");
+        let first_attempt = engine.retrieve(request("Byzantine"), policy.clone()).await;
+        assert!(
+            first_attempt.is_err(),
+            "HTTP 200 soft-block must be rejected"
+        );
+        assert_eq!(
+            engine.cache_stats().entries,
+            0,
+            "Soft-block must not poison SourceCache"
+        );
+
+        let second_attempt = engine.retrieve(request("Byzantine"), policy).await.unwrap();
+        assert!(
+            second_attempt
+                .aae_jsonl
+                .contains("Byzantine quorum safety verified")
+        );
+        assert_eq!(engine.cache_stats().entries, 1);
     }
 }

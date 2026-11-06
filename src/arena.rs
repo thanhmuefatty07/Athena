@@ -89,18 +89,36 @@ pub enum ArenaError {
     TooDeep,
 }
 
+thread_local! {
+    static PENDING_BIB_HREFS: std::cell::RefCell<Vec<(NodeId, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn set_pending_bib_hrefs(hrefs: Vec<(NodeId, String)>) {
+    PENDING_BIB_HREFS.with(|cell| {
+        *cell.borrow_mut() = hrefs;
+    });
+}
+
 /// Owns a ref-counted raw buffer. Reuse across unrelated requests is safe
 /// from a Rust lifetime perspective; sharing still requires synchronization.
 pub struct DomArena {
     raw: Bytes,
     nodes: Vec<Node>,
+    unindexed_bib_hrefs: Vec<(NodeId, String)>,
 }
 
 impl DomArena {
     pub fn new(raw: Bytes, capacity: usize) -> Self {
         let mut nodes = Vec::with_capacity(capacity.max(1));
         nodes.push(Node::root());
-        Self { raw, nodes }
+        let unindexed_bib_hrefs =
+            PENDING_BIB_HREFS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        Self {
+            raw,
+            nodes,
+            unindexed_bib_hrefs,
+        }
     }
 
     #[inline]
@@ -108,11 +126,17 @@ impl DomArena {
         self.raw = raw;
         self.nodes.truncate(1);
         self.nodes[0] = Node::root();
+        self.unindexed_bib_hrefs.clear();
     }
 
     #[inline]
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
+    }
+
+    #[inline]
+    pub fn unindexed_bib_hrefs(&self) -> &[(NodeId, String)] {
+        &self.unindexed_bib_hrefs
     }
 
     pub fn set_attribute_id(&mut self, id: NodeId, index: u32) -> Result<(), ArenaError> {
