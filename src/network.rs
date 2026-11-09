@@ -951,9 +951,27 @@ async fn fetch_pinned(
     }
     let mut stream = response.bytes_stream();
     let mut wire = BoundedOutputBuf::new(policy.max_body_bytes);
+    let mut prefix_checked = false;
     while let Some(next) = stream.next().await {
         let part = next.map_err(|error| FetchError::Network(error.without_url()))?;
         wire.push_slice(&part)?;
+        if !prefix_checked
+            && encoding_mode == ContentEncodingMode::Identity
+            && wire.len() >= 4096
+        {
+            prefix_checked = true;
+            let prefix_end = wire.len().min(16_384);
+            let prefix_slice = &wire.buf[..prefix_end];
+            let has_semantic_prose = prefix_slice
+                .windows(5)
+                .any(|w| w.eq_ignore_ascii_case(b"<main"))
+                || prefix_slice
+                    .windows(8)
+                    .any(|w| w.eq_ignore_ascii_case(b"<article"));
+            if !has_semantic_prose && detect_soft_block(prefix_slice).is_some() {
+                break;
+            }
+        }
     }
     let payload = if encoding_mode == ContentEncodingMode::Identity || wire.is_empty() {
         wire.freeze()
@@ -969,36 +987,124 @@ async fn fetch_pinned(
     })
 }
 
-/// Classifies stealth HTTP 200 WAF/CAPTCHA/bot-shield trap bodies before they can
-/// poison downstream caches or waste projection CPU.
+/// Unified 3-Tier, 7-Vendor Soft-Block Decision Lattice ($\mathcal{L}_{\text{empty}} \lor \mathcal{L}_{\text{interstitial}} \lor \mathcal{L}_{\text{widget}}$)
+/// covering Cloudflare, DataDome, PerimeterX, Akamai, Imperva, Kasada, AWS WAF, and DDoS-Guard (`M3`, `D12`, `R2-3`, `R2-4`).
 pub fn detect_soft_block(html: &[u8]) -> Option<&'static str> {
-    if html.is_empty() {
+    detect_soft_block_with_headers(html, &[])
+}
+
+pub fn detect_soft_block_with_headers(
+    html: &[u8],
+    headers: &[(&str, &str)],
+) -> Option<&'static str> {
+    // Tier 1 (L_empty): 0-byte or whitespace-only HTTP 200 payload
+    if html.is_empty() || html.iter().all(|b| b.is_ascii_whitespace()) {
         return Some("empty_http_200_payload");
     }
-    if html.len() > 32_768 {
+    // Check vendor challenge headers even before scanning body
+    for &(k, v) in headers {
+        let kl = k.to_ascii_lowercase();
+        let vl = v.to_ascii_lowercase();
+        if kl.starts_with("x-kpsdk-") || vl.contains("x-kpsdk-") {
+            return Some("kasada_pow_interstitial");
+        }
+        if kl == "x-datadome" && vl.contains("protected") {
+            return Some("datadome_bot_shield");
+        }
+        if kl == "x-amzn-waf-action" && (vl.contains("challenge") || vl.contains("captcha")) {
+            return Some("aws_waf_captcha_interstitial");
+        }
+        if kl == "set-cookie" {
+            if (vl.contains("_abck=") && vl.contains("~0~")) || vl.contains("ak_bmsc=") {
+                if html.len() <= 32_768 {
+                    return Some("akamai_bot_manager_interstitial");
+                }
+            }
+            if vl.contains("visid_incap_") || vl.contains("incap_ses_") {
+                if html.len() <= 32_768 && !html.windows(5).any(|w| w.eq_ignore_ascii_case(b"<main"))
+                {
+                    return Some("imperva_incapsula_interstitial");
+                }
+            }
+        }
+    }
+    if html.len() > 65_536 {
         return None;
     }
-    let lower = String::from_utf8_lossy(html).to_ascii_lowercase();
-    if lower.contains("cf-chl-bypass")
-        || lower.contains("cf-turnstile")
-        || lower.contains("_cf_chl_opt")
-        || lower.contains("/cdn-cgi/challenge-platform/")
-        || lower.contains("attention required! | cloudflare")
-        || lower.contains("<title>just a moment...</title>")
+    let inspect_slice = if html.len() > 32_768 {
+        &html[..32_768]
+    } else {
+        html
+    };
+    let lower = String::from_utf8_lossy(inspect_slice).to_ascii_lowercase();
+    let has_main_or_article = lower.contains("<main") || lower.contains("<article");
+
+    // Tier 2 (L_interstitial): 7-Vendor full-page WAF challenge signatures
+    if !has_main_or_article || html.len() <= 16_384 {
+        // 1. Cloudflare Turnstile / JS Challenge
+        if lower.contains("cf-chl-bypass")
+            || lower.contains("cf-turnstile")
+            || lower.contains("_cf_chl_opt")
+            || lower.contains("/cdn-cgi/challenge-platform/")
+            || lower.contains("attention required! | cloudflare")
+            || lower.contains("<title>just a moment...</title>")
+        {
+            return Some("cloudflare_turnstile_or_js_challenge");
+        }
+        // 2. DataDome Bot Shield
+        if (lower.contains("datadome") && (lower.contains("captcha") || lower.contains("dd_cid")))
+            || lower.contains("geo.captcha-delivery.com")
+        {
+            return Some("datadome_bot_shield");
+        }
+        // 3. PerimeterX / HUMAN Security
+        if lower.contains("px-captcha")
+            || lower.contains("_pxhd")
+            || lower.contains("block.perimeterx.net")
+        {
+            return Some("perimeterx_human_challenge");
+        }
+        // 4. Akamai Bot Manager
+        if (lower.contains("_abck") && lower.contains("bm_sz"))
+            || lower.contains("akamaighost")
+            || (lower.contains("access denied") && lower.contains("edgesuite.net"))
+            || lower.contains("sec-cpt-challenge")
+        {
+            return Some("akamai_bot_manager_interstitial");
+        }
+        // 5. Imperva / Incapsula
+        if lower.contains("/_incapsula_resource")
+            || lower.contains("incapsula incident id")
+            || (lower.contains("_incap_") && lower.contains("visid_incap"))
+        {
+            return Some("imperva_incapsula_interstitial");
+        }
+        // 6. Kasada (`x-kpsdk-`, `ips.js`)
+        if lower.contains("x-kpsdk-")
+            || lower.contains("kpsdk-ct")
+            || lower.contains("149e9513-01fa-4fb0-aad4-566afd725d1b")
+        {
+            return Some("kasada_pow_interstitial");
+        }
+        // 7. AWS WAF (`aws-waf-token`, `awswaf`)
+        if lower.contains("aws-waf-token")
+            || lower.contains("captcha.awswaf.com")
+            || (lower.contains("awswaf") && lower.contains("gokuprops"))
+        {
+            return Some("aws_waf_captcha_interstitial");
+        }
+        // 8. DDoS-Guard
+        if lower.contains("ddos-guard") && lower.contains("check") {
+            return Some("ddos_guard_interstitial");
+        }
+    }
+
+    // Tier 3 (L_widget): CAPTCHA widget challenge when page lacks semantic article prose
+    if html.len() <= 32_768
+        && !has_main_or_article
+        && (lower.contains("g-recaptcha") || lower.contains("h-captcha"))
     {
-        return Some("cloudflare_turnstile_or_js_challenge");
-    }
-    if lower.contains("g-recaptcha") || lower.contains("h-captcha") {
         return Some("captcha_widget_challenge");
-    }
-    if lower.contains("datadome") && lower.contains("captcha") {
-        return Some("datadome_bot_shield");
-    }
-    if lower.contains("px-captcha") || lower.contains("_pxhd") {
-        return Some("perimeterx_human_challenge");
-    }
-    if lower.contains("ddos-guard") && lower.contains("check") {
-        return Some("ddos_guard_interstitial");
     }
     None
 }

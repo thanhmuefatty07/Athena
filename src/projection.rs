@@ -618,6 +618,17 @@ fn tag(name: &str) -> Tag {
         "h2" => Tag::H2,
         "h3" => Tag::H3,
         "h4" => Tag::H4,
+        "h5" => Tag::H5,
+        "h6" => Tag::H6,
+        "blockquote" => Tag::Blockquote,
+        "dl" => Tag::Dl,
+        "dt" => Tag::Dt,
+        "dd" => Tag::Dd,
+        "figcaption" => Tag::Figcaption,
+        "caption" => Tag::Caption,
+        "br" => Tag::Br,
+        "sup" => Tag::Sup,
+        "sub" => Tag::Sub,
         "table" => Tag::Table,
         "thead" => Tag::Thead,
         "tbody" => Tag::Tbody,
@@ -638,6 +649,29 @@ fn tag(name: &str) -> Tag {
         "form" => Tag::Form,
         "script" => Tag::Script,
         "style" => Tag::Style,
+        "math" => Tag::Math,
+        "mrow" => Tag::Mrow,
+        "msup" => Tag::Msup,
+        "msub" => Tag::Msub,
+        "msubsup" => Tag::Mmsubsup,
+        "mfrac" => Tag::Mfrac,
+        "msqrt" => Tag::Msqrt,
+        "mroot" => Tag::Mroot,
+        "mtable" => Tag::Mtable,
+        "mtr" => Tag::Mtr,
+        "mtd" => Tag::Mtd,
+        "mover" => Tag::Mover,
+        "munder" => Tag::Munder,
+        "munderover" => Tag::Munderover,
+        "mi" => Tag::Mi,
+        "mn" => Tag::Mn,
+        "mo" => Tag::Mo,
+        "mtext" => Tag::Mtext,
+        "mspace" => Tag::Mspace,
+        "mstyle" => Tag::Mstyle,
+        "mpadded" => Tag::Mpadded,
+        "semantics" => Tag::Semantics,
+        "annotation" => Tag::Annotation,
         _ => Tag::Unknown,
     }
 }
@@ -771,6 +805,7 @@ pub fn parse_html_with_limits(
     let html = html_cow.as_ref();
     let (parsed, parse_warnings) = parse_html_document_bounded(html, limits.max_parser_nodes)
         .map_err(|_| "max DOM nodes exceeded")?;
+    let _bib_guard = PendingBibHrefGuard;
     if !limits.include_links {
         collect_unindexed_bib_hrefs(&parsed, base);
     } else {
@@ -832,6 +867,12 @@ pub fn project_research_nodes(
     let parser_node_count = nodes.len().checked_add(1).ok_or("max DOM nodes exceeded")?;
     if parser_node_count > limits.max_parser_nodes {
         return Err("max DOM nodes exceeded");
+    }
+    let _bib_guard = PendingBibHrefGuard;
+    if !limits.include_links {
+        collect_unindexed_bib_hrefs_from_research_nodes(nodes, base);
+    } else {
+        crate::arena::set_pending_bib_hrefs(Vec::new());
     }
 
     let mut builder = ProjectionBuilder::new(base, limits);
@@ -1047,10 +1088,19 @@ fn unwrap_comments_if_enabled(html: &str, policy: CommentUnwrapPolicy) -> Cow<'_
     Cow::Owned(out)
 }
 
+struct PendingBibHrefGuard;
+
+impl Drop for PendingBibHrefGuard {
+    fn drop(&mut self) {
+        crate::arena::clear_pending_bib_hrefs();
+    }
+}
+
 fn classify_landmark(dom: &DomArena, node_id: NodeId) -> (bool, bool, bool) {
     let nodes = dom.nodes();
     let mut cur = node_id;
     let mut nearest_decision: Option<bool> = None;
+    let mut saw_header_before_main_or_article = false;
     let mut inside_main_or_article = false;
     let mut inside_nav_or_footer = false;
     while cur != NONE && (cur as usize) < nodes.len() {
@@ -1062,9 +1112,14 @@ fn classify_landmark(dom: &DomArena, node_id: NodeId) -> (bool, bool, bool) {
                     nearest_decision = Some(true);
                 }
             }
-            Tag::Header | Tag::Aside | Tag::Form => {
+            Tag::Aside | Tag::Form => {
                 if nearest_decision.is_none() {
                     nearest_decision = Some(true);
+                }
+            }
+            Tag::Header => {
+                if !inside_main_or_article && nearest_decision.is_none() {
+                    saw_header_before_main_or_article = true;
                 }
             }
             Tag::Main | Tag::Article => {
@@ -1077,11 +1132,11 @@ fn classify_landmark(dom: &DomArena, node_id: NodeId) -> (bool, bool, bool) {
         }
         cur = node.parent;
     }
-    (
-        nearest_decision.unwrap_or(false),
-        inside_main_or_article,
-        inside_nav_or_footer,
-    )
+    let is_chrome = match nearest_decision {
+        Some(decision) => decision,
+        None => saw_header_before_main_or_article && !inside_main_or_article,
+    };
+    (is_chrome, inside_main_or_article, inside_nav_or_footer)
 }
 
 fn shannon_byte_entropy(text: &str) -> f64 {
@@ -1186,6 +1241,55 @@ fn collect_unindexed_bib_hrefs(parsed: &Html, base: &Url) {
     crate::arena::set_pending_bib_hrefs(bib_hrefs);
 }
 
+#[cfg(feature = "research-probes")]
+fn collect_unindexed_bib_hrefs_from_research_nodes(nodes: &[ResearchNode], base: &Url) {
+    let mut bib_hrefs = Vec::<(NodeId, String)>::new();
+    let mut suppressed = vec![false; nodes.len()];
+    let mut next_id = 0u32;
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(parent) = node.parent
+            && parent < index
+            && suppressed[parent]
+        {
+            suppressed[index] = true;
+            continue;
+        }
+        match node.kind {
+            ResearchNodeKind::Element => {
+                if skip_subtree(&node.name) {
+                    suppressed[index] = true;
+                } else {
+                    next_id = next_id.saturating_add(1);
+                    if node.name == "a"
+                        && let Some(href) = node.attr("href")
+                        && is_bibliographic_url(href)
+                        && bib_hrefs.len() < 256
+                    {
+                        let resolved = base
+                            .join(href)
+                            .ok()
+                            .filter(|u| {
+                                u.scheme() == "https"
+                                    && u.username().is_empty()
+                                    && u.password().is_none()
+                            })
+                            .map(|u| u.into())
+                            .unwrap_or_else(|| href.to_owned());
+                        bib_hrefs.push((next_id, resolved));
+                    }
+                }
+            }
+            ResearchNodeKind::Text => {
+                if !node.text.is_empty() {
+                    next_id = next_id.saturating_add(1);
+                }
+            }
+            ResearchNodeKind::Other => {}
+        }
+    }
+    crate::arena::set_pending_bib_hrefs(bib_hrefs);
+}
+
 fn compute_dom_link_metadata(dom: &DomArena) -> (Vec<NodeId>, Vec<u32>) {
     let nodes = dom.nodes();
     let mut owner_of_node = vec![NONE; nodes.len()];
@@ -1209,15 +1313,57 @@ fn compute_dom_link_metadata(dom: &DomArena) -> (Vec<NodeId>, Vec<u32>) {
     (owner_of_node, anchor_counts)
 }
 
+fn is_navigation_table_cell(dom: &DomArena, cell_node_id: NodeId, anchor_counts: &[u32]) -> bool {
+    let nodes = dom.nodes();
+    let cell_anchors = anchor_counts.get(cell_node_id as usize).copied().unwrap_or(0);
+    if cell_anchors == 0 {
+        return false;
+    }
+    let mut cur = cell_node_id;
+    let mut table_id = NONE;
+    while cur != NONE && (cur as usize) < nodes.len() {
+        if nodes[cur as usize].tag == Tag::Table {
+            table_id = cur;
+            break;
+        }
+        cur = nodes[cur as usize].parent;
+    }
+    if table_id == NONE {
+        return false;
+    }
+    let mut th_count = 0u32;
+    let mut td_count = 0u32;
+    let mut linked_td_count = 0u32;
+    let mut stack = vec![table_id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = nodes.get(id as usize) else {
+            continue;
+        };
+        match node.tag {
+            Tag::Th => th_count += 1,
+            Tag::Td => {
+                td_count += 1;
+                if anchor_counts.get(id as usize).copied().unwrap_or(0) > 0 {
+                    linked_td_count += 1;
+                }
+            }
+            _ => {}
+        }
+        let mut child = node.first_child;
+        while child != NONE && (child as usize) < nodes.len() {
+            stack.push(child);
+            child = nodes[child as usize].next_sibling;
+        }
+    }
+    th_count == 0 && td_count >= 3 && linked_td_count == td_count
+}
+
 fn has_bibliographic_signal(
     dom: &DomArena,
     chunk: &Chunk,
     links: &[String],
     owner_of_node: &[NodeId],
 ) -> bool {
-    if chunk.role == "table_header" || chunk.role == "table_cell" {
-        return true;
-    }
     if extract_doi_from_text(&chunk.text).is_some()
         || extract_isbn_from_text(&chunk.text, None).is_some()
         || parse_32_hex_md5(&chunk.text).is_some()
@@ -1242,11 +1388,29 @@ fn has_bibliographic_signal(
     }) {
         return true;
     }
-    dom.unindexed_bib_hrefs().iter().any(|(node_id, url)| {
+    if dom.unindexed_bib_hrefs().iter().any(|(node_id, url)| {
         (owner_of_node.get(*node_id as usize).copied() == Some(chunk.node)
             || is_dom_ancestor_or_self(dom, *node_id, chunk.node))
             && is_bibliographic_url(url)
-    })
+    }) {
+        return true;
+    }
+    if chunk.role == "table_header" || chunk.role == "table_cell" {
+        return true;
+    }
+    false
+}
+
+fn has_math_or_code_signal(chunk: &Chunk) -> bool {
+    if chunk.role == "preformatted" {
+        return true;
+    }
+    let t = chunk.text.as_str();
+    t.contains('$')
+        || t.contains('\\')
+        || t.contains("^{")
+        || t.contains("_{")
+        || (t.contains('=') && t.chars().any(|c| c.is_ascii_digit()))
 }
 
 fn is_boilerplate_chunk(
@@ -1268,6 +1432,20 @@ fn is_boilerplate_chunk(
     let dom_anchors = anchor_counts.get(chunk.node as usize).copied().unwrap_or(0) as usize;
     let effective_link_count = chunk.links.len().max(dom_anchors);
     let bib_signal = has_bibliographic_signal(dom, chunk, links, owner_of_node);
+    if !inside_main_or_article
+        && chunk.role == "table_cell"
+        && is_navigation_table_cell(dom, chunk.node, anchor_counts)
+        && !chunk.links.iter().any(|&id| {
+            links
+                .get(id as usize)
+                .is_some_and(|url| is_bibliographic_url(url))
+        })
+    {
+        let word_count = chunk.text.split_whitespace().count();
+        if word_count <= effective_link_count.saturating_mul(3) {
+            return true;
+        }
+    }
     if !inside_main_or_article && effective_link_count >= 3 && !bib_signal {
         let word_count = chunk.text.split_whitespace().count();
         if word_count <= effective_link_count.saturating_mul(3) {
@@ -1278,6 +1456,7 @@ fn is_boilerplate_chunk(
         && !inside_main_or_article
         && chunk.role != "heading"
         && !bib_signal
+        && !has_math_or_code_signal(chunk)
     {
         let word_count = chunk.text.split_whitespace().count();
         let entropy = shannon_byte_entropy(&chunk.text);
@@ -1314,13 +1493,17 @@ fn apply_boilerplate_policy(
         return;
     }
     let (owner_of_node, anchor_counts) = compute_dom_link_metadata(dom);
-    let keep_count = chunks
+    let keep_mask: Vec<bool> = chunks
         .iter()
-        .filter(|c| !is_boilerplate_chunk(dom, c, links, &owner_of_node, &anchor_counts, policy))
-        .count();
+        .map(|c| !is_boilerplate_chunk(dom, c, links, &owner_of_node, &anchor_counts, policy))
+        .collect();
+    let keep_count = keep_mask.iter().filter(|&&keep| keep).count();
     if keep_count > 0 && keep_count < chunks.len() {
-        chunks.retain(|c| {
-            !is_boilerplate_chunk(dom, c, links, &owner_of_node, &anchor_counts, policy)
+        let mut idx = 0usize;
+        chunks.retain(|_| {
+            let keep = keep_mask[idx];
+            idx += 1;
+            keep
         });
         if !links.is_empty() {
             let mut remap = vec![NONE; links.len()];
@@ -1462,16 +1645,32 @@ fn is_dom_ancestor_or_self(dom: &DomArena, anc: NodeId, mut cur: NodeId) -> bool
 }
 
 fn dom_subtree_normalized_text(dom: &DomArena, root_id: NodeId) -> String {
+    let nodes = dom.nodes();
+    if (root_id as usize) >= nodes.len() {
+        return String::new();
+    }
     let mut raw = String::new();
-    for (id, node) in dom.nodes().iter().enumerate() {
+    let mut stack = vec![root_id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = nodes.get(id as usize) else {
+            continue;
+        };
         if node.tag == Tag::Text
-            && is_dom_ancestor_or_self(dom, root_id, id as u32)
-            && let Ok(seg) = dom.raw_text(id as u32)
+            && let Ok(seg) = dom.raw_text(id)
         {
             if !raw.is_empty() {
                 raw.push(' ');
             }
             raw.push_str(seg);
+        }
+        let mut children = Vec::new();
+        let mut child = node.first_child;
+        while child != NONE && (child as usize) < nodes.len() {
+            children.push(child);
+            child = nodes[child as usize].next_sibling;
+        }
+        for ch in children.into_iter().rev() {
+            stack.push(ch);
         }
     }
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -1693,6 +1892,1463 @@ pub fn extract_annas_archive_records(page: &Projection) -> Vec<AnnasArchiveRecor
         }
     }
     records
+}
+
+#[inline]
+pub fn is_empty_projection_candidate(words: usize, links: &[u32]) -> bool {
+    if words == 0 && links.is_empty() {
+        return true;
+    }
+    false
+}
+
+/// Returns true if `c` is a Unicode Combining Mark (`General_Category = Mn | Mc | Me`) (`D19`).
+#[inline]
+pub fn is_unicode_combining_mark(c: char) -> bool {
+    let u = c as u32;
+    matches!(
+        u,
+        0x0300..=0x036F
+            | 0x0483..=0x0489
+            | 0x0591..=0x05BD
+            | 0x05BF
+            | 0x05C1..=0x05C2
+            | 0x05C4..=0x05C5
+            | 0x05C7
+            | 0x0610..=0x061A
+            | 0x064B..=0x065F
+            | 0x0670
+            | 0x06D6..=0x06DC
+            | 0x06DF..=0x06E4
+            | 0x06E7..=0x06E8
+            | 0x06EA..=0x06ED
+            | 0x0901..=0x0903
+            | 0x093A..=0x094F
+            | 0x0951..=0x0957
+            | 0x0962..=0x0963
+            | 0x0E31
+            | 0x0E34..=0x0E3A
+            | 0x0E47..=0x0E4E
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x20D0..=0x20FF
+            | 0xFE20..=0xFE2F
+    )
+}
+
+#[inline]
+fn combining_class(c: char) -> u8 {
+    match c {
+        '\u{031B}' => 216, // Horn (ơ, ư) attaches before tone/circumflex
+        '\u{0327}' | '\u{0328}' => 202,
+        '\u{0323}' => 220, // Dot below (ạ, ệ, ộ, ự)
+        '\u{0300}' | '\u{0301}' | '\u{0302}' | '\u{0303}' | '\u{0304}' | '\u{0306}'
+        | '\u{0307}' | '\u{0308}' | '\u{0309}' | '\u{030A}' | '\u{030B}' | '\u{030C}' => 230,
+        _ => 230,
+    }
+}
+
+fn compose_pair_nfc(base: char, mark: char) -> Option<char> {
+    match (base, mark) {
+        // Basic Latin + acute/grave/circumflex/tilde/diaeresis/ring/cedilla/caron
+        ('a', '\u{0300}') => Some('à'),
+        ('a', '\u{0301}') => Some('á'),
+        ('a', '\u{0302}') => Some('â'),
+        ('a', '\u{0303}') => Some('ã'),
+        ('a', '\u{0308}') => Some('ä'),
+        ('a', '\u{030A}') => Some('å'),
+        ('a', '\u{0306}') => Some('ă'),
+        ('a', '\u{0309}') => Some('ả'),
+        ('a', '\u{0323}') => Some('ạ'),
+        ('A', '\u{0300}') => Some('À'),
+        ('A', '\u{0301}') => Some('Á'),
+        ('A', '\u{0302}') => Some('Â'),
+        ('A', '\u{0303}') => Some('Ã'),
+        ('A', '\u{0308}') => Some('Ä'),
+        ('A', '\u{030A}') => Some('Å'),
+        ('A', '\u{0306}') => Some('Ă'),
+        ('A', '\u{0309}') => Some('Ả'),
+        ('A', '\u{0323}') => Some('Ạ'),
+        ('e', '\u{0300}') => Some('è'),
+        ('e', '\u{0301}') => Some('é'),
+        ('e', '\u{0302}') => Some('ê'),
+        ('e', '\u{0303}') => Some('ẽ'),
+        ('e', '\u{0308}') => Some('ë'),
+        ('e', '\u{0309}') => Some('ẻ'),
+        ('e', '\u{0323}') => Some('ẹ'),
+        ('E', '\u{0300}') => Some('È'),
+        ('E', '\u{0301}') => Some('É'),
+        ('E', '\u{0302}') => Some('Ê'),
+        ('E', '\u{0303}') => Some('Ẽ'),
+        ('E', '\u{0308}') => Some('Ë'),
+        ('E', '\u{0309}') => Some('Ẻ'),
+        ('E', '\u{0323}') => Some('Ẹ'),
+        ('i', '\u{0300}') => Some('ì'),
+        ('i', '\u{0301}') => Some('í'),
+        ('i', '\u{0302}') => Some('î'),
+        ('i', '\u{0303}') => Some('ĩ'),
+        ('i', '\u{0308}') => Some('ï'),
+        ('i', '\u{0309}') => Some('ỉ'),
+        ('i', '\u{0323}') => Some('ị'),
+        ('I', '\u{0300}') => Some('Ì'),
+        ('I', '\u{0301}') => Some('Í'),
+        ('I', '\u{0302}') => Some('Î'),
+        ('I', '\u{0303}') => Some('Ĩ'),
+        ('I', '\u{0308}') => Some('Ï'),
+        ('I', '\u{0309}') => Some('Ỉ'),
+        ('I', '\u{0323}') => Some('Ị'),
+        ('o', '\u{0300}') => Some('ò'),
+        ('o', '\u{0301}') => Some('ó'),
+        ('o', '\u{0302}') => Some('ô'),
+        ('o', '\u{0303}') => Some('õ'),
+        ('o', '\u{0308}') => Some('ö'),
+        ('o', '\u{0309}') => Some('ỏ'),
+        ('o', '\u{031B}') => Some('ơ'),
+        ('o', '\u{0323}') => Some('ọ'),
+        ('O', '\u{0300}') => Some('Ò'),
+        ('O', '\u{0301}') => Some('Ó'),
+        ('O', '\u{0302}') => Some('Ô'),
+        ('O', '\u{0303}') => Some('Õ'),
+        ('O', '\u{0308}') => Some('Ö'),
+        ('O', '\u{0309}') => Some('Ỏ'),
+        ('O', '\u{031B}') => Some('Ơ'),
+        ('O', '\u{0323}') => Some('Ọ'),
+        ('u', '\u{0300}') => Some('ù'),
+        ('u', '\u{0301}') => Some('ú'),
+        ('u', '\u{0302}') => Some('û'),
+        ('u', '\u{0303}') => Some('ũ'),
+        ('u', '\u{0308}') => Some('ü'),
+        ('u', '\u{0309}') => Some('ủ'),
+        ('u', '\u{031B}') => Some('ư'),
+        ('u', '\u{0323}') => Some('ự'),
+        ('U', '\u{0300}') => Some('Ù'),
+        ('U', '\u{0301}') => Some('Ú'),
+        ('U', '\u{0302}') => Some('Û'),
+        ('U', '\u{0303}') => Some('Ũ'),
+        ('U', '\u{0308}') => Some('Ü'),
+        ('U', '\u{0309}') => Some('Ủ'),
+        ('U', '\u{031B}') => Some('Ư'),
+        ('U', '\u{0323}') => Some('Ụ'),
+        ('y', '\u{0300}') => Some('ỳ'),
+        ('y', '\u{0301}') => Some('ý'),
+        ('y', '\u{0303}') => Some('ỹ'),
+        ('y', '\u{0309}') => Some('ỷ'),
+        ('y', '\u{0323}') => Some('ỵ'),
+        ('Y', '\u{0300}') => Some('Ỳ'),
+        ('Y', '\u{0301}') => Some('Ý'),
+        ('Y', '\u{0303}') => Some('Ỹ'),
+        ('Y', '\u{0309}') => Some('Ỷ'),
+        ('Y', '\u{0323}') => Some('Ỵ'),
+        ('c', '\u{0327}') => Some('ç'),
+        ('C', '\u{0327}') => Some('Ç'),
+        ('n', '\u{0303}') => Some('ñ'),
+        ('N', '\u{0303}') => Some('Ñ'),
+        ('s', '\u{030C}') => Some('š'),
+        ('S', '\u{030C}') => Some('Š'),
+        ('z', '\u{030C}') => Some('ž'),
+        ('Z', '\u{030C}') => Some('Ž'),
+        // Vietnamese secondary compositions (circumflex/breve/horn + tone mark)
+        ('â', '\u{0300}') => Some('ầ'),
+        ('â', '\u{0301}') => Some('ấ'),
+        ('â', '\u{0303}') => Some('ẫ'),
+        ('â', '\u{0309}') => Some('ẩ'),
+        ('â', '\u{0323}') => Some('ậ'),
+        ('Â', '\u{0300}') => Some('Ầ'),
+        ('Â', '\u{0301}') => Some('Ấ'),
+        ('Â', '\u{0303}') => Some('Ẫ'),
+        ('Â', '\u{0309}') => Some('Ẩ'),
+        ('Â', '\u{0323}') => Some('Ậ'),
+        ('ă', '\u{0300}') => Some('ằ'),
+        ('ă', '\u{0301}') => Some('ắ'),
+        ('ă', '\u{0303}') => Some('ẵ'),
+        ('ă', '\u{0309}') => Some('ẳ'),
+        ('ă', '\u{0323}') => Some('ặ'),
+        ('Ă', '\u{0300}') => Some('Ằ'),
+        ('Ă', '\u{0301}') => Some('Ắ'),
+        ('Ă', '\u{0303}') => Some('Ẵ'),
+        ('Ă', '\u{0309}') => Some('Ẳ'),
+        ('Ă', '\u{0323}') => Some('Ặ'),
+        ('ê', '\u{0300}') => Some('ề'),
+        ('ê', '\u{0301}') => Some('ế'),
+        ('ê', '\u{0303}') => Some('ễ'),
+        ('ê', '\u{0309}') => Some('ể'),
+        ('ê', '\u{0323}') => Some('ệ'),
+        ('Ê', '\u{0300}') => Some('Ề'),
+        ('Ê', '\u{0301}') => Some('Ế'),
+        ('Ê', '\u{0303}') => Some('Ễ'),
+        ('Ê', '\u{0309}') => Some('Ể'),
+        ('Ê', '\u{0323}') => Some('Ệ'),
+        ('ô', '\u{0300}') => Some('ồ'),
+        ('ô', '\u{0301}') => Some('ố'),
+        ('ô', '\u{0303}') => Some('ỗ'),
+        ('ô', '\u{0309}') => Some('ổ'),
+        ('ô', '\u{0323}') => Some('ộ'),
+        ('Ô', '\u{0300}') => Some('Ồ'),
+        ('Ô', '\u{0301}') => Some('Ố'),
+        ('Ô', '\u{0303}') => Some('Ỗ'),
+        ('Ô', '\u{0309}') => Some('Ổ'),
+        ('Ô', '\u{0323}') => Some('Ộ'),
+        ('ơ', '\u{0300}') => Some('ờ'),
+        ('ơ', '\u{0301}') => Some('ớ'),
+        ('ơ', '\u{0303}') => Some('ỡ'),
+        ('ơ', '\u{0309}') => Some('ở'),
+        ('ơ', '\u{0323}') => Some('ợ'),
+        ('Ơ', '\u{0300}') => Some('Ờ'),
+        ('Ơ', '\u{0301}') => Some('Ớ'),
+        ('Ơ', '\u{0303}') => Some('Ỡ'),
+        ('Ơ', '\u{0309}') => Some('Ở'),
+        ('Ơ', '\u{0323}') => Some('Ợ'),
+        ('ư', '\u{0300}') => Some('ừ'),
+        ('ư', '\u{0301}') => Some('ứ'),
+        ('ư', '\u{0303}') => Some('ữ'),
+        ('ư', '\u{0309}') => Some('ử'),
+        ('ư', '\u{0323}') => Some('ự'),
+        ('Ư', '\u{0300}') => Some('Ừ'),
+        ('Ư', '\u{0301}') => Some('Ứ'),
+        ('Ư', '\u{0303}') => Some('Ữ'),
+        ('Ư', '\u{0309}') => Some('Ử'),
+        ('Ư', '\u{0323}') => Some('Ự'),
+        // Reverse order (tone before circumflex/breve/horn)
+        ('à', '\u{0302}') => Some('ầ'),
+        ('á', '\u{0302}') => Some('ấ'),
+        ('ã', '\u{0302}') => Some('ẫ'),
+        ('ả', '\u{0302}') => Some('ẩ'),
+        ('ạ', '\u{0302}') => Some('ậ'),
+        ('à', '\u{0306}') => Some('ằ'),
+        ('á', '\u{0306}') => Some('ắ'),
+        ('ã', '\u{0306}') => Some('ẵ'),
+        ('ả', '\u{0306}') => Some('ẳ'),
+        ('ạ', '\u{0306}') => Some('ặ'),
+        ('è', '\u{0302}') => Some('ề'),
+        ('é', '\u{0302}') => Some('ế'),
+        ('ẽ', '\u{0302}') => Some('ễ'),
+        ('ẻ', '\u{0302}') => Some('ể'),
+        ('ẹ', '\u{0302}') => Some('ệ'),
+        ('ò', '\u{0302}') => Some('ồ'),
+        ('ó', '\u{0302}') => Some('ố'),
+        ('õ', '\u{0302}') => Some('ỗ'),
+        ('ỏ', '\u{0302}') => Some('ổ'),
+        ('ọ', '\u{0302}') => Some('ộ'),
+        ('ò', '\u{031B}') => Some('ờ'),
+        ('ó', '\u{031B}') => Some('ớ'),
+        ('õ', '\u{031B}') => Some('ỡ'),
+        ('ỏ', '\u{031B}') => Some('ở'),
+        ('ọ', '\u{031B}') => Some('ợ'),
+        ('ù', '\u{031B}') => Some('ừ'),
+        ('ú', '\u{031B}') => Some('ứ'),
+        ('ũ', '\u{031B}') => Some('ữ'),
+        ('ủ', '\u{031B}') => Some('ử'),
+        ('ự', '\u{031B}') => Some('ự'),
+        _ => None,
+    }
+}
+
+/// Normalizes decomposed Unicode `NFD` combining sequences into canonical `NFC` (`D19`)
+/// without applying `NFKC` compatibility folding (preserving `²`, `³`, `\mathbb{R}`, etc.).
+pub fn normalize_unicode_nfc(text: &str) -> Cow<'_, str> {
+    if text.is_ascii() || !text.chars().any(is_unicode_combining_mark) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut marks = Vec::<char>::with_capacity(4);
+    while let Some(ch) = chars.next() {
+        if is_unicode_combining_mark(ch) {
+            out.push(ch);
+            continue;
+        }
+        marks.clear();
+        while let Some(&next_ch) = chars.peek() {
+            if is_unicode_combining_mark(next_ch) {
+                marks.push(next_ch);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if marks.is_empty() {
+            out.push(ch);
+            continue;
+        }
+        marks.sort_by_key(|&m| combining_class(m));
+        let mut base = ch;
+        let mut uncomposed = Vec::<char>::new();
+        for m in &marks {
+            if let Some(composed) = compose_pair_nfc(base, *m) {
+                base = composed;
+            } else {
+                uncomposed.push(*m);
+            }
+        }
+        // Second pass for any remaining marks that can compose after base changed
+        let mut still_uncomposed = Vec::<char>::new();
+        for m in uncomposed {
+            if let Some(composed) = compose_pair_nfc(base, m) {
+                base = composed;
+            } else {
+                still_uncomposed.push(m);
+            }
+        }
+        out.push(base);
+        for m in still_uncomposed {
+            out.push(m);
+        }
+    }
+    Cow::Owned(out)
+}
+
+fn map_math_symbol_to_latex(sym: &str) -> Cow<'_, str> {
+    let trimmed = sym.trim();
+    match trimmed {
+        "∑" => Cow::Borrowed("\\sum"),
+        "∏" => Cow::Borrowed("\\prod"),
+        "∫" => Cow::Borrowed("\\int"),
+        "∞" => Cow::Borrowed("\\infty"),
+        "≤" | "⩽" => Cow::Borrowed("\\le"),
+        "≥" | "⩾" => Cow::Borrowed("\\ge"),
+        "≠" => Cow::Borrowed("\\ne"),
+        "≈" => Cow::Borrowed("\\approx"),
+        "≡" => Cow::Borrowed("\\equiv"),
+        "±" => Cow::Borrowed("\\pm"),
+        "×" => Cow::Borrowed("\\times"),
+        "÷" => Cow::Borrowed("\\div"),
+        "⋅" | "·" => Cow::Borrowed("\\cdot"),
+        "∇" => Cow::Borrowed("\\nabla"),
+        "∂" => Cow::Borrowed("\\partial"),
+        "∈" => Cow::Borrowed("\\in"),
+        "∉" => Cow::Borrowed("\\notin"),
+        "⊂" => Cow::Borrowed("\\subset"),
+        "⊆" => Cow::Borrowed("\\subseteq"),
+        "∪" => Cow::Borrowed("\\cup"),
+        "∩" => Cow::Borrowed("\\cap"),
+        "∀" => Cow::Borrowed("\\forall"),
+        "∃" => Cow::Borrowed("\\exists"),
+        "→" | "⟶" => Cow::Borrowed("\\to"),
+        "⇒" | "⟹" => Cow::Borrowed("\\Rightarrow"),
+        "⇔" | "⟺" => Cow::Borrowed("\\Leftrightarrow"),
+        "α" => Cow::Borrowed("\\alpha"),
+        "β" => Cow::Borrowed("\\beta"),
+        "γ" => Cow::Borrowed("\\gamma"),
+        "δ" => Cow::Borrowed("\\delta"),
+        "ε" | "ϵ" => Cow::Borrowed("\\epsilon"),
+        "ζ" => Cow::Borrowed("\\zeta"),
+        "η" => Cow::Borrowed("\\eta"),
+        "θ" => Cow::Borrowed("\\theta"),
+        "λ" => Cow::Borrowed("\\lambda"),
+        "μ" => Cow::Borrowed("\\mu"),
+        "ν" => Cow::Borrowed("\\nu"),
+        "ξ" => Cow::Borrowed("\\xi"),
+        "π" => Cow::Borrowed("\\pi"),
+        "ρ" => Cow::Borrowed("\\rho"),
+        "σ" => Cow::Borrowed("\\sigma"),
+        "τ" => Cow::Borrowed("\\tau"),
+        "φ" | "ϕ" => Cow::Borrowed("\\phi"),
+        "χ" => Cow::Borrowed("\\chi"),
+        "ψ" => Cow::Borrowed("\\psi"),
+        "ω" => Cow::Borrowed("\\omega"),
+        "Γ" => Cow::Borrowed("\\Gamma"),
+        "Δ" => Cow::Borrowed("\\Delta"),
+        "Θ" => Cow::Borrowed("\\Theta"),
+        "Λ" => Cow::Borrowed("\\Lambda"),
+        "Ξ" => Cow::Borrowed("\\Xi"),
+        "Π" => Cow::Borrowed("\\Pi"),
+        "Σ" => Cow::Borrowed("\\Sigma"),
+        "Φ" => Cow::Borrowed("\\Phi"),
+        "Ψ" => Cow::Borrowed("\\Psi"),
+        "Ω" => Cow::Borrowed("\\Omega"),
+        _ => Cow::Borrowed(trimmed),
+    }
+}
+
+/// Recursive 22-tag Presentation MathML-to-LaTeX converter (`D2`).
+pub fn convert_mathml_element_to_latex(el: scraper::ElementRef<'_>) -> String {
+    let tag_name = el.value().name();
+    // Tier 1: Look for <annotation encoding="application/x-tex" | "TeX" | "LaTeX"> first
+    if tag_name == "math" || tag_name == "semantics" {
+        let mut stack = vec![el];
+        while let Some(cur) = stack.pop() {
+            if cur.value().name() == "annotation" {
+                let enc = cur
+                    .value()
+                    .attr("encoding")
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if enc.contains("tex") || enc.is_empty() {
+                    let raw_tex: String = cur.text().collect();
+                    let trimmed = raw_tex.trim();
+                    if !trimmed.is_empty() {
+                        if tag_name == "math" {
+                            let is_block = cur.value().attr("display") == Some("block")
+                                || el.value().attr("display") == Some("block");
+                            return if is_block {
+                                format!("$${trimmed}$$")
+                            } else {
+                                format!("${trimmed}$")
+                            };
+                        }
+                        return trimmed.to_owned();
+                    }
+                }
+            }
+            for child in cur.children().rev() {
+                if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                    stack.push(child_el);
+                }
+            }
+        }
+        if let Some(alt) = el
+            .value()
+            .attr("alttext")
+            .or_else(|| el.value().attr("data-latex"))
+            .or_else(|| el.value().attr("data-tex"))
+        {
+            let trimmed = alt.trim();
+            if !trimmed.is_empty() {
+                let is_block = el.value().attr("display") == Some("block");
+                return if is_block {
+                    format!("$${trimmed}$$")
+                } else {
+                    format!("${trimmed}$")
+                };
+            }
+        }
+    }
+
+    let child_elements: Vec<scraper::ElementRef<'_>> =
+        el.children().filter_map(scraper::ElementRef::wrap).collect();
+
+    let body = match tag_name {
+        "mi" | "mn" | "mo" => {
+            let txt: String = el.text().collect();
+            map_math_symbol_to_latex(&txt).into_owned()
+        }
+        "mtext" => {
+            let txt: String = el.text().collect();
+            let trimmed = txt.trim();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("\\text{{{trimmed}}}")
+            }
+        }
+        "mspace" => "\\;".to_owned(),
+        "annotation" | "annotation-xml" => String::new(),
+        "mfrac" => {
+            let num = child_elements
+                .first()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let den = child_elements
+                .get(1)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            format!("\\frac{{{num}}}{{{den}}}")
+        }
+        "msqrt" => {
+            let inner: String = child_elements
+                .iter()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("\\sqrt{{{inner}}}")
+        }
+        "mroot" => {
+            let radicand = child_elements
+                .first()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let index = child_elements
+                .get(1)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            format!("\\sqrt[{index}]{{{radicand}}}")
+        }
+        "msup" | "mover" => {
+            let base = child_elements
+                .first()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let sup = child_elements
+                .get(1)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            format!("{base}^{{{sup}}}")
+        }
+        "msub" | "munder" => {
+            let base = child_elements
+                .first()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let sub = child_elements
+                .get(1)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            format!("{base}_{{{sub}}}")
+        }
+        "msubsup" | "munderover" => {
+            let base = child_elements
+                .first()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let sub = child_elements
+                .get(1)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            let sup = child_elements
+                .get(2)
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .unwrap_or_default();
+            format!("{base}_{{{sub}}}^{{{sup}}}")
+        }
+        "mtable" => {
+            let rows: Vec<String> = child_elements
+                .iter()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .filter(|s| !s.is_empty())
+                .collect();
+            format!("\\begin{{matrix}} {} \\end{{matrix}}", rows.join(" \\\\ "))
+        }
+        "mtr" => {
+            let cells: Vec<String> = child_elements
+                .iter()
+                .map(|c| convert_mathml_element_to_latex(*c))
+                .collect();
+            cells.join(" & ")
+        }
+        "mtd" | "mrow" | "semantics" | "math" | "mstyle" | "mpadded" => {
+            if child_elements.is_empty() {
+                let txt: String = el.text().collect();
+                map_math_symbol_to_latex(&txt).into_owned()
+            } else {
+                let mut parts = Vec::with_capacity(child_elements.len());
+                for c in &child_elements {
+                    let rendered = convert_mathml_element_to_latex(*c);
+                    if !rendered.is_empty() {
+                        parts.push(rendered);
+                    }
+                }
+                parts.join(" ")
+            }
+        }
+        _ => {
+            let txt: String = el.text().collect();
+            txt.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+    };
+
+    if tag_name == "math" {
+        let is_block = el.value().attr("display") == Some("block");
+        let trimmed = body.trim();
+        if trimmed.starts_with('$') {
+            trimmed.to_owned()
+        } else if is_block {
+            format!("$${trimmed}$$")
+        } else {
+            format!("${trimmed}$")
+        }
+    } else {
+        body
+    }
+}
+
+/// Tier 3 `<sup>` / `<sub>` disambiguator (`D2`):
+/// Distinguishes bibliography/footnote citations (`<sup>[12]</sup>`, `<sup><a href="#ref1">1</a></sup>`)
+/// from mathematical exponents (`x<sup>2</sup>` -> `x^{2}`) and chemical/index subscripts (`H<sub>2</sub>O` -> `H_{2}O`).
+pub fn render_sup_or_sub_element(el: scraper::ElementRef<'_>, prev_char: Option<char>) -> String {
+    let tag_name = el.value().name();
+    let raw: String = el.text().collect();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if tag_name == "sup" {
+        let has_citation_link = el.children().filter_map(scraper::ElementRef::wrap).any(|c| {
+            c.value().name() == "a"
+                && c.value().attr("href").is_some_and(|h| {
+                    h.starts_with('#')
+                        || h.contains("cite")
+                        || h.contains("bib")
+                        || h.contains("ref")
+                        || h.contains("fn")
+                })
+        });
+        let bracketed_digits = trimmed.starts_with('[')
+            && trimmed.ends_with(']')
+            && trimmed[1..trimmed.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ',' || c == '-' || c == ' ');
+        let preceded_by_space_or_punct =
+            prev_char.is_none_or(|c| c.is_whitespace() || matches!(c, '.' | ',' | ';' | ')'));
+        let pure_digits = trimmed.chars().all(|c| c.is_ascii_digit());
+        if bracketed_digits {
+            let inner = trimmed[1..trimmed.len() - 1].trim();
+            return format!(" [^{inner}]");
+        }
+        if has_citation_link || (preceded_by_space_or_punct && pure_digits) {
+            return format!(" [^{trimmed}]");
+        }
+        format!("^{{{trimmed}}}")
+    } else {
+        format!("_{{{trimmed}}}")
+    }
+}
+
+fn is_code_gutter_or_copy_node(el: scraper::ElementRef<'_>) -> bool {
+    let name = el.value().name();
+    if name == "button" {
+        return true;
+    }
+    let class_attr = el.value().attr("class").unwrap_or("").to_ascii_lowercase();
+    if class_attr.contains("lineno")
+        || class_attr.contains("hljs-ln-numbers")
+        || class_attr.contains("hljs-ln-n")
+        || class_attr.contains("blob-num")
+        || class_attr.contains("line-number")
+        || class_attr.contains("copy-button")
+        || class_attr.contains("clipboard")
+    {
+        return true;
+    }
+    if el.value().attr("aria-hidden") == Some("true")
+        && el
+            .text()
+            .collect::<String>()
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_digit() || c.is_whitespace() || c == '|')
+    {
+        return true;
+    }
+    false
+}
+
+fn strip_leading_line_number_gutter(line: &str) -> &str {
+    let trimmed_start = line.trim_start_matches(' ');
+    let digit_len = trimmed_start
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digit_len > 0 && digit_len <= 5 {
+        let after_digits = &trimmed_start[digit_len..];
+        if let Some(rest) = after_digits
+            .strip_prefix(" | ")
+            .or_else(|| after_digits.strip_prefix("| "))
+            .or_else(|| after_digits.strip_prefix("\t"))
+        {
+            return rest;
+        }
+    }
+    line
+}
+
+/// AST-clean `<pre><code>` sanitizer and statement-boundary splitter (`M1`, `D1`, `D31`).
+/// Preserves `\n` and indentation, strips `.linenos`/`.hljs-ln-numbers`/`button.copy`,
+/// and splits oversized code blocks at line/statement boundaries instead of mid-identifier.
+pub fn sanitize_and_split_code_block(
+    pre_el: scraper::ElementRef<'_>,
+    max_words_per_chunk: usize,
+) -> (Option<String>, Vec<(String, bool)>) {
+    let mut lang: Option<String> = None;
+    let mut stack = vec![pre_el];
+    while let Some(cur) = stack.pop() {
+        if let Some(dl) = cur
+            .value()
+            .attr("data-lang")
+            .or_else(|| cur.value().attr("data-language"))
+        {
+            if !dl.trim().is_empty() {
+                lang = Some(dl.trim().to_ascii_lowercase());
+                break;
+            }
+        }
+        if let Some(cls) = cur.value().attr("class") {
+            for token in cls.split_whitespace() {
+                if let Some(l) = token
+                    .strip_prefix("language-")
+                    .or_else(|| token.strip_prefix("lang-"))
+                {
+                    if !l.is_empty() {
+                        lang = Some(l.to_ascii_lowercase());
+                        break;
+                    }
+                }
+            }
+            if lang.is_some() {
+                break;
+            }
+        }
+        for child in cur.children().rev() {
+            if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                stack.push(child_el);
+            }
+        }
+    }
+
+    fn collect_clean_code(node: scraper::ElementRef<'_>, out: &mut String) {
+        for child in node.children() {
+            match child.value() {
+                HtmlNode::Text(t) => {
+                    out.push_str(&t.text);
+                }
+                HtmlNode::Element(_) => {
+                    if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                        if is_code_gutter_or_copy_node(child_el) {
+                            continue;
+                        }
+                        if child_el.value().name() == "br" {
+                            out.push('\n');
+                        } else {
+                            collect_clean_code(child_el, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut raw_code = String::new();
+    collect_clean_code(pre_el, &mut raw_code);
+
+    let cleaned_lines: Vec<&str> = raw_code
+        .lines()
+        .map(strip_leading_line_number_gutter)
+        .collect();
+    let full_code = cleaned_lines.join("\n").trim_matches('\n').to_owned();
+    if full_code.trim().is_empty() {
+        return (lang, Vec::new());
+    }
+
+    let word_budget = max_words_per_chunk.max(1);
+    let total_words = full_code.split_whitespace().count();
+    if total_words <= word_budget {
+        return (lang, vec![(full_code, false)]);
+    }
+
+    let mut parts = Vec::<(String, bool)>::new();
+    let mut current_lines = Vec::<&str>::new();
+    let mut current_words = 0usize;
+
+    for line in full_code.lines() {
+        let line_words = line.split_whitespace().count();
+        if !current_lines.is_empty() && current_words + line_words > word_budget {
+            let chunk_str = current_lines.join("\n");
+            let is_cont = !parts.is_empty();
+            parts.push((chunk_str, is_cont));
+            current_lines.clear();
+            current_words = 0;
+        }
+        current_lines.push(line);
+        current_words += line_words;
+    }
+    if !current_lines.is_empty() {
+        let chunk_str = current_lines.join("\n");
+        let is_cont = !parts.is_empty();
+        parts.push((chunk_str, is_cont));
+    }
+
+    (lang, parts)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakthroughChunk {
+    pub chunk: Chunk,
+    pub pre_filter_dom_id: NodeId,
+    pub dom_path_slug: String,
+    pub heading_stack: [Option<String>; 6],
+    pub lead_in_chunk_id: Option<u32>,
+    pub lead_in_text: Option<String>,
+    pub table_grounding: Option<crate::table::GroundedTableCell>,
+    pub code_language: Option<String>,
+    pub is_continuation: bool,
+    pub exact_hash64: u64,
+    pub simhash64: u64,
+}
+
+pub struct BreakthroughProjection {
+    pub projection: Projection,
+    pub rich_chunks: Vec<BreakthroughChunk>,
+    pub tables: Vec<crate::table::Grid>,
+}
+
+fn fnv1a_exact_hash64(text: &str) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in text.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+fn is_katex_or_mathjax_visual_duplicate(el: scraper::ElementRef<'_>) -> bool {
+    let cls = el.value().attr("class").unwrap_or("");
+    cls.split_whitespace().any(|t| {
+        t == "katex-html"
+            || t == "MathJax_Preview"
+            || t == "MJX_Assistive_MathML"
+            || t == "MathJax_SVG"
+            || t == "MathJax_CHTML"
+    })
+}
+
+fn is_breakthrough_block_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "p" | "li"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "pre"
+            | "table"
+            | "blockquote"
+            | "figcaption"
+            | "dl"
+            | "dt"
+            | "dd"
+            | "div"
+            | "section"
+            | "article"
+            | "main"
+            | "header"
+            | "footer"
+            | "nav"
+            | "aside"
+            | "form"
+            | "ul"
+            | "ol"
+    )
+}
+
+fn append_rich_inline_node(
+    node: scraper::node::Node,
+    child_ref: ego_tree::NodeRef<'_, scraper::node::Node>,
+    out: &mut String,
+    skip_nested_blocks: bool,
+) {
+    match node {
+        HtmlNode::Text(t) => {
+            let seg = normalize_unicode_nfc(&t.text);
+            if !seg.is_empty() {
+                if out.ends_with('$')
+                    && !seg.starts_with(|c: char| {
+                        c.is_whitespace()
+                            || matches!(c, '.' | ',' | ';' | ':' | ')' | ']' | '!' | '?')
+                    })
+                {
+                    out.push(' ');
+                }
+                out.push_str(&seg);
+            }
+        }
+        HtmlNode::Element(el_val) => {
+            let name = el_val.name();
+            if skip_subtree(name) {
+                return;
+            }
+            if name == "script" {
+                if el_val
+                    .attr("type")
+                    .is_some_and(|ty| ty.to_ascii_lowercase().contains("math/tex"))
+                    && let Some(script_el) = scraper::ElementRef::wrap(child_ref)
+                {
+                    let raw_tex: String = script_el.text().collect();
+                    let trimmed = raw_tex.trim();
+                    if !trimmed.is_empty() {
+                        if !out.is_empty() && !out.ends_with([' ', '\n']) {
+                            out.push(' ');
+                        }
+                        if el_val
+                            .attr("type")
+                            .is_some_and(|ty| ty.contains("mode=display"))
+                        {
+                            out.push_str("$$");
+                            out.push_str(trimmed);
+                            out.push_str("$$");
+                        } else {
+                            out.push('$');
+                            out.push_str(trimmed);
+                            out.push('$');
+                        }
+                    }
+                }
+                return;
+            }
+            let Some(el) = scraper::ElementRef::wrap(child_ref) else {
+                return;
+            };
+            if is_katex_or_mathjax_visual_duplicate(el) {
+                return;
+            }
+            if skip_nested_blocks && is_breakthrough_block_tag(name) {
+                return;
+            }
+            if name == "math" {
+                let latex = convert_mathml_element_to_latex(el);
+                if !latex.is_empty() {
+                    if !out.is_empty() && !out.ends_with([' ', '\n', '(', '[']) {
+                        out.push(' ');
+                    }
+                    out.push_str(&latex);
+                }
+                return;
+            }
+            if name == "sup" || name == "sub" {
+                let prev = out.chars().last();
+                let rendered = render_sup_or_sub_element(el, prev);
+                out.push_str(&rendered);
+                return;
+            }
+            if name == "br" {
+                out.push('\n');
+                return;
+            }
+            if name == "img" {
+                let cls = el.value().attr("class").unwrap_or("").to_ascii_lowercase();
+                let alt = el
+                    .value()
+                    .attr("data-latex")
+                    .or_else(|| el.value().attr("data-tex"))
+                    .or_else(|| {
+                        if cls.contains("tex") || cls.contains("math") {
+                            el.value().attr("alt")
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(tex) = alt {
+                    let trimmed = tex.trim();
+                    if !trimmed.is_empty() {
+                        if !out.is_empty() && !out.ends_with([' ', '\n']) {
+                            out.push(' ');
+                        }
+                        if trimmed.starts_with('$') {
+                            out.push_str(trimmed);
+                        } else {
+                            out.push('$');
+                            out.push_str(trimmed);
+                            out.push('$');
+                        }
+                    }
+                }
+                return;
+            }
+            if let Some(tex) = el
+                .value()
+                .attr("data-latex")
+                .or_else(|| el.value().attr("data-tex"))
+            {
+                let trimmed = tex.trim();
+                if !trimmed.is_empty() {
+                    if !out.is_empty() && !out.ends_with([' ', '\n']) {
+                        out.push(' ');
+                    }
+                    if trimmed.starts_with('$') {
+                        out.push_str(trimmed);
+                    } else {
+                        out.push('$');
+                        out.push_str(trimmed);
+                        out.push('$');
+                    }
+                    return;
+                }
+            }
+            for grandchild in el.children() {
+                append_rich_inline_node(
+                    grandchild.value().clone(),
+                    grandchild,
+                    out,
+                    skip_nested_blocks,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_multiline_inline_buffer(raw: &str) -> String {
+    let mut normalized_lines = Vec::new();
+    for line in raw.lines() {
+        let norm_line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !norm_line.is_empty() {
+            normalized_lines.push(norm_line);
+        }
+    }
+    normalized_lines.join("\n")
+}
+
+fn extract_rich_inline_text(root: scraper::ElementRef<'_>) -> String {
+    let mut raw = String::new();
+    if root.value().name() == "math" {
+        return convert_mathml_element_to_latex(root);
+    }
+    for child in root.children() {
+        append_rich_inline_node(child.value().clone(), child, &mut raw, false);
+    }
+    normalize_multiline_inline_buffer(&raw)
+}
+
+fn extract_rich_inline_text_shallow(root: scraper::ElementRef<'_>) -> String {
+    let mut raw = String::new();
+    for child in root.children() {
+        append_rich_inline_node(child.value().clone(), child, &mut raw, true);
+    }
+    normalize_multiline_inline_buffer(&raw)
+}
+
+/// Extracts 4-tier mathematical LaTeX and `<sup>`/`<sub>` expressions from an HTML fragment (`D2`).
+pub fn extract_math_and_script_latex(html: &str) -> String {
+    let doc = Html::parse_fragment(html);
+    extract_rich_inline_text(doc.root_element())
+}
+
+fn is_nav_layout_table_element(
+    table_el: scraper::ElementRef<'_>,
+    inside_main_or_article: bool,
+) -> bool {
+    if inside_main_or_article {
+        return false;
+    }
+    let mut total_cells = 0usize;
+    let mut single_link_cells = 0usize;
+    let mut stack = vec![table_el];
+    while let Some(cur) = stack.pop() {
+        for child in cur.children().rev() {
+            if let Some(el) = scraper::ElementRef::wrap(child) {
+                let name = el.value().name();
+                if name == "table" {
+                    continue;
+                }
+                if name == "th" || name == "caption" {
+                    return false;
+                }
+                if name == "td" {
+                    total_cells += 1;
+                    let links_in_cell = el
+                        .descendants()
+                        .filter_map(scraper::ElementRef::wrap)
+                        .filter(|d| d.value().name() == "a")
+                        .count();
+                    let words_in_cell = el.text().collect::<String>().split_whitespace().count();
+                    if links_in_cell >= 1 && words_in_cell <= 4 {
+                        single_link_cells += 1;
+                    }
+                } else {
+                    stack.push(el);
+                }
+            }
+        }
+    }
+    total_cells > 0 && single_link_cells == total_cells
+}
+
+fn extract_table_grid_from_element(
+    table_el: scraper::ElementRef<'_>,
+) -> Option<(crate::table::Grid, Vec<crate::table::GroundedTableCell>)> {
+    let mut rows = Vec::<crate::table::Row>::new();
+    let mut stack = vec![(table_el, 1usize)]; // default group 1 = tbody
+    let mut tr_nodes = Vec::<(scraper::ElementRef<'_>, usize)>::new();
+
+    while let Some((cur, grp)) = stack.pop() {
+        for child in cur.children().rev() {
+            if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                let name = child_el.value().name();
+                if name == "table" {
+                    continue;
+                }
+                let next_grp = match name {
+                    "thead" => 0,
+                    "tbody" => 1,
+                    "tfoot" => 2,
+                    _ => grp,
+                };
+                if name == "tr" {
+                    tr_nodes.push((child_el, next_grp));
+                } else {
+                    stack.push((child_el, next_grp));
+                }
+            }
+        }
+    }
+
+    for (tr_el, group) in tr_nodes {
+        let mut cells = Vec::<crate::table::Cell>::new();
+        for child in tr_el.children() {
+            if let Some(cell_el) = scraper::ElementRef::wrap(child) {
+                let cname = cell_el.value().name();
+                if cname == "th" || cname == "td" {
+                    let rowspan = cell_el
+                        .value()
+                        .attr("rowspan")
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let colspan = cell_el
+                        .value()
+                        .attr("colspan")
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    let text = extract_rich_inline_text(cell_el);
+                    cells.push(crate::table::Cell {
+                        text,
+                        rowspan,
+                        colspan,
+                        is_header: cname == "th",
+                    });
+                }
+            }
+        }
+        if !cells.is_empty() {
+            rows.push(crate::table::Row { group, cells });
+        }
+    }
+
+    if rows.is_empty() {
+        return None;
+    }
+    let grid = crate::table::expand_tolerant(&rows, 512, 128).ok()?;
+    let grounded = crate::table::ground_grid_cells(&grid);
+    Some((grid, grounded))
+}
+
+/// Full `cloud-024` Breakthrough Dataset Projection (`D1`, `D2`, `D11`, `D19`, `D21`, `D22`, `D24`, `D30`, `D31`).
+pub fn parse_html_breakthrough(
+    html: &str,
+    base: &Url,
+    limits: ParseLimits,
+) -> Result<BreakthroughProjection, &'static str> {
+    let mut projection = parse_html_with_limits(html, base, limits)?;
+    let html_cow = unwrap_comments_if_enabled(html, limits.comment_unwrap);
+    let parsed = Html::parse_document(html_cow.as_ref());
+
+    let mut tables = Vec::<crate::table::Grid>::new();
+    let mut heading_stack: [Option<String>; 6] = [None, None, None, None, None, None];
+    let mut active_lead_in: Option<(u32, String)> = None;
+    let mut rich_chunks = Vec::<BreakthroughChunk>::new();
+    let mut updated_chunks = Vec::<Chunk>::new();
+    let mut next_dom_id = 1u32;
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_breakthrough_chunk(
+        role: &'static str,
+        raw_text: String,
+        pre_filter_dom_id: u32,
+        dom_path_slug: String,
+        heading_stack: &mut [Option<String>; 6],
+        active_lead_in: &mut Option<(u32, String)>,
+        heading_level_opt: Option<usize>,
+        table_grounding: Option<crate::table::GroundedTableCell>,
+        code_language: Option<String>,
+        is_continuation: bool,
+        updated_chunks: &mut Vec<Chunk>,
+        rich_chunks: &mut Vec<BreakthroughChunk>,
+    ) {
+        let rich_text = normalize_unicode_nfc(&raw_text).into_owned();
+        if rich_text.trim().is_empty() {
+            return;
+        }
+        if let Some(level) = heading_level_opt {
+            let idx = (level - 1).min(5);
+            heading_stack[idx] = Some(rich_text.clone());
+            for deeper in &mut heading_stack[idx + 1..] {
+                *deeper = None;
+            }
+            *active_lead_in = None;
+        }
+
+        let (lead_in_chunk_id, lead_in_text) = if heading_level_opt.is_none() {
+            match active_lead_in.as_ref() {
+                Some((id, t)) if *id != pre_filter_dom_id => (Some(*id), Some(t.clone())),
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        if heading_level_opt.is_none() {
+            let trimmed_end = rich_text.trim_end();
+            if trimmed_end.ends_with(':') || trimmed_end.ends_with('：') {
+                *active_lead_in = Some((pre_filter_dom_id, rich_text.clone()));
+            } else if role == "paragraph" {
+                *active_lead_in = None;
+            }
+        }
+
+        let exact_hash64 = fnv1a_exact_hash64(&rich_text);
+        let simhash64 = crate::rank::simhash_64_idf_numeric(&rich_text);
+        let chunk_obj = Chunk {
+            node: pre_filter_dom_id,
+            role,
+            text: rich_text,
+            links: Vec::new(),
+        };
+        updated_chunks.push(chunk_obj.clone());
+        rich_chunks.push(BreakthroughChunk {
+            chunk: chunk_obj,
+            pre_filter_dom_id,
+            dom_path_slug,
+            heading_stack: heading_stack.clone(),
+            lead_in_chunk_id,
+            lead_in_text,
+            table_grounding,
+            code_language,
+            is_continuation,
+            exact_hash64,
+            simhash64,
+        });
+    }
+
+    enum WalkOp<'a> {
+        VisitNode(ego_tree::NodeRef<'a, scraper::node::Node>, String, bool, bool),
+        EmitOrphanInline(String, u32, String),
+        ResetHeadingStack,
+    }
+
+    let mut stack = vec![WalkOp::VisitNode(
+        parsed.tree.root(),
+        String::new(),
+        false,
+        false,
+    )];
+
+    while let Some(op) = stack.pop() {
+        match op {
+            WalkOp::ResetHeadingStack => {
+                heading_stack = [None, None, None, None, None, None];
+                active_lead_in = None;
+            }
+            WalkOp::EmitOrphanInline(inline_raw, dom_id, slug) => {
+                let norm = normalize_multiline_inline_buffer(&inline_raw);
+                if !norm.is_empty() {
+                    push_breakthrough_chunk(
+                        "paragraph",
+                        norm,
+                        dom_id,
+                        slug,
+                        &mut heading_stack,
+                        &mut active_lead_in,
+                        None,
+                        None,
+                        None,
+                        false,
+                        &mut updated_chunks,
+                        &mut rich_chunks,
+                    );
+                }
+            }
+            WalkOp::VisitNode(node_ref, parent_slug, in_main, in_boilerplate) => {
+                let Some(el) = scraper::ElementRef::wrap(node_ref) else {
+                    for child in node_ref.children().rev() {
+                        stack.push(WalkOp::VisitNode(
+                            child,
+                            parent_slug.clone(),
+                            in_main,
+                            in_boilerplate,
+                        ));
+                    }
+                    continue;
+                };
+
+                let name = el.value().name();
+                if skip_subtree(name) || is_katex_or_mathjax_visual_duplicate(el) {
+                    continue;
+                }
+
+                let cur_dom_id = next_dom_id;
+                next_dom_id = next_dom_id.saturating_add(1);
+                let cur_slug = if parent_slug.is_empty() {
+                    format!("{name}[0]")
+                } else {
+                    format!("{parent_slug}/{name}[0]")
+                };
+
+                let now_in_main = in_main || matches!(name, "main" | "article");
+                let is_nav_like = matches!(name, "nav" | "footer" | "aside" | "form")
+                    || (name == "header" && !now_in_main);
+                let now_in_boilerplate = in_boilerplate || is_nav_like;
+
+                if limits.boilerplate != BoilerplatePolicy::PreserveAll && now_in_boilerplate {
+                    heading_stack = [None, None, None, None, None, None];
+                    active_lead_in = None;
+                    continue;
+                }
+                if is_nav_like {
+                    stack.push(WalkOp::ResetHeadingStack);
+                }
+
+                if name == "table" {
+                    if limits.boilerplate != BoilerplatePolicy::PreserveAll
+                        && is_nav_layout_table_element(el, now_in_main)
+                    {
+                        continue;
+                    }
+                    if let Some((grid, grounded)) = extract_table_grid_from_element(el) {
+                        for g in grounded {
+                            let cell_role = if g.is_header {
+                                "table_header"
+                            } else {
+                                "table_cell"
+                            };
+                            let cell_dom_id = next_dom_id;
+                            next_dom_id = next_dom_id.saturating_add(1);
+                            let cell_slug = format!("{cur_slug}/cell[{}]", g.cell_id);
+                            let cell_text = if g.grounded_context.is_empty() {
+                                g.text.clone()
+                            } else {
+                                g.grounded_context.clone()
+                            };
+                            push_breakthrough_chunk(
+                                cell_role,
+                                cell_text,
+                                cell_dom_id,
+                                cell_slug,
+                                &mut heading_stack,
+                                &mut active_lead_in,
+                                None,
+                                Some(g),
+                                None,
+                                false,
+                                &mut updated_chunks,
+                                &mut rich_chunks,
+                            );
+                        }
+                        tables.push(grid);
+                    }
+                    continue;
+                }
+
+                if name == "pre" {
+                    let (code_lang, code_parts) =
+                        sanitize_and_split_code_block(el, limits.max_words_per_chunk);
+                    for (part_idx, (part_text, is_cont)) in code_parts.into_iter().enumerate() {
+                        let part_dom_id = if part_idx == 0 {
+                            cur_dom_id
+                        } else {
+                            let id = next_dom_id;
+                            next_dom_id = next_dom_id.saturating_add(1);
+                            id
+                        };
+                        push_breakthrough_chunk(
+                            "preformatted",
+                            part_text,
+                            part_dom_id,
+                            cur_slug.clone(),
+                            &mut heading_stack,
+                            &mut active_lead_in,
+                            None,
+                            None,
+                            code_lang.clone(),
+                            is_cont,
+                            &mut updated_chunks,
+                            &mut rich_chunks,
+                        );
+                    }
+                    continue;
+                }
+
+                if let Some((block_role, h_level)) = match name {
+                    "h1" => Some(("heading", Some(1usize))),
+                    "h2" => Some(("heading", Some(2usize))),
+                    "h3" => Some(("heading", Some(3usize))),
+                    "h4" => Some(("heading", Some(4usize))),
+                    "h5" => Some(("heading", Some(5usize))),
+                    "h6" => Some(("heading", Some(6usize))),
+                    "p" | "blockquote" | "figcaption" => Some(("paragraph", None)),
+                    "li" | "dt" | "dd" => Some(("list_item", None)),
+                    _ => None,
+                } {
+                    let shallow_txt = extract_rich_inline_text_shallow(el);
+                    let mut nested_blocks = Vec::new();
+                    for child in el.children() {
+                        if let Some(child_el) = scraper::ElementRef::wrap(child)
+                            && is_breakthrough_block_tag(child_el.value().name())
+                        {
+                            nested_blocks.push(child);
+                        }
+                    }
+                    for child in nested_blocks.into_iter().rev() {
+                        stack.push(WalkOp::VisitNode(
+                            child,
+                            cur_slug.clone(),
+                            now_in_main,
+                            now_in_boilerplate,
+                        ));
+                    }
+                    if !shallow_txt.is_empty() {
+                        push_breakthrough_chunk(
+                            block_role,
+                            shallow_txt,
+                            cur_dom_id,
+                            cur_slug,
+                            &mut heading_stack,
+                            &mut active_lead_in,
+                            h_level,
+                            None,
+                            None,
+                            false,
+                            &mut updated_chunks,
+                            &mut rich_chunks,
+                        );
+                    }
+                    continue;
+                }
+
+                // Container element (`div`, `section`, `article`, `main`, `header`, `dl`, `ul`, `ol`, `body`, `html`, etc.):
+                // Group contiguous inline children between block children so orphan prose (`D21`) is emitted in exact preorder!
+                let mut ops_in_order = Vec::<WalkOp<'_>>::new();
+                let mut inline_buf = String::new();
+                for child in el.children() {
+                    let is_block_child = scraper::ElementRef::wrap(child)
+                        .is_some_and(|ce| is_breakthrough_block_tag(ce.value().name()));
+                    if is_block_child {
+                        if !inline_buf.trim().is_empty() {
+                            let orphan_id = next_dom_id;
+                            next_dom_id = next_dom_id.saturating_add(1);
+                            ops_in_order.push(WalkOp::EmitOrphanInline(
+                                std::mem::take(&mut inline_buf),
+                                orphan_id,
+                                format!("{cur_slug}/orphan[{orphan_id}]"),
+                            ));
+                        } else {
+                            inline_buf.clear();
+                        }
+                        ops_in_order.push(WalkOp::VisitNode(
+                            child,
+                            cur_slug.clone(),
+                            now_in_main,
+                            now_in_boilerplate,
+                        ));
+                    } else if matches!(
+                        name,
+                        "div" | "section" | "article" | "main" | "header" | "body"
+                    ) {
+                        append_rich_inline_node(child.value().clone(), child, &mut inline_buf, true);
+                    }
+                }
+                if !inline_buf.trim().is_empty() {
+                    let orphan_id = next_dom_id;
+                    next_dom_id = next_dom_id.saturating_add(1);
+                    ops_in_order.push(WalkOp::EmitOrphanInline(
+                        inline_buf,
+                        orphan_id,
+                        format!("{cur_slug}/orphan[{orphan_id}]"),
+                    ));
+                }
+                for child_op in ops_in_order.into_iter().rev() {
+                    stack.push(child_op);
+                }
+            }
+        }
+    }
+
+    projection.chunks = updated_chunks;
+    Ok(BreakthroughProjection {
+        projection,
+        rich_chunks,
+        tables,
+    })
 }
 
 #[cfg(test)]

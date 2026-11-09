@@ -959,7 +959,7 @@ def annas_archive_cases(split):
     return cases
 
 
-def native_cases(split, *, include_harsh_stress=False, include_annas_archive=False):
+def native_cases(split, *, include_harsh_stress=False, include_annas_archive=False, include_cloud_024=False):
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown workload split")
     rng = random.Random({"screen": 812709, "confirm": 437941}[split])
@@ -1098,6 +1098,248 @@ def native_cases(split, *, include_harsh_stress=False, include_annas_archive=Fal
         cases.extend(harsh_stress_cases(split))
     if include_annas_archive:
         cases.extend(annas_archive_cases(split))
+    if include_cloud_024:
+        cases.extend(cloud_024_breakthrough_cases(split))
+    return cases
+
+
+def philox_4x32_10(seed, step, substream, draw):
+    """Stateless counter-based Philox 4x32-10 PRNG for de-confounded Common Random Numbers (CRN)."""
+    c0 = int(step) & 0xFFFFFFFF
+    c1 = (int(step) >> 32) & 0xFFFFFFFF
+    c2 = int(substream) & 0xFFFFFFFF
+    c3 = int(draw) & 0xFFFFFFFF
+    k0 = int(seed) & 0xFFFFFFFF
+    k1 = (int(seed) >> 32) & 0xFFFFFFFF
+    m0 = 0xD2511F53
+    m1 = 0xCD9E8D57
+    w0 = 0x9E3779B9
+    w1 = 0xBB67AE85
+    for _ in range(10):
+        prod0 = m0 * c0
+        prod1 = m1 * c2
+        hi0 = (prod0 >> 32) & 0xFFFFFFFF
+        lo0 = prod0 & 0xFFFFFFFF
+        hi1 = (prod1 >> 32) & 0xFFFFFFFF
+        lo1 = prod1 & 0xFFFFFFFF
+        c0 = hi1 ^ c1 ^ k0
+        c1 = lo1
+        c2 = hi0 ^ c3 ^ k1
+        c3 = lo0
+        k0 = (k0 + w0) & 0xFFFFFFFF
+        k1 = (k1 + w1) & 0xFFFFFFFF
+    return (c0, c1, c2, c3)
+
+
+def philox_u01(seed, step, substream, draw):
+    """Return a stateless uniform float in (0, 1) from Philox 4x32-10."""
+    c0, c1, _, _ = philox_4x32_10(seed, step, substream, draw)
+    u64 = ((c0 & 0xFFFFFFFF) << 32) | (c1 & 0xFFFFFFFF)
+    return ((u64 >> 11) + 0.5) * (1.0 / float(1 << 53))
+
+
+def levenshtein_distance(a, b):
+    """Compute character-level Levenshtein edit distance for Math/LaTeX LED evaluation."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr[j] = min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
+        prev = curr
+    return prev[-1]
+
+
+def cloud_024_breakthrough_cases(split):
+    """6 Ground-Truth Real-World Archetypes and De-Confounded CRN WAF Replay for cloud-024."""
+    if split not in ("screen", "confirm"):
+        raise ValueError("Unknown workload split")
+    rng = random.Random({"screen": 812709, "confirm": 437941}[split])
+    nonce = "seed" + str(rng.randrange(100000, 1000000))
+    marker = "<!--" + nonce + "-->"
+    cases = []
+
+    def add(name, html, *, stage="cloud-024", owners=None, **fields):
+        fixture = {"html": html, "query": None, **fields}
+        cases.append(
+            {
+                "id": name,
+                "stage": stage,
+                "owners": owners or ["H01", "H02", "H04", "H05", "H06", "H10"],
+                "fixture": fixture,
+                "lineage": "cloud-024:" + name,
+                "provenance": "cloud-024 real-world breakthrough archetype partition",
+            }
+        )
+
+    # Archetype 1: 4-Tier Math & 22-Tag Presentation MathML-to-LaTeX + sup/sub disambiguation (D2)
+    math_html = (
+        f"<!doctype html><article><h1>{nonce} Relativistic Electrodynamics and Water Isotopes</h1>"
+        f'<p>{nonce} Tier-1 annotation: <math><semantics><mrow><mi>E</mi><mo>=</mo><mi>m</mi>'
+        '<msup><mi>c</mi><mn>2</mn></msup></mrow><annotation encoding="application/x-tex">'
+        "E = mc^2</annotation></semantics></math></p>"
+        f'<p>{nonce} Tier-2 attribute: <math alttext="\\nabla \\cdot \\mathbf{{B}} = 0">'
+        "<mi>B</mi></math></p>"
+        f"<p>{nonce} Tier-3 Presentation MathML: <math><mrow><msup><mi>x</mi><mn>2</mn></msup>"
+        "<mo>+</mo><mfrac><mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow>"
+        "<msub><mi>y</mi><mi>i</mi></msub></mfrac><mo>=</mo><msqrt><mi>z</mi></msqrt></mrow></math></p>"
+        f"<p>{nonce} Chemical and algebraic scripts: H<sub>2</sub>O and x<sup>2k+1</sup> "
+        'cited in theorem<sup><a href="#ref12">[12]</a></sup>.</p></article>' + marker
+    )
+    add(
+        "cloud-024-mathml-latex-led",
+        math_html,
+        owners=["H04", "H05"],
+        archetype="mathml_latex_led",
+        expected_cloud_024={
+            "archetype": "mathml_latex_led",
+            "expected_substrings": [
+                "$E = mc^2$",
+                "$\\nabla \\cdot \\mathbf{B} = 0$",
+                "$x^{2} + \\frac{a + b}{y_{i}} = \\sqrt{z}$",
+                "H_{2}O",
+                "x^{2k+1}",
+                "[^12]",
+            ],
+            "max_math_led": 0.0,
+        },
+    )
+
+    # Archetype 2: WHATWG §4.9.12 Tolerant Table Expansion + 2D Grounding + Nav-Table vs Data-Table (M2, D10, D11, R2-5)
+    table_html = (
+        "<!doctype html>"
+        '<table id="nav-layout"><tbody><tr><td><a href="/home">Home</a></td>'
+        '<td><a href="/about">About</a></td></tr></tbody></table>'
+        f"<main><h1>{nonce} Benchmark Telemetry</h1>"
+        '<table id="telemetry"><caption>Telemetry Summary</caption>'
+        "<tfoot><tr><th>Total</th><td>2100</td></tr></tfoot>"
+        "<thead><tr><th>Contender</th><th>Latency p99</th></tr></thead>"
+        '<tbody><tr><th rowspan="10">Athena</th><td colspan="50">1.79 ms</td></tr>'
+        "<tr><td>pdf</td></tr></tbody></table></main>" + marker
+    )
+    add(
+        "cloud-024-tolerant-table-teds",
+        table_html,
+        owners=["H04", "H05", "H06"],
+        archetype="tolerant_table_teds",
+        expected_cloud_024={
+            "archetype": "tolerant_table_teds",
+            "expected_grounded_cells": [
+                "[Contender = Athena | Latency p99]: 1.79 ms",
+                "[Contender = Athena | Latency p99]: pdf",
+                "[Contender = Total | Latency p99]: 2100",
+            ],
+            "forbidden_substrings": ["Home", "About"],
+            "min_table_teds": 1.0,
+        },
+    )
+
+    # Archetype 3: AST-Clean <pre><code> Sanitizer + Line-Boundary Continuation Splitting (M1, D1, D31)
+    code_html = (
+        f"<!doctype html><main><h2>{nonce} Reference Implementation</h2>"
+        '<pre><code class="language-python">'
+        '<span class="linenos">1\n2\n3</span>'
+        '<button class="copy-button">Copy</button>'
+        "def verify_invariant(x):\n    if x &gt; 0:\n        return x * 2\n    return 0"
+        "</code></pre></main>" + marker
+    )
+    add(
+        "cloud-024-code-ast-sanitization",
+        code_html,
+        owners=["H01", "H04", "H05"],
+        archetype="code_ast_sanitization",
+        expected_cloud_024={
+            "archetype": "code_ast_sanitization",
+            "expected_code_language": "python",
+            "expected_code_exact": "def verify_invariant(x):\n    if x > 0:\n        return x * 2\n    return 0",
+            "forbidden_substrings": ["Copy", "1\n2\n3"],
+            "code_ast_valid": True,
+        },
+    )
+
+    # Archetype 4: Orphan Prose Capture + <article><header> Abstract Preservation + NFC + Lead-in Discourse (D10, D19, D21, D22)
+    orphan_html = (
+        "<!doctype html><article>"
+        f"<header><h1>{nonce} Quantum LDPC</h1>"
+        "<p>Abstract: Quantum LDPC codes achieve constant rate and linear distance in re\u0301sume\u0301 form.</p></header>"
+        "<div>Introductory theorem lead-in:<p>Nested proof detail paragraph.</p>Trailing corollary text.</div>"
+        "<dl><dt>Syndrome</dt><dd>Stabilizer parity check measurement.</dd></dl>"
+        "<blockquote>Quoted fault-tolerance threshold theorem.</blockquote>"
+        "<figcaption>Figure 1: Logical error rate vs physical error rate.</figcaption>"
+        "</article>" + marker
+    )
+    add(
+        "cloud-024-orphan-prose-discourse-cleaneval",
+        orphan_html,
+        owners=["H04", "H05"],
+        archetype="orphan_prose_discourse_cleaneval",
+        expected_cloud_024={
+            "archetype": "orphan_prose_discourse_cleaneval",
+            "expected_substrings": [
+                "Abstract: Quantum LDPC codes achieve constant rate and linear distance in résumé form.",
+                "Introductory theorem lead-in:",
+                "Nested proof detail paragraph.",
+                "Trailing corollary text.",
+                "Syndrome",
+                "Stabilizer parity check measurement.",
+                "Quoted fault-tolerance threshold theorem.",
+                "Figure 1: Logical error rate vs physical error rate.",
+            ],
+            "require_lead_in_link": True,
+            "min_cleaneval_f1": 0.99,
+        },
+    )
+
+    # Archetype 5: Saturation-Free Multi-Hop Graded IR + Guarded Dual-Channel Stemmer + aae/2 Contrastive Export (D5, D6, D22, D23, D24, D30)
+    ir_html = (
+        f"<!doctype html><main><h1>{nonce} Distributed Consensus</h1>"
+        "<h2>Adaptive Proxy Routing</h2><h3>Hierarchical Empirical Bayes</h3>"
+        "<p>The SoftBlockDetector module regularizes empirical survival probabilities across ASN and subnet tiers:</p>"
+        "<p> Specifically, regularized beta priors prevent cold-start variance during proxy_pool_router rotation.</p>"
+        "<p>The SoftBlockDetector module regularizes empirical survival probabilities across ASN and subnet tiers!</p>"
+        "<p>Classical thermodynamic equilibrium in ideal gas reservoirs under isothermal expansion.</p>"
+        "<p>Unrelated bibliographic catalog entry for medieval botanical manuscripts and parchment bindings.</p>"
+        "</main>" + marker
+    )
+    add(
+        "cloud-024-multihop-ir-contrastive-aae2",
+        ir_html,
+        owners=["H01", "H02", "H10"],
+        archetype="multihop_ir_contrastive_aae2",
+        query="regularization SoftBlockDetector",
+        expected_cloud_024={
+            "archetype": "multihop_ir_contrastive_aae2",
+            "query": "regularization SoftBlockDetector",
+            "expected_top_chunk_contains": "SoftBlockDetector module regularizes",
+            "require_contrastive_records": True,
+            "require_merkle_provenance": True,
+        },
+    )
+
+    # Archetype 6: De-Confounded 7-Vendor WAF Soft-Block Lattice & Philox CRN Bandit Replay (M3, M4, D12, D13, D18, R2-3, R2-4)
+    waf_html = (
+        f"<!doctype html><main><p>{nonce} Authentic scholarly payload after WAF clearance.</p></main>" + marker
+    )
+    add(
+        "cloud-024-deconfounded-waf-crn-replay",
+        waf_html,
+        owners=["H07", "H08", "H10"],
+        archetype="deconfounded_waf_crn_replay",
+        expected_cloud_024={
+            "archetype": "deconfounded_waf_crn_replay",
+            "expected_soft_block_recall": 1.0,
+            "expected_false_positive_rate": 0.0,
+            "expected_cache_poisoning_rate": 0.0,
+            "require_crn_orthogonality": True,
+            "require_separate_latency_distributions": True,
+        },
+    )
     return cases
 
 
@@ -1109,6 +1351,65 @@ def envelope_errors(raw, fixture):
         except (ValueError, UnicodeError):
             return ["Expected a canonical resource-denial observation"]
         return [] if value == {"status": "EXPECTED_ERROR", "error": fixture["expected_error"]} else ["Wrong denial or unexpected success"]
+    if "expected_cloud_024" in fixture:
+        try:
+            value = strict_json_loads(raw)
+        except (ValueError, UnicodeError):
+            return ["Expected a canonical cloud-024 breakthrough observation"]
+        if not isinstance(value, dict) or value.get("schema") != "athena-cloud-024-breakthrough/1":
+            return ["Invalid cloud-024 breakthrough schema"]
+        spec = fixture["expected_cloud_024"]
+        errors = []
+        if value.get("archetype") != spec.get("archetype"):
+            errors.append("cloud-024 archetype mismatch")
+        combined_text = "\n".join(c.get("text", "") for c in value.get("chunks", []) if isinstance(c, dict))
+        for req in spec.get("expected_substrings", ()):
+            if req not in combined_text:
+                errors.append(f"Missing expected substring: {req}")
+        for forb in spec.get("forbidden_substrings", ()):
+            if forb in combined_text:
+                errors.append(f"Retained forbidden substring: {forb}")
+        for grounded in spec.get("expected_grounded_cells", ()):
+            if grounded not in combined_text:
+                errors.append(f"Missing grounded table cell: {grounded}")
+        if "expected_code_exact" in spec:
+            code_chunks = [c for c in value.get("chunks", []) if isinstance(c, dict) and c.get("role") == "preformatted"]
+            if not code_chunks or code_chunks[0].get("text") != spec["expected_code_exact"]:
+                errors.append("Sanitized code block text differs from AST-clean oracle")
+            if spec.get("expected_code_language") and (
+                not code_chunks or code_chunks[0].get("code_language") != spec["expected_code_language"]
+            ):
+                errors.append("Sanitized code block language differs")
+        if spec.get("require_lead_in_link"):
+            if not any(isinstance(c, dict) and c.get("lead_in_chunk_id") is not None for c in value.get("chunks", [])):
+                errors.append("Missing lead_in_chunk_id discourse binding")
+        if "expected_top_chunk_contains" in spec:
+            top_text = value.get("top_ranked_chunk_text", "")
+            if spec["expected_top_chunk_contains"] not in top_text:
+                errors.append("Top-ranked chunk failed guarded dual-channel stemmer/compound oracle")
+        if spec.get("require_contrastive_records"):
+            records = value.get("contrastive_records", [])
+            if not isinstance(records, list) or not records:
+                errors.append("Missing aae/2 contrastive training records")
+            elif spec.get("require_merkle_provenance"):
+                prov = records[0].get("provenance", {})
+                if not isinstance(prov, dict) or len(str(prov.get("merkle_hash_hex", ""))) != 64:
+                    errors.append("Invalid MerkleProvenanceTuple in aae/2 contrastive record")
+        if "expected_soft_block_recall" in spec:
+            if value.get("soft_block_recall") != spec["expected_soft_block_recall"]:
+                errors.append("7-vendor soft-block recall below 1.0")
+            if value.get("false_positive_rate") != spec["expected_false_positive_rate"]:
+                errors.append("Soft-block false-positive rate above 0.0")
+            if value.get("cache_poisoning_rate") != spec["expected_cache_poisoning_rate"]:
+                errors.append("Soft-block cache poisoning rate above 0.0")
+            if spec.get("require_crn_orthogonality") and value.get("crn_substream_orthogonality") is not True:
+                errors.append("Philox CRN substream orthogonality failed")
+            if spec.get("require_separate_latency_distributions") and (
+                value.get("usable_latency_p99_ms", 0.0) <= 0.0
+                or value.get("block_latency_p99_ms", 0.0) <= 0.0
+            ):
+                errors.append("Separate usable vs block latency p99 distributions missing")
+        return errors
     parser_fields = {"expected_parser_html_contains", "expected_parser_html_excludes"}
     if parser_fields.intersection(fixture):
         try:

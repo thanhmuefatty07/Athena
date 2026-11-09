@@ -337,6 +337,238 @@ pub fn export_jsonl_with_link_mode_and_prepared(
     String::from_utf8(out.bytes).map_err(|error| serde_json::Error::io(io::Error::other(error)))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MerkleProvenanceTuple {
+    pub url_digest: String,
+    pub pre_filter_dom_id: u32,
+    pub dom_path_slug: String,
+    pub chunk_content_hash: String,
+    pub merkle_block_id: String,
+    pub merkle_hash_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContrastiveNegativeSample {
+    pub block_id: String,
+    pub pre_filter_dom_id: u32,
+    pub text: String,
+    pub score: f64,
+    pub score_ratio_to_pos: f64,
+    pub simhash_hamming: u32,
+    pub sim_ans_weight: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ContrastiveTrainingRecord {
+    pub schema: &'static str,
+    pub query: String,
+    pub source_url: String,
+    pub provenance: MerkleProvenanceTuple,
+    pub section_path: Vec<String>,
+    pub lead_in_context: Option<String>,
+    pub table_context: Option<String>,
+    pub positive_block_id: String,
+    pub positive_text: String,
+    pub positive_grounded_passage: String,
+    pub positive_score: f64,
+    pub hard_negatives: Vec<ContrastiveNegativeSample>,
+}
+
+/// Computes an immutable pre-filter DOM Merkle provenance tuple (`D24`) that stays invariant
+/// across boilerplate filtering policies (`FullDom`, `MainContentV1`, `CetdEntropyV1`).
+pub fn compute_merkle_provenance(
+    source_url: &Url,
+    pre_filter_dom_id: u32,
+    dom_path_slug: &str,
+    chunk_text: &str,
+) -> MerkleProvenanceTuple {
+    let url_digest = blake3::hash(source_url.as_str().as_bytes())
+        .to_hex()
+        .to_string();
+    let chunk_content_hash = blake3::hash(chunk_text.as_bytes()).to_hex().to_string();
+    let locator_payload = format!(
+        "{}|dom:{}|path:{}",
+        source_url.as_str(),
+        pre_filter_dom_id,
+        dom_path_slug
+    );
+    let locator_hex = blake3::hash(locator_payload.as_bytes())
+        .to_hex()
+        .to_string();
+    let merkle_payload = format!("{locator_payload}|content:{chunk_content_hash}");
+    let merkle_hash_hex = blake3::hash(merkle_payload.as_bytes())
+        .to_hex()
+        .to_string();
+    let merkle_block_id = format!("b_{}_{}", pre_filter_dom_id, &locator_hex[..16]);
+    MerkleProvenanceTuple {
+        url_digest,
+        pre_filter_dom_id,
+        dom_path_slug: dom_path_slug.to_owned(),
+        chunk_content_hash,
+        merkle_block_id,
+        merkle_hash_hex,
+    }
+}
+
+/// Exports `aae/2` Contrastive Training Records with `NV-Embed-v2 TopK-PercPos`
+/// ($0.35\,\hat{s}^+ \le \hat{s}^- \le 0.95\,\hat{s}^+$), `SimANS` density weighting,
+/// `SimHash-64` near-duplicate exclusion ($\text{Hamming} \ge 8$), and non-adjacency ($|i - i^+| > 1$)
+/// alongside structural section lineage `[H1 > H2 > H3]` and lead-in `":"` discourse binding (`D22`, `D24`).
+pub fn export_contrastive_training_records(
+    rich_page: &crate::projection::BreakthroughProjection,
+    source_url: &Url,
+    query: &str,
+    max_positives: usize,
+    max_negatives_per_positive: usize,
+) -> Vec<ContrastiveTrainingRecord> {
+    if rich_page.rich_chunks.is_empty() || query.trim().is_empty() || max_positives == 0 {
+        return Vec::new();
+    }
+    let ranked = crate::rank::bm25f_fused_single_pass(
+        &rich_page.projection.chunks,
+        query,
+        1.2,
+        0.75,
+        0.5,
+    );
+    let mut score_by_idx = vec![0.0f64; rich_page.rich_chunks.len()];
+    for &(idx, sc) in &ranked {
+        if idx < score_by_idx.len() {
+            score_by_idx[idx] = sc;
+        }
+    }
+
+    let mut records = Vec::<ContrastiveTrainingRecord>::new();
+    for &(pos_idx, pos_score) in &ranked {
+        if pos_score <= 0.0 || pos_idx >= rich_page.rich_chunks.len() {
+            break;
+        }
+        let pos_rc = &rich_page.rich_chunks[pos_idx];
+        if pos_rc.chunk.role == "heading" && rich_page.rich_chunks.len() > 1 {
+            continue;
+        }
+        let provenance = compute_merkle_provenance(
+            source_url,
+            pos_rc.pre_filter_dom_id,
+            &pos_rc.dom_path_slug,
+            &pos_rc.chunk.text,
+        );
+        let section_path: Vec<String> = pos_rc
+            .heading_stack
+            .iter()
+            .filter_map(|h| h.as_ref().cloned())
+            .collect();
+        let table_context = pos_rc
+            .table_grounding
+            .as_ref()
+            .map(|g| g.grounded_context.clone());
+
+        let mut grounded_parts = Vec::<String>::new();
+        if !section_path.is_empty() {
+            grounded_parts.push(format!("[{}]", section_path.join(" > ")));
+        }
+        if let Some(lead) = &pos_rc.lead_in_text {
+            grounded_parts.push(lead.clone());
+        }
+        grounded_parts.push(pos_rc.chunk.text.clone());
+        let positive_grounded_passage = grounded_parts.join(" ");
+
+        // Mine hard negatives via NV-Embed-v2 TopK-PercPos + SimANS + SimHash >= 8 + |i - i+| > 1
+        let lower_bound = 0.35 * pos_score;
+        let upper_bound = 0.95 * pos_score;
+        let target_center = 0.70 * pos_score;
+        let mut neg_candidates = Vec::<ContrastiveNegativeSample>::new();
+
+        for (cand_idx, cand_rc) in rich_page.rich_chunks.iter().enumerate() {
+            if cand_idx.abs_diff(pos_idx) <= 1 {
+                continue;
+            }
+            let cand_score = score_by_idx[cand_idx];
+            let hamming = (pos_rc.simhash64 ^ cand_rc.simhash64).count_ones();
+            if hamming < 8 || pos_rc.exact_hash64 == cand_rc.exact_hash64 {
+                continue;
+            }
+            let ratio = cand_score / pos_score.max(1e-9);
+            // Accept candidates inside the PercPos band [0.35*s+, 0.95*s+], or fallback lexical distractors (> 0)
+            if (cand_score >= lower_bound && cand_score <= upper_bound)
+                || (neg_candidates.len() < max_negatives_per_positive && cand_score <= upper_bound)
+            {
+                let diff = (cand_score - target_center) / pos_score.max(1e-6);
+                let in_band_bonus = if cand_score >= lower_bound && cand_score <= upper_bound {
+                    1.0
+                } else {
+                    0.25
+                };
+                let sim_ans_weight = in_band_bonus * (-4.5 * diff * diff).exp();
+                let cand_prov = compute_merkle_provenance(
+                    source_url,
+                    cand_rc.pre_filter_dom_id,
+                    &cand_rc.dom_path_slug,
+                    &cand_rc.chunk.text,
+                );
+                neg_candidates.push(ContrastiveNegativeSample {
+                    block_id: cand_prov.merkle_block_id,
+                    pre_filter_dom_id: cand_rc.pre_filter_dom_id,
+                    text: cand_rc.chunk.text.clone(),
+                    score: cand_score,
+                    score_ratio_to_pos: ratio,
+                    simhash_hamming: hamming,
+                    sim_ans_weight,
+                });
+            }
+        }
+
+        neg_candidates.sort_by(|a, b| {
+            b.sim_ans_weight
+                .total_cmp(&a.sim_ans_weight)
+                .then_with(|| a.pre_filter_dom_id.cmp(&b.pre_filter_dom_id))
+        });
+        neg_candidates.truncate(max_negatives_per_positive);
+
+        records.push(ContrastiveTrainingRecord {
+            schema: "aae/2",
+            query: query.to_owned(),
+            source_url: source_url.as_str().to_owned(),
+            positive_block_id: provenance.merkle_block_id.clone(),
+            provenance,
+            section_path,
+            lead_in_context: pos_rc.lead_in_text.clone(),
+            table_context,
+            positive_text: pos_rc.chunk.text.clone(),
+            positive_grounded_passage,
+            positive_score: pos_score,
+            hard_negatives: neg_candidates,
+        });
+        if records.len() >= max_positives {
+            break;
+        }
+    }
+    records
+}
+
+pub fn export_contrastive_jsonl(
+    rich_page: &crate::projection::BreakthroughProjection,
+    source_url: &Url,
+    query: &str,
+    max_positives: usize,
+    max_negatives_per_positive: usize,
+) -> Result<String, serde_json::Error> {
+    let records = export_contrastive_training_records(
+        rich_page,
+        source_url,
+        query,
+        max_positives,
+        max_negatives_per_positive,
+    );
+    let mut lines_buf = String::new();
+    for rec in &records {
+        let serialized = serde_json::to_string(rec)?;
+        lines_buf.push_str(&serialized);
+        lines_buf.push('\n');
+    }
+    Ok(lines_buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

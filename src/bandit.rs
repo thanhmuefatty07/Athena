@@ -313,9 +313,11 @@ impl FetchOutcomeKind {
 pub struct SoftBlockDetector;
 
 impl SoftBlockDetector {
-    const CHALLENGE_SIGNATURES: [&'static [u8]; 14] = [
+    const CHALLENGE_SIGNATURES: [&'static [u8]; 24] = [
         b"cf-chl-",
         b"cf-turnstile",
+        b"_cf_chl_opt",
+        b"/cdn-cgi/challenge-platform/",
         b"just a moment...",
         b"attention required! | cloudflare",
         b"verify you are human",
@@ -323,11 +325,19 @@ impl SoftBlockDetector {
         b"g-recaptcha",
         b"h-captcha",
         b"px-captcha",
+        b"_pxhd",
+        b"block.perimeterx.net",
+        b"geo.captcha-delivery.com",
+        b"akamaighost",
+        b"sec-cpt-challenge",
+        b"/_incapsula_resource",
+        b"incapsula incident id",
+        b"visid_incap",
+        b"x-kpsdk-",
+        b"kpsdk-ct",
+        b"aws-waf-token",
+        b"captcha.awswaf.com",
         b"ddos-guard",
-        b"bot verification",
-        b"access to this page has been denied",
-        b"pardon our interruption",
-        b"automated access to this data is blocked",
     ];
 
     pub fn classify_response(
@@ -342,15 +352,25 @@ impl SoftBlockDetector {
             403 | 407 | 451 | 503 => FetchOutcomeKind::HardBlockWaf,
             502 | 504 => FetchOutcomeKind::TimeoutOrReset,
             200 | 203 | 206 => {
-                if body.is_empty() {
+                if body.is_empty() || body.iter().all(|b| b.is_ascii_whitespace()) {
                     return FetchOutcomeKind::SoftBlockChallenge;
                 }
-                let scan_len = body.len().min(8192);
+                let scan_len = body.len().min(16_384);
                 let prefix = &body[..scan_len];
-                if Self::contains_challenge_signature(prefix) {
+                let has_semantic_prose = projected_chunks > 0
+                    && (prefix.windows(5).any(|w| w.eq_ignore_ascii_case(b"<main"))
+                        || prefix
+                            .windows(8)
+                            .any(|w| w.eq_ignore_ascii_case(b"<article")));
+                if (!has_semantic_prose || body.len() <= 16_384)
+                    && Self::contains_challenge_signature(prefix)
+                {
+                    if has_semantic_prose && body.len() > 8192 {
+                        return FetchOutcomeKind::Success;
+                    }
                     return FetchOutcomeKind::SoftBlockChallenge;
                 }
-                if projected_chunks == 0 && body.len() < 2048 {
+                if projected_chunks == 0 {
                     return FetchOutcomeKind::SoftBlockChallenge;
                 }
                 FetchOutcomeKind::Success
@@ -361,7 +381,7 @@ impl SoftBlockDetector {
     }
 
     fn contains_challenge_signature(haystack: &[u8]) -> bool {
-        let mut lower_buf = [0u8; 8192];
+        let mut lower_buf = [0u8; 16_384];
         let n = haystack.len().min(lower_buf.len());
         for (dst, &src) in lower_buf[..n].iter_mut().zip(&haystack[..n]) {
             *dst = src.to_ascii_lowercase();
@@ -371,6 +391,15 @@ impl SoftBlockDetector {
             if slice.windows(sig.len()).any(|w| w == sig) {
                 return true;
             }
+        }
+        if slice.windows(5).any(|w| w == b"_abck") && slice.windows(5).any(|w| w == b"bm_sz") {
+            return true;
+        }
+        if slice.windows(8).any(|w| w == b"datadome")
+            && (slice.windows(7).any(|w| w == b"captcha")
+                || slice.windows(6).any(|w| w == b"dd_cid"))
+        {
+            return true;
         }
         false
     }
@@ -425,6 +454,8 @@ pub struct ProxyEndpointConfig {
 #[derive(Debug, Clone)]
 pub struct ProxyNodeStats {
     pub config: ProxyEndpointConfig,
+    pub asn_group: u32,
+    pub subnet_group: u32,
     pub alpha: f64,
     pub beta: f64,
     pub alpha_net: f64,
@@ -436,7 +467,11 @@ pub struct ProxyNodeStats {
     pub decayed_pulls: f64,
     pub decayed_reward_sum: f64,
     pub decayed_reward_sq_sum: f64,
+    pub sw_ucb_window: usize,
     pub exp3_weight: f64,
+    pub last_exp3_p: f64,
+    pub cusum_pos: f64,
+    pub sticky_warm_streak: u32,
     pub ewma_latency_ms: f64,
     pub ewma_jitter_ms: f64,
     pub ewma_bytes: f64,
@@ -457,8 +492,12 @@ pub struct ProxyNodeStats {
 impl ProxyNodeStats {
     pub fn new(now: Instant, config: ProxyEndpointConfig) -> Self {
         let lat = config.prior_latency_ms.max(1.0);
+        let asn_group = (config.id as u32) / 2;
+        let subnet_group = (config.id as u32) / 2;
         Self {
             config,
+            asn_group,
+            subnet_group,
             alpha: 1.0,
             beta: 1.0,
             alpha_net: 1.0,
@@ -470,7 +509,11 @@ impl ProxyNodeStats {
             decayed_pulls: 1.0,
             decayed_reward_sum: 0.8,
             decayed_reward_sq_sum: 0.64,
+            sw_ucb_window: 32,
             exp3_weight: 1.0,
+            last_exp3_p: 0.2,
+            cusum_pos: 0.0,
+            sticky_warm_streak: 0,
             ewma_latency_ms: lat,
             ewma_jitter_ms: lat * 0.15,
             ewma_bytes: 12_288.0,
@@ -516,10 +559,11 @@ impl ProxyNodeStats {
         wire_bytes: usize,
         half_life: Duration,
         quarantine_enabled: bool,
-    ) {
+    ) -> bool {
         let elapsed = now.saturating_duration_since(self.updated).as_secs_f64();
         let h = half_life.as_secs_f64().max(f64::MIN_POSITIVE);
         let decay = (-std::f64::consts::LN_2 * elapsed / h).exp();
+        let waf_decay = (-std::f64::consts::LN_2 * elapsed / (h * 0.25).max(1.0)).exp();
 
         let usable = outcome.is_usable();
         let blocked = outcome.is_block_or_ratelimit();
@@ -536,41 +580,64 @@ impl ProxyNodeStats {
                 self.usable_successes = self.usable_successes.saturating_add(1);
                 self.consecutive_failures = 0;
                 self.quarantined_until = None;
-                self.min_interval_ms = (self.min_interval_ms - 5.0).max(0.0);
+                self.sticky_warm_streak = self.sticky_warm_streak.saturating_add(1).min(16);
+                // Exponential pacing recovery so recovered routes do not stay throttled for 500 steps
+                self.min_interval_ms = (self.min_interval_ms * 0.60 - 5.0).max(0.0);
+                self.cusum_pos = (self.cusum_pos - 0.35).max(0.0);
             }
             FetchOutcomeKind::SoftBlockChallenge => {
                 self.soft_blocks = self.soft_blocks.saturating_add(1);
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                self.sticky_warm_streak = 0;
                 self.min_interval_ms = (self.min_interval_ms * 1.8 + 40.0).min(2_500.0);
+                self.cusum_pos += 1.25;
             }
             FetchOutcomeKind::HardBlockWaf => {
                 self.hard_blocks = self.hard_blocks.saturating_add(1);
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                self.sticky_warm_streak = 0;
                 self.min_interval_ms = (self.min_interval_ms * 1.8 + 50.0).min(2_500.0);
+                self.cusum_pos += 1.45;
             }
-            FetchOutcomeKind::RateLimited429 { .. } => {
+            FetchOutcomeKind::RateLimited429 { retry_after_secs } => {
                 self.rate_limits = self.rate_limits.saturating_add(1);
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                self.min_interval_ms = (self.min_interval_ms * 2.0 + 75.0).min(3_000.0);
+                self.sticky_warm_streak = 0;
+                let retry_pacing = retry_after_secs
+                    .map(|s| (s as f64 * 250.0).clamp(150.0, 3_000.0))
+                    .unwrap_or(0.0);
+                self.min_interval_ms = (self.min_interval_ms * 2.0 + 75.0)
+                    .max(retry_pacing)
+                    .min(3_000.0);
+                self.cusum_pos += 1.35;
             }
             FetchOutcomeKind::TimeoutOrReset | FetchOutcomeKind::ProxyDead => {
                 self.timeouts_or_dead = self.timeouts_or_dead.saturating_add(1);
                 self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                self.sticky_warm_streak = 0;
+                self.cusum_pos += 0.90;
             }
         }
 
-        // Factored transport x WAF posteriors
+        // Factored transport x WAF posteriors: ALWAYS apply waf_decay before self.updated = now
         self.alpha_net =
             1.0 + decay * (self.alpha_net - 1.0) + if !is_transport_fail { 1.0 } else { 0.0 };
         self.beta_net =
             1.0 + decay * (self.beta_net - 1.0) + if is_transport_fail { 1.5 } else { 0.0 };
-        if !is_transport_fail {
-            let waf_decay = (-std::f64::consts::LN_2 * elapsed / (h * 0.25).max(1.0)).exp();
-            self.alpha_waf =
-                1.0 + waf_decay * (self.alpha_waf - 1.0) + if usable { 1.0 } else { 0.0 };
-            self.beta_waf =
-                1.0 + waf_decay * (self.beta_waf - 1.0) + if blocked { 2.2 } else { 0.0 };
-        }
+        self.alpha_waf = 1.0
+            + waf_decay * (self.alpha_waf - 1.0)
+            + if !is_transport_fail && usable {
+                1.0
+            } else {
+                0.0
+            };
+        self.beta_waf = 1.0
+            + waf_decay * (self.beta_waf - 1.0)
+            + if !is_transport_fail && blocked {
+                2.2
+            } else {
+                0.0
+            };
 
         // Strongly penalize beta when a block or dead tunnel occurs under quarantine_enabled
         let beta_increment = if usable {
@@ -582,6 +649,15 @@ impl ProxyNodeStats {
         };
         self.alpha = 1.0 + decay * (self.alpha - 1.0) + if usable { 1.0 } else { 0.0 };
         self.beta = 1.0 + decay * (self.beta - 1.0) + beta_increment;
+
+        // Active CUSUM change-point reset when abrupt WAF/tunnel regime degradation occurs
+        let mut triggered_cusum = false;
+        if quarantine_enabled && self.cusum_pos >= 2.6 {
+            triggered_cusum = true;
+            self.alpha = 1.0 + 0.25 * (self.alpha - 1.0);
+            self.alpha_waf = 1.0 + 0.20 * (self.alpha_waf - 1.0);
+            self.cusum_pos = 0.0;
+        }
 
         if latency_ms.is_finite() && latency_ms >= 0.0 {
             let abs_err = (latency_ms - self.ewma_latency_ms).abs();
@@ -634,6 +710,7 @@ impl ProxyNodeStats {
             }
         }
         self.updated = now;
+        triggered_cusum
     }
 }
 
@@ -692,17 +769,23 @@ impl ProxyPoolRouter {
         latency_ms: f64,
         wire_bytes: usize,
     ) {
-        let k = self.nodes.len().max(1) as f64;
-        let quarantine_enabled = self.algorithm == RoutingAlgorithm::AthenaAdaptiveContextualV1;
-        let weight_sum: f64 = self
+        let k = self
             .nodes
             .iter()
             .filter(|n| n.config.eligible)
-            .map(|n| n.exp3_weight)
-            .sum::<f64>()
-            .max(f64::MIN_POSITIVE);
+            .count()
+            .max(1) as f64;
+        let quarantine_enabled = self.algorithm == RoutingAlgorithm::AthenaAdaptiveContextualV1;
+        // Symmetrically decay all eligible EXP3 weights so unpulled arms do not inflate relative to pulled arms
+        for n in &mut self.nodes {
+            if n.config.eligible {
+                n.exp3_weight = (n.exp3_weight * 0.985).clamp(1e-4, 1e6);
+            }
+        }
+        let mut peer_propagate: Option<(u32, u32, Tier, bool)> = None;
         if let Some(node) = self.nodes.get_mut(node_id) {
-            node.observe(
+            let p_selected = node.last_exp3_p.max(0.01);
+            let triggered_cusum = node.observe(
                 now,
                 outcome,
                 latency_ms,
@@ -710,7 +793,7 @@ impl ProxyPoolRouter {
                 self.half_life,
                 quarantine_enabled,
             );
-            // Update EXP3 adversarial weight
+            // Update EXP3 adversarial weight using recorded dispatch probability p_selected
             let usable = outcome.is_usable();
             let cost_norm = ((node.config.cost_usd_per_attempt
                 + (wire_bytes as f64 / (1024.0 * 1024.0)) * node.config.egress_usd_per_mib
@@ -719,10 +802,33 @@ impl ProxyPoolRouter {
                 .clamp(0.0, 1.0);
             let reward = if usable { 1.0 - 0.5 * cost_norm } else { 0.0 };
             let gamma = 0.07f64;
-            let p_arm = ((1.0 - gamma) * (node.exp3_weight / weight_sum) + gamma / k).max(0.01);
-            let est_reward = reward / p_arm;
+            let est_reward = reward / p_selected;
             node.exp3_weight =
-                (node.exp3_weight * 0.985 * ((gamma * est_reward / k).exp())).clamp(1e-4, 1e6);
+                (node.exp3_weight * ((gamma * est_reward / k).exp())).clamp(1e-4, 1e6);
+            if quarantine_enabled && outcome.is_block_or_ratelimit() {
+                peer_propagate = Some((
+                    node.asn_group,
+                    node.subnet_group,
+                    node.config.tier,
+                    triggered_cusum,
+                ));
+            }
+        }
+        // Hierarchical Empirical Bayes (ASN -> /24 Subnet -> IP) shrinkage propagation (D13):
+        // When an IP in a subnet/ASN suffers WAF blocks or CUSUM change-point resets, propagate
+        // correlated WAF evidence to sibling IPs sharing the same /24 subnet or ASN.
+        if let Some((asn_g, sub_g, tier, cusum)) = peer_propagate {
+            for (idx, peer) in self.nodes.iter_mut().enumerate() {
+                if idx == node_id || !peer.config.eligible || peer.config.tier != tier {
+                    continue;
+                }
+                if peer.subnet_group == sub_g {
+                    peer.beta_waf += if cusum { 0.85 } else { 0.45 };
+                    peer.beta += if cusum { 0.65 } else { 0.30 };
+                } else if peer.asn_group == asn_g {
+                    peer.beta_waf += 0.25;
+                }
+            }
         }
     }
 
@@ -838,16 +944,18 @@ impl ProxyPoolRouter {
                 let u: f64 = rng.random_range(0.0..1.0);
                 let mut cumulative = 0.0;
                 let mut chosen = None;
-                for (idx, s) in self.nodes.iter().enumerate() {
+                let mut picked = false;
+                for (idx, s) in self.nodes.iter_mut().enumerate() {
                     if !s.config.eligible {
                         continue;
                     }
                     let p = (1.0 - gamma) * (s.exp3_weight / weight_sum) + gamma / k;
+                    s.last_exp3_p = p;
                     cumulative += p;
-                    if u <= cumulative || chosen.is_none() {
+                    if !picked && (u <= cumulative || chosen.is_none()) {
                         chosen = Some(idx);
                         if u <= cumulative {
-                            break;
+                            picked = true;
                         }
                     }
                 }
@@ -896,15 +1004,19 @@ impl ProxyPoolRouter {
                     // Variance-damped Thompson blending: as sample confidence (a+b) grows,
                     // blend toward the posterior mean to avoid gratuitous regret spikes.
                     let confidence = ((a + b - 2.0) / 24.0).clamp(0.0, 0.75);
-                    let effective_p =
-                        (confidence * posterior_mean + (1.0 - confidence) * sampled_p).max(0.005);
+                    let sticky_bonus = (f64::from(s.sticky_warm_streak) * 0.008).min(0.04);
+                    let effective_p = (confidence * posterior_mean
+                        + (1.0 - confidence) * sampled_p
+                        + sticky_bonus)
+                        .clamp(0.005, 0.999);
 
                     let egress_mib =
                         (s.ewma_bytes * (1.0 - s.ewma_304_rate * 0.92)) / (1024.0 * 1024.0);
                     let bandwidth_cost_usd = egress_mib * s.config.egress_usd_per_mib;
                     let pacing_ms = s.pacing_delay_ms(now);
+                    let warm_lat_discount = if s.sticky_warm_streak >= 2 { 0.92 } else { 1.0 };
                     let effective_latency_ms =
-                        s.ewma_latency_ms + 1.35 * s.ewma_jitter_ms + pacing_ms;
+                        (s.ewma_latency_ms * warm_lat_discount) + 1.35 * s.ewma_jitter_ms + pacing_ms;
                     let latency_cost_usd = self.latency_value_usd_per_ms * effective_latency_ms;
                     let block_risk_usd =
                         0.0025 * s.ewma_block_rate + 0.0010 * (s.consecutive_failures as f64);
@@ -953,3 +1065,125 @@ impl ProxyPoolRouter {
         decision
     }
 }
+
+/// Active Page-Hinkley / CUSUM change-point detector for abrupt WAF regime shifts (D13).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CusumDetector {
+    pub g_pos: f64,
+    pub drift_nu: f64,
+    pub threshold_h: f64,
+}
+
+impl Default for CusumDetector {
+    fn default() -> Self {
+        Self::new(0.15, 2.6)
+    }
+}
+
+impl CusumDetector {
+    #[must_use]
+    pub const fn new(drift_nu: f64, threshold_h: f64) -> Self {
+        Self {
+            g_pos: 0.0,
+            drift_nu,
+            threshold_h,
+        }
+    }
+
+    /// Observe a binary block indicator $z_t \in \{0, 1\}$:
+    /// $G_t^+ = \max(0, G_{t-1}^+ + z_t - \nu_{\text{drift}})$.
+    /// Returns `true` and resets $G_t^+ = 0$ when $G_t^+ \ge h_{\text{cusum}}$.
+    pub fn observe(&mut self, blocked: bool) -> bool {
+        let z = if blocked { 1.0 } else { 0.0 };
+        self.g_pos = (self.g_pos + z - self.drift_nu).max(0.0);
+        if self.g_pos >= self.threshold_h {
+            self.g_pos = 0.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.g_pos = 0.0;
+    }
+}
+
+/// 3-Level Hierarchical Empirical Bayes (`ASN -> /24 Subnet -> IP`) shrinkage estimator (D13).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmpiricalBayesProxyPool {
+    pub asn_concentration: f64,
+    pub subnet_concentration: f64,
+    pub asn_counts: std::collections::BTreeMap<String, (f64, f64)>,
+    pub subnet_counts: std::collections::BTreeMap<String, (f64, f64)>,
+    pub ip_counts: std::collections::BTreeMap<String, (f64, f64)>,
+}
+
+impl Default for EmpiricalBayesProxyPool {
+    fn default() -> Self {
+        Self::new(4.0, 8.0)
+    }
+}
+
+impl EmpiricalBayesProxyPool {
+    #[must_use]
+    pub const fn new(asn_concentration: f64, subnet_concentration: f64) -> Self {
+        Self {
+            asn_concentration,
+            subnet_concentration,
+            asn_counts: std::collections::BTreeMap::new(),
+            subnet_counts: std::collections::BTreeMap::new(),
+            ip_counts: std::collections::BTreeMap::new(),
+        }
+    }
+
+    pub fn observe(&mut self, asn: &str, subnet: &str, ip: &str, success: bool) {
+        let delta = if success { (1.0, 0.0) } else { (0.0, 1.0) };
+        let asn_entry = self.asn_counts.entry(asn.to_owned()).or_insert((1.0, 1.0));
+        asn_entry.0 += delta.0;
+        asn_entry.1 += delta.1;
+        let sub_entry = self
+            .subnet_counts
+            .entry(subnet.to_owned())
+            .or_insert((0.0, 0.0));
+        sub_entry.0 += delta.0;
+        sub_entry.1 += delta.1;
+        let ip_entry = self.ip_counts.entry(ip.to_owned()).or_insert((0.0, 0.0));
+        ip_entry.0 += delta.0;
+        ip_entry.1 += delta.1;
+    }
+
+    #[must_use]
+    pub fn posterior_survival(&self, asn: &str, subnet: &str, ip: &str) -> f64 {
+        let (asn_s, asn_f) = self.asn_counts.get(asn).copied().unwrap_or((1.0, 1.0));
+        let (sub_s, sub_f) = self.subnet_counts.get(subnet).copied().unwrap_or((0.0, 0.0));
+        let (ip_s, ip_f) = self.ip_counts.get(ip).copied().unwrap_or((0.0, 0.0));
+        let (alpha, beta) = self.shrink_posterior(asn_s, asn_f, sub_s, sub_f, ip_s, ip_f);
+        (alpha / (alpha + beta).max(1e-6)).clamp(0.01, 0.99)
+    }
+
+    /// Computes Empirical Bayes posterior $(\alpha_{\text{eb}}, \beta_{\text{eb}})$ for an IP
+    /// by shrinking the ASN mean into the `/24` subnet prior and the `/24` subnet mean into the IP counts.
+    #[must_use]
+    pub fn shrink_posterior(
+        &self,
+        asn_successes: f64,
+        asn_failures: f64,
+        subnet_successes: f64,
+        subnet_failures: f64,
+        ip_successes: f64,
+        ip_failures: f64,
+    ) -> (f64, f64) {
+        let asn_total = (asn_successes + asn_failures).max(1e-6);
+        let mu_asn = (asn_successes / asn_total).clamp(0.01, 0.99);
+        let c_asn = self.asn_concentration.max(0.5);
+        let sub_alpha = c_asn * mu_asn + subnet_successes.max(0.0);
+        let sub_beta = c_asn * (1.0 - mu_asn) + subnet_failures.max(0.0);
+        let mu_sub = (sub_alpha / (sub_alpha + sub_beta).max(1e-6)).clamp(0.01, 0.99);
+        let c_sub = self.subnet_concentration.max(0.5);
+        let ip_alpha = (c_sub * mu_sub + ip_successes.max(0.0)).max(1e-3);
+        let ip_beta = (c_sub * (1.0 - mu_sub) + ip_failures.max(0.0)).max(1e-3);
+        (ip_alpha, ip_beta)
+    }
+}
+

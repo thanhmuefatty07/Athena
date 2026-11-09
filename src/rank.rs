@@ -4,8 +4,41 @@ use crate::projection::Chunk;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
+#[inline]
+fn is_combining_mark_char(c: char) -> bool {
+    let u = c as u32;
+    matches!(
+        u,
+        0x0300..=0x036F
+            | 0x0483..=0x0489
+            | 0x0591..=0x05BD
+            | 0x05BF
+            | 0x05C1..=0x05C2
+            | 0x05C4..=0x05C5
+            | 0x05C7
+            | 0x0610..=0x061A
+            | 0x064B..=0x065F
+            | 0x0670
+            | 0x06D6..=0x06DC
+            | 0x06DF..=0x06E4
+            | 0x06E7..=0x06E8
+            | 0x06EA..=0x06ED
+            | 0x0901..=0x0903
+            | 0x093A..=0x094F
+            | 0x0951..=0x0957
+            | 0x0962..=0x0963
+            | 0x0E31
+            | 0x0E34..=0x0E3A
+            | 0x0E47..=0x0E4E
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x20D0..=0x20FF
+            | 0xFE20..=0xFE2F
+    )
+}
+
 fn words(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|c: char| !c.is_alphanumeric())
+    text.split(|c: char| !c.is_alphanumeric() && !is_combining_mark_char(c))
         .filter(|w| !w.is_empty())
 }
 fn lowercase(word: &str) -> Cow<'_, str> {
@@ -883,6 +916,558 @@ pub fn multi_query_rrf_simhash_highlight_indices(
     }
     fused.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then_with(|| a.cmp(b)));
     select_simhash_from_ranked(chunks, fused, limit, max_hamming)
+}
+
+/// Guarded light morphological stemmer (`R2-1`, `R2-2`).
+/// Skips tokens `< 5` characters or containing digits, uppercase characters, or math symbols.
+/// Canonicalizes correlated verb/noun suffix families (`-ations/-ation/-ating/-ated/-ates/-ate`
+/// and `-izability/-izable/-izations/-ization/-izing/-ized/-izes/-ize`) to a shared root.
+pub fn stem_token_guarded(token: &str) -> Cow<'_, str> {
+    if token.len() < 5
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() && b.is_ascii_alphabetic())
+    {
+        return Cow::Borrowed(token);
+    }
+    for suffix in [
+        "izability",
+        "izations",
+        "ization",
+        "izable",
+        "izing",
+        "ized",
+        "izes",
+        "ize",
+        "ations",
+        "ation",
+        "ating",
+        "ated",
+        "ates",
+        "ate",
+        "fulness",
+        "ousness",
+        "iveness",
+        "ements",
+        "ement",
+        "ments",
+        "ment",
+        "ingly",
+        "edly",
+        "ings",
+        "ing",
+        "ness",
+        "less",
+        "able",
+        "ible",
+        "ally",
+    ] {
+        if let Some(stem) = token.strip_suffix(suffix) {
+            if stem.len() >= 4 {
+                return Cow::Borrowed(stem);
+            }
+        }
+    }
+    if let Some(stem) = token.strip_suffix("ies") {
+        if stem.len() >= 3 {
+            let mut owned = String::with_capacity(stem.len() + 1);
+            owned.push_str(stem);
+            owned.push('y');
+            return Cow::Owned(owned);
+        }
+    }
+    if let Some(stem) = token.strip_suffix("es") {
+        if stem.len() >= 4 && !stem.ends_with('s') {
+            return Cow::Borrowed(stem);
+        }
+    }
+    if let Some(stem) = token.strip_suffix('s') {
+        if stem.len() >= 4 && !token.ends_with("ss") && !token.ends_with("us") && !token.ends_with("is")
+        {
+            return Cow::Borrowed(stem);
+        }
+    }
+    Cow::Borrowed(token)
+}
+
+/// Sub-unit morphological stem saturation (`R2-1`):
+/// $\tilde{f}_{\text{st}}^{\text{cap}} = \frac{\tilde{f}_{\text{st}}}{\tilde{f}_{\text{st}} + 0.5} \in [0, 1)$,
+/// guaranteeing that arbitrary stem repetition never overtakes an exact lexical match.
+#[inline]
+pub fn saturate_stem_tf(raw_stem_tf: f64) -> f64 {
+    if raw_stem_tf <= 0.0 {
+        0.0
+    } else {
+        raw_stem_tf / (raw_stem_tf + 0.5)
+    }
+}
+
+/// Splits `snake_case`, `kebab-case`, and `camelCase`/`PascalCase` compound identifiers
+/// into lowercase sub-tokens while preserving the full identifier (`R2-1`).
+pub fn split_compound_identifier(raw: &str) -> Vec<String> {
+    let mut parts = Vec::<String>::new();
+    for segment in raw.split(|c: char| c == '_' || c == '-' || c == '/' || c == '.') {
+        if segment.is_empty() {
+            continue;
+        }
+        let mut cur = String::new();
+        let mut prev_lower = false;
+        for ch in segment.chars() {
+            if ch.is_ascii_uppercase() && prev_lower && cur.len() >= 2 {
+                parts.push(cur.to_lowercase());
+                cur.clear();
+            }
+            cur.push(ch);
+            prev_lower = ch.is_ascii_lowercase();
+        }
+        if cur.len() >= 2 {
+            parts.push(cur.to_lowercase());
+        }
+    }
+    parts
+}
+
+fn is_common_web_stopword(term: &str) -> bool {
+    matches!(
+        term,
+        "the"
+            | "and"
+            | "for"
+            | "with"
+            | "from"
+            | "that"
+            | "this"
+            | "are"
+            | "was"
+            | "were"
+            | "have"
+            | "has"
+            | "had"
+            | "not"
+            | "but"
+            | "you"
+            | "all"
+            | "can"
+            | "her"
+            | "his"
+            | "one"
+            | "our"
+            | "out"
+            | "who"
+            | "will"
+            | "more"
+            | "when"
+            | "what"
+            | "into"
+            | "than"
+            | "them"
+            | "some"
+            | "time"
+            | "very"
+            | "your"
+            | "about"
+            | "click"
+            | "here"
+            | "read"
+            | "page"
+            | "home"
+            | "menu"
+            | "next"
+            | "prev"
+    )
+}
+
+/// Blended Background-Corpus IDF Prior (`D5`):
+/// Combines within-document BM25 IDF with a deterministic background specificity prior
+/// so rare technical terms occurring in every paragraph of a relevant page retain high IDF.
+#[inline]
+pub fn blended_background_idf(n_chunks: f64, df: f64, term: &str) -> f64 {
+    let doc_idf = (1.0 + (n_chunks - df + 0.5) / (df + 0.5)).ln();
+    let has_digit = term.bytes().any(|b| b.is_ascii_digit());
+    let bg_prior = if is_common_web_stopword(term) {
+        0.15
+    } else if has_digit && term.len() >= 2 {
+        3.10
+    } else if term.len() >= 10 {
+        2.85
+    } else if term.len() >= 7 {
+        2.35
+    } else if term.len() >= 4 {
+        1.75
+    } else {
+        1.05
+    };
+    0.70 * doc_idf + 0.30 * bg_prior
+}
+
+/// IDF & Numeric-Protected 64-bit SimHash (`D6`, `D20`, `D30`).
+/// Assigns higher bit-accumulation weights to numeric/year/version tokens (`8`) and rare technical
+/// words (`5`) vs stopwords (`1`), and injects position-sensitive numeric bigrams so table rows or
+/// paragraphs differing only in numbers (`2024: 12.4%` vs `2025: 18.9%`) produce distinct signatures.
+pub fn simhash_64_idf_numeric(text: &str) -> u64 {
+    let mut acc = [0i32; 64];
+    let mut prev_hash = 0u64;
+    let mut saw_any = false;
+    for raw_word in words(text) {
+        saw_any = true;
+        let low = lowercase(raw_word);
+        let w_str = low.as_ref();
+        let has_digit = w_str.bytes().any(|b| b.is_ascii_digit());
+        let weight: i32 = if has_digit {
+            8
+        } else if is_common_web_stopword(w_str) {
+            1
+        } else if w_str.len() >= 8 {
+            5
+        } else {
+            3
+        };
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in w_str.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 33;
+        for (bit, slot) in acc.iter_mut().enumerate() {
+            if (h >> bit) & 1 == 1 {
+                *slot += weight;
+            } else {
+                *slot -= weight;
+            }
+        }
+        if has_digit || prev_hash != 0 {
+            let bigram_h = (h ^ prev_hash.rotate_left(17)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+            let bi_weight = if has_digit { 6 } else { 2 };
+            for (bit, slot) in acc.iter_mut().enumerate() {
+                if (bigram_h >> bit) & 1 == 1 {
+                    *slot += bi_weight;
+                } else {
+                    *slot -= bi_weight;
+                }
+            }
+        }
+        prev_hash = h;
+    }
+    if !saw_any {
+        return 0;
+    }
+    let mut sig = 0u64;
+    for (bit, &v) in acc.iter().enumerate() {
+        if v > 0 {
+            sig |= 1u64 << bit;
+        }
+    }
+    sig
+}
+
+/// 128-bit MinHash LSH signature (`16 bands x 8 bits`) over token 2-shingles (`D23`).
+pub fn minhash_128_signature(text: &str) -> [u64; 2] {
+    let mut mins = [u8::MAX; 16];
+    let mut prev_h = 0xcbf2_9ce4_8422_2325u64;
+    let mut count = 0usize;
+    for raw_word in words(text) {
+        let low = lowercase(raw_word);
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for b in low.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        let shingle = h ^ prev_h.rotate_left(29);
+        prev_h = h;
+        count += 1;
+        for (band, slot) in mins.iter_mut().enumerate() {
+            let seed = (band as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut mh = shingle ^ seed;
+            mh ^= mh >> 30;
+            mh = mh.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            mh ^= mh >> 27;
+            mh = mh.wrapping_mul(0x94d0_49bb_1331_11eb);
+            mh ^= mh >> 31;
+            let quantized = (mh & 0xFF) as u8;
+            if quantized < *slot {
+                *slot = quantized;
+            }
+        }
+    }
+    if count == 0 {
+        return [0, 0];
+    }
+    let mut lo = 0u64;
+    let mut hi = 0u64;
+    for i in 0..8 {
+        lo |= u64::from(mins[i]) << (i * 8);
+        hi |= u64::from(mins[i + 8]) << (i * 8);
+    }
+    [lo, hi]
+}
+
+/// Estimates Jaccard similarity in `[0.0, 1.0]` between two 128-bit (`16 x 8-bit`) MinHash signatures (`D23`).
+#[inline]
+pub fn minhash_128_similarity(a: [u64; 2], b: [u64; 2]) -> f64 {
+    let mut matches = 0u32;
+    for i in 0..8 {
+        if ((a[0] >> (i * 8)) & 0xFF) == ((b[0] >> (i * 8)) & 0xFF) {
+            matches += 1;
+        }
+        if ((a[1] >> (i * 8)) & 0xFF) == ((b[1] >> (i * 8)) & 0xFF) {
+            matches += 1;
+        }
+    }
+    f64::from(matches) / 16.0
+}
+
+/// 6-Level Hierarchical Heading Context Inheritance (`D5`):
+/// Propagates heading relevance (`[1.0, 0.7, 0.5]`) to descendant paragraphs, list items,
+/// code blocks, and table cells until superseded by a new heading, and clears on footer/aside chrome.
+pub fn compute_hierarchical_heading_boosts(chunks: &[Chunk], base_scores: &[f64]) -> Vec<f64> {
+    let mut boosts = vec![0.0f64; chunks.len()];
+    let mut active_headings: [f64; 3] = [0.0; 3];
+    const DECAY: [f64; 3] = [1.0, 0.7, 0.5];
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        let sc = base_scores.get(chunk_idx).copied().unwrap_or(0.0);
+        if chunk.role == "heading" {
+            active_headings[2] = active_headings[1];
+            active_headings[1] = active_headings[0];
+            active_headings[0] = sc;
+        } else {
+            let lower = chunk.text.to_ascii_lowercase();
+            if lower.contains("all rights reserved") || lower.contains("privacy policy") {
+                active_headings = [0.0; 3];
+            }
+            let inherited = active_headings[0] * DECAY[0]
+                + active_headings[1] * DECAY[1]
+                + active_headings[2] * DECAY[2];
+            boosts[chunk_idx] = 0.18 * inherited;
+        }
+    }
+    boosts
+}
+
+fn min_window_span(pos_lists: &[Vec<u32>]) -> u32 {
+    let active: Vec<&[u32]> = pos_lists
+        .iter()
+        .filter(|pl| !pl.is_empty())
+        .map(Vec::as_slice)
+        .collect();
+    if active.len() < 2 {
+        return u32::MAX;
+    }
+    let mut cursors = vec![0usize; active.len()];
+    let mut best = u32::MAX;
+    loop {
+        let mut min_p = u32::MAX;
+        let mut max_p = 0u32;
+        let mut min_k = 0usize;
+        for (k, slice) in active.iter().enumerate() {
+            let p = slice[cursors[k]];
+            if p < min_p {
+                min_p = p;
+                min_k = k;
+            }
+            if p > max_p {
+                max_p = p;
+            }
+        }
+        let span = max_p.saturating_sub(min_p).saturating_add(1);
+        if span < best {
+            best = span;
+        }
+        cursors[min_k] += 1;
+        if cursors[min_k] >= active[min_k].len() {
+            break;
+        }
+    }
+    best
+}
+
+/// Single-Pass Fused Scoring (`D5`, `D6`, `D19`, `D20`, `D30`, `R2-1`, `R2-2`):
+/// Combines Exact Lexical BM25+, Guarded Sub-Unit Stemmed/Compound BM25+ (`alpha_stem = 0.32`),
+/// Blended Background-Corpus IDF Prior, 6-Level Hierarchical Heading Decay, and MSLP in a single pass.
+pub fn bm25f_fused_single_pass(
+    chunks: &[Chunk],
+    query: &str,
+    k1: f64,
+    b: f64,
+    delta: f64,
+) -> Vec<(usize, f64)> {
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+    let mut exact_terms = Vec::<String>::new();
+    for w in words(query) {
+        let low = lowercase(w).into_owned();
+        if !exact_terms.contains(&low) {
+            exact_terms.push(low);
+        }
+        for sub in split_compound_identifier(w) {
+            if !exact_terms.contains(&sub) {
+                exact_terms.push(sub);
+            }
+        }
+    }
+    if exact_terms.is_empty() {
+        return chunks.iter().enumerate().map(|(i, _)| (i, 0.0)).collect();
+    }
+
+    let q_len = exact_terms.len();
+    let q_stems: Vec<String> = exact_terms
+        .iter()
+        .map(|t| stem_token_guarded(t).into_owned())
+        .collect();
+
+    let n_chunks = chunks.len();
+    let mut exact_tf = vec![0u32; n_chunks * q_len];
+    let mut stem_tf = vec![0u32; n_chunks * q_len];
+    let mut exact_df = vec![0u32; q_len];
+    let mut stem_df = vec![0u32; q_len];
+    let mut lengths = vec![0u32; n_chunks];
+    let mut pos_lists: Vec<Vec<u32>> = vec![Vec::new(); q_len];
+    let mut min_spans = vec![u32::MAX; n_chunks];
+
+    for (doc_idx, chunk) in chunks.iter().enumerate() {
+        let row = doc_idx * q_len;
+        for pl in &mut pos_lists {
+            pl.clear();
+        }
+        let mut word_pos = 0u32;
+        for raw_w in words(&chunk.text) {
+            word_pos += 1;
+            let low = lowercase(raw_w);
+            let w_str = low.as_ref();
+            let w_stem = stem_token_guarded(w_str);
+            let subtokens = split_compound_identifier(raw_w);
+            for q_idx in 0..q_len {
+                if w_str == exact_terms[q_idx] {
+                    if exact_tf[row + q_idx] == 0 {
+                        exact_df[q_idx] += 1;
+                    }
+                    exact_tf[row + q_idx] += 1;
+                    pos_lists[q_idx].push(word_pos - 1);
+                } else if (w_stem.len() >= 4 && w_stem.as_ref() == q_stems[q_idx])
+                    || subtokens.iter().any(|st| st == &exact_terms[q_idx])
+                {
+                    if stem_tf[row + q_idx] == 0 {
+                        stem_df[q_idx] += 1;
+                    }
+                    stem_tf[row + q_idx] += 1;
+                    pos_lists[q_idx].push(word_pos - 1);
+                }
+            }
+        }
+        lengths[doc_idx] = word_pos;
+        if q_len >= 2 {
+            min_spans[doc_idx] = min_window_span(&pos_lists);
+        }
+    }
+
+    let avg_dl = (lengths.iter().map(|&x| f64::from(x)).sum::<f64>() / n_chunks as f64).max(1.0);
+    let n_f = n_chunks as f64;
+    let exact_idfs: Vec<f64> = (0..q_len)
+        .map(|qi| blended_background_idf(n_f, f64::from(exact_df[qi]), &exact_terms[qi]))
+        .collect();
+    let stem_idfs: Vec<f64> = (0..q_len)
+        .map(|qi| {
+            let combined_df = exact_df[qi].max(stem_df[qi]);
+            blended_background_idf(n_f, f64::from(combined_df), &q_stems[qi])
+        })
+        .collect();
+    let total_q_idf: f64 = exact_idfs.iter().sum();
+
+    let mut raw_scores = vec![0.0f64; n_chunks];
+    for doc_idx in 0..n_chunks {
+        let dl = f64::from(lengths[doc_idx]);
+        let row = doc_idx * q_len;
+        let norm = 1.0 - b + b * dl / avg_dl;
+        let rw = role_weight(chunks[doc_idx].role);
+        let mut s = 0.0f64;
+        let mut matched_terms = 0usize;
+        for qi in 0..q_len {
+            let tf_ex = f64::from(exact_tf[row + qi]);
+            let tf_st = f64::from(stem_tf[row + qi]);
+            if tf_ex > 0.0 {
+                matched_terms += 1;
+                let tf_w = tf_ex * rw;
+                s += exact_idfs[qi] * ((tf_w * (k1 + 1.0)) / (tf_w + k1 * norm) + delta);
+            } else if tf_st > 0.0 {
+                matched_terms += 1;
+                let capped_st = saturate_stem_tf(tf_st / norm.max(0.25));
+                s += 0.32 * stem_idfs[qi] * capped_st;
+            }
+        }
+        if matched_terms >= 2 && min_spans[doc_idx] < u32::MAX {
+            let span = f64::from(min_spans[doc_idx]).max(matched_terms as f64);
+            let proximity = (matched_terms as f64 / span).powf(0.75);
+            s += 0.22 * total_q_idf * proximity;
+        }
+        let link_pen = if chunks[doc_idx].links.len() >= 3 && chunks[doc_idx].role == "paragraph" {
+            0.65
+        } else {
+            1.0
+        };
+        raw_scores[doc_idx] = s * link_pen;
+    }
+
+    let heading_boosts = compute_hierarchical_heading_boosts(chunks, &raw_scores);
+    let mut ranked: Vec<(usize, f64)> = raw_scores
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let final_s = if s > 0.0 { s + heading_boosts[i] } else { 0.0 };
+            (i, final_s)
+        })
+        .collect();
+    ranked.sort_by(|(a, sa), (b, sb)| sb.total_cmp(sa).then_with(|| a.cmp(b)));
+    ranked
+}
+
+/// Precomputed two-tier (`exact_hash64` + `simhash_64_idf_numeric`) top-$k$ selector (`D6`, `D20`, `D30`).
+pub fn bm25f_guarded_dual_channel_highlight_indices(
+    chunks: &[Chunk],
+    query: &str,
+    limit: usize,
+    delta: f64,
+    max_hamming: u32,
+) -> Vec<usize> {
+    if limit == 0 || chunks.is_empty() {
+        return Vec::new();
+    }
+    let ranked = bm25f_fused_single_pass(chunks, query, 1.2, 0.75, delta);
+    let mut selected = Vec::with_capacity(limit.min(ranked.len()));
+    let mut seen_exact = Vec::<u64>::with_capacity(limit.min(ranked.len()));
+    let mut seen_simhashes = Vec::<u64>::with_capacity(limit.min(ranked.len()));
+    for (index, score) in ranked {
+        if score <= 0.0 {
+            break;
+        }
+        let text = &chunks[index].text;
+        let mut ex_h = 0xcbf2_9ce4_8422_2325u64;
+        for b in text.as_bytes() {
+            ex_h ^= u64::from(*b);
+            ex_h = ex_h.wrapping_mul(0x0100_0000_01b3);
+        }
+        if seen_exact.contains(&ex_h) {
+            continue;
+        }
+        let sh = simhash_64_idf_numeric(text);
+        if sh != 0
+            && seen_simhashes
+                .iter()
+                .any(|&prev| (sh ^ prev).count_ones() <= max_hamming)
+        {
+            continue;
+        }
+        seen_exact.push(ex_h);
+        if sh != 0 {
+            seen_simhashes.push(sh);
+        }
+        selected.push(index);
+        if selected.len() == limit {
+            break;
+        }
+    }
+    selected
 }
 
 pub fn bm25(chunks: &[Chunk], query: &str, k1: f64, b: f64) -> Vec<(usize, f64)> {

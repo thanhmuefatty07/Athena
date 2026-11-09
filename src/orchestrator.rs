@@ -200,6 +200,33 @@ impl SourceContent {
     }
 }
 
+pub fn projection_retained_bytes(projection: &Projection) -> usize {
+    let chunk_bytes: usize = projection
+        .chunks
+        .iter()
+        .map(|c| {
+            std::mem::size_of::<projection::Chunk>()
+                .saturating_add(c.text.capacity())
+                .saturating_add(c.links.capacity() * std::mem::size_of::<u32>())
+        })
+        .sum();
+    let link_bytes: usize = projection
+        .links
+        .iter()
+        .map(|l| std::mem::size_of::<String>().saturating_add(l.capacity()))
+        .sum();
+    projection
+        .dom
+        .approx_bytes()
+        .saturating_add(chunk_bytes)
+        .saturating_add(link_bytes)
+}
+
+pub fn cached_source_estimated_bytes(projection: &Projection) -> usize {
+    let prepared_rank = PreparedRank::new(&projection.chunks);
+    projection_retained_bytes(&projection) + prepared_rank.retained_payload_bytes()
+}
+
 const CACHE_SHARDS: usize = 16;
 
 struct CachedSourceEntry {
@@ -601,8 +628,7 @@ impl Engine {
                     .run_blocking(move || {
                         let html = std::str::from_utf8(&response.payload)
                             .map_err(|_| PipelineError::InvalidUtf8)?;
-                        if !html.is_empty()
-                            && html.len() <= 32_768
+                        if html.len() <= 65_536
                             && let Some(reason) = crate::network::detect_soft_block(html.as_bytes())
                         {
                             return Err(PipelineError::SoftBlocked(reason));
@@ -610,12 +636,14 @@ impl Engine {
                         let page =
                             projection::parse_html_with_limits(html, &page_url, parse_limits)
                                 .map_err(PipelineError::Parse)?;
-                        let text_bytes: usize = page.chunks.iter().map(|c| c.text.len()).sum();
-                        let link_bytes: usize = page.links.iter().map(|l| l.len()).sum();
+                        if page.chunks.is_empty() {
+                            return Err(PipelineError::SoftBlocked(
+                                "empty_projected_chunks_js_shell",
+                            ));
+                        }
                         let prepared = OnceLock::new();
                         let approx = bytes_downloaded
-                            .saturating_add(text_bytes)
-                            .saturating_add(link_bytes)
+                            .saturating_add(projection_retained_bytes(&page))
                             .max(64);
                         Ok::<_, PipelineError>((Arc::new(page), Arc::new(prepared), approx))
                     })
@@ -1316,4 +1344,50 @@ mod tests {
         );
         assert_eq!(engine.cache_stats().entries, 1);
     }
+
+    #[tokio::test]
+    async fn zero_byte_and_empty_js_shell_http_200_do_not_poison_source_cache() {
+        let mut engine = Engine::with_cache(
+            2,
+            100,
+            CacheConfig {
+                max_entries: 4,
+                max_bytes: 1024 * 1024,
+                ttl: Duration::from_secs(60),
+            },
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_ref = Arc::clone(&calls);
+        engine.test_transport = Some(Arc::new(move |url, _etag, _permit| {
+            let url = url.clone();
+            let call_idx = calls_ref.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                let payload = match call_idx {
+                    0 => Bytes::new(),
+                    1 => Bytes::from_static(
+                        b"<html><body><div id=\"app\"></div><script src=\"/bundle.js\"></script></body></html>",
+                    ),
+                    _ => Bytes::from_static(
+                        b"<main><p>Hello world</p></main>",
+                    ),
+                };
+                Ok(crate::network::Fetched {
+                    final_url: url,
+                    status: 200,
+                    content_type: Some("text/html".into()),
+                    etag: Some("\"etag-v2\"".into()),
+                    payload,
+                })
+            })
+        }));
+        let policy = FetchPolicy::for_host("example.org");
+        assert!(engine.retrieve(request("Hello"), policy.clone()).await.is_err());
+        assert_eq!(engine.cache_stats().entries, 0);
+        assert!(engine.retrieve(request("Hello"), policy.clone()).await.is_err());
+        assert_eq!(engine.cache_stats().entries, 0);
+        let ok = engine.retrieve(request("Hello"), policy).await.unwrap();
+        assert!(ok.aae_jsonl.contains("Hello world"));
+        assert_eq!(engine.cache_stats().entries, 1);
+    }
 }
+

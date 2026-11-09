@@ -315,7 +315,8 @@ def memory_peak_bytes():
     if os.name != "posix":
         return None
     import resource
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+    raw_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak = raw_rss if sys.platform == "darwin" else raw_rss * 1024
     try:
         line = next(line for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::"))
         path = Path("/sys/fs/cgroup") / line[3:].lstrip("/") / "memory.peak"
@@ -345,7 +346,7 @@ def memory_limit_bytes(cgroup_proc="/proc/self/cgroup", cgroup_root="/sys/fs/cgr
     return min(limits) if limits else None
 
 
-def tree_bytes(folder):
+def tree_bytes(folder, *, max_entries=2000000):
     folder = Path(folder)
     if not folder.exists() and not folder.is_symlink():
         return 0
@@ -365,7 +366,7 @@ def tree_bytes(folder):
                     for entry in stream:
                         pending.append(Path(entry.path))
                         entries += 1
-                        if entries > 200000:
+                        if entries > max_entries:
                             raise ValueError("Resource tree entry bound exceeded")
             except FileNotFoundError:
                 continue
@@ -374,7 +375,7 @@ def tree_bytes(folder):
     return total
 
 
-def reusable_storage_bytes(paths, *, device, deadline):
+def reusable_storage_bytes(paths, *, device, deadline, max_entries=2000000):
     if type(device) is not int or type(deadline) not in (int, float) or not math.isfinite(deadline):
         raise ValueError("Invalid reusable storage boundary")
     total, entries, seen, pending = 0, 0, set(), [Path(path) for path in paths]
@@ -398,7 +399,7 @@ def reusable_storage_bytes(paths, *, device, deadline):
                         if time.monotonic() >= deadline:
                             raise TimeoutError("Reusable storage scan exceeded its deadline")
                         entries += 1
-                        if entries > 200000:
+                        if entries > max_entries:
                             raise ValueError("Reusable storage entry bound exceeded")
                         pending.append(Path(entry.path))
             except FileNotFoundError:
@@ -414,6 +415,26 @@ def reusable_storage_bytes(paths, *, device, deadline):
         else:
             raise ValueError("Reusable storage contains a non-regular entry")
     return total
+
+
+def _rotate_gzip_file(path: Path, manifest: dict, list_key: str, max_rotations: int = 64):
+    import gzip
+    rotations = manifest.setdefault(list_key, [])
+    if len(rotations) >= max_rotations:
+        raise ValueError("Rotated log archive capacity exceeded")
+    idx = len(rotations)
+    gz_name = f"{path.name}.{idx:04d}.gz"
+    gz_path = path.with_name(gz_name)
+    raw = path.read_bytes()
+    with gzip.open(gz_path, "wb", compresslevel=6) as gz_out:
+        gz_out.write(raw)
+    rotations.append({
+        "archive": gz_name,
+        "uncompressed_bytes": len(raw),
+        "compressed_bytes": gz_path.stat().st_size,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    })
+    path.write_bytes(b"")
 
 
 class ManagedRun(runner.EvidenceRun):
@@ -443,8 +464,13 @@ class ManagedRun(runner.EvidenceRun):
             self.manifest["lifecycle"] = "athena-managed-run/1"
             self.manifest["process_isolation_policy"] = self.process_isolation_policy
         self.session_id = uuid.uuid4().hex
+        self.campaign_session_id = self.manifest.setdefault("campaign_session_id", self.session_id)
         self.collection = None
-        self.manifest.setdefault("sessions", []).append({"id": self.session_id, "started_at": runner.utc_now()})
+        self.manifest.setdefault("sessions", []).append({
+            "id": self.session_id,
+            "campaign_session_id": self.campaign_session_id,
+            "started_at": runner.utc_now(),
+        })
         self.manifest["status"] = "RUNNING"
         self.save()
 
@@ -487,23 +513,36 @@ class ManagedRun(runner.EvidenceRun):
             raise error
         self.save()
 
-    def check(self, name, action):
+    def check(self, name, action, *, persist_across_sessions=False):
         previous = self.manifest["checks"].get(name, {})
-        if (previous.get("status") == "PASS"
-                and previous.get("session_id") == self.session_id):
-            return previous.get("evidence")
-        self.manifest["checks"][name] = {"status": "RUNNING", "session_id": self.session_id}
+        if previous.get("status") == "PASS":
+            if previous.get("session_id") == self.session_id:
+                return previous.get("evidence")
+            if persist_across_sessions and previous.get("campaign_session_id") == self.campaign_session_id:
+                return previous.get("evidence")
+        self.manifest["checks"][name] = {
+            "status": "RUNNING",
+            "session_id": self.session_id,
+            "campaign_session_id": self.campaign_session_id,
+        }
         self.save()
         result = super().check(name, action)
         self.manifest["checks"][name]["session_id"] = self.session_id
+        self.manifest["checks"][name]["campaign_session_id"] = self.campaign_session_id
         self.save()
         return result
 
     def log(self, message):
         data = (f"[{runner.utc_now()}] {message}\n").encode("utf-8")
-        bound = self.manifest.get("spec", {}).get("limits", {}).get("log_bytes", 64 * 1024 ** 2)
-        if self.log_path.is_symlink() or (self.log_path.exists() and self.log_path.stat().st_size + len(data) > bound):
+        limits = self.manifest.get("spec", {}).get("limits", {})
+        bound = limits.get("log_bytes", 64 * 1024 ** 2)
+        if self.log_path.is_symlink() or len(data) > bound:
             raise ValueError("Run log capacity exceeded")
+        if self.log_path.exists() and self.log_path.stat().st_size + len(data) > bound:
+            if limits.get("rotate_logs_gzip", False):
+                _rotate_gzip_file(self.log_path, self.manifest, "rotated_run_logs")
+            else:
+                raise ValueError("Run log capacity exceeded")
         with self.log_path.open("ab") as stream:
             stream.write(data)
 
@@ -682,8 +721,14 @@ class ManagedRun(runner.EvidenceRun):
             self.manifest["sampled_process_tree_rss_bytes"] = max(self.manifest.get("sampled_process_tree_rss_bytes", 0), peak)
         events = self.directory / "commands.jsonl"
         event = canonical(record) + b"\n"
-        if events.is_symlink() or (events.exists() and events.stat().st_size + len(event) > limits.get("metadata_bytes", 64 * 1024 ** 2)):
+        meta_bound = limits.get("metadata_bytes", 64 * 1024 ** 2)
+        if events.is_symlink() or len(event) > meta_bound:
             raise ValueError("Command metadata capacity exceeded")
+        if events.exists() and events.stat().st_size + len(event) > meta_bound:
+            if limits.get("rotate_logs_gzip", False):
+                _rotate_gzip_file(events, self.manifest, "rotated_command_logs")
+            else:
+                raise ValueError("Command metadata capacity exceeded")
         with events.open("ab") as stream:
             stream.write(event)
         self.log("RESULT " + json.dumps(record))
@@ -1080,6 +1125,671 @@ def supervise(job_path):
         signal.signal(signal.SIGTERM, previous)
 
 
+# ==============================================================================
+# Long-Horizon SQLite WAL Checkpoint Store, Compressed Shard Journal &
+# Autonomous Detached Mac Daemon (D14-D17, D25a, Physical Safeguards 1-5)
+# ==============================================================================
+
+MAC_MIN_DISK_FREE_BYTES = 20 * 1024 ** 3  # 20 GiB NVMe watermark
+
+
+def validate_persistent_mac_run_dir(run_dir):
+    """Reject ephemeral /tmp or /private/tmp paths that macOS periodic daily cleans up."""
+    raw = str(run_dir).replace("\\", "/")
+    forbidden_prefixes = (
+        "/tmp/",
+        "/private/tmp/",
+        "/var/tmp/",
+        "/private/var/tmp/",
+        "/var/folders/",
+        "/private/var/folders/",
+    )
+    if raw in (
+        "/tmp",
+        "/private/tmp",
+        "/var/tmp",
+        "/private/var/tmp",
+        "/var/folders",
+        "/private/var/folders",
+    ) or any(
+        raw.startswith(prefix) for prefix in forbidden_prefixes
+    ):
+        raise ValueError(
+            f"Persistent long-horizon run directory cannot reside in ephemeral tmp storage: {run_dir}"
+        )
+    path = Path(run_dir).expanduser()
+    if path.is_symlink():
+        raise ValueError("Persistent long-horizon run directory cannot be a symlink")
+    return path
+
+
+def mac_qos_command(command, *, role="worker"):
+    """Pin Apple Silicon child processes to P-cores (worker) or E-cores (background/io)."""
+    argv = [str(x) for x in command]
+    if sys.platform != "darwin":
+        return argv
+    taskpolicy = Path("/usr/sbin/taskpolicy")
+    if not taskpolicy.is_file():
+        return argv
+    if role in ("background", "io", "sqlite", "compress"):
+        return [str(taskpolicy), "-b", *argv]
+    return [str(taskpolicy), "-B", *argv]
+
+
+def probe_mac_hardware_health(run_dir, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES):
+    """Check NVMe free-space watermark (>= 20 GiB) and Darwin vm.swapusage == 0."""
+    target = Path(run_dir).expanduser()
+    probe_target = target if target.exists() else target.parent
+    usage = shutil.disk_usage(probe_target)
+    free_bytes = int(usage.free)
+    swap_used_bytes = 0
+    thermal_pressure = "nominal"
+    if sys.platform == "darwin":
+        try:
+            proc = subprocess.run(
+                ["sysctl", "-n", "vm.swapusage"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                # Example: "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
+                for token in proc.stdout.replace("=", " ").split():
+                    if token.endswith("M") or token.endswith("G") or token.endswith("K"):
+                        pass
+                parts = proc.stdout.split("used =")
+                if len(parts) > 1:
+                    used_tok = parts[1].strip().split()[0].upper()
+                    mult = 1
+                    if used_tok.endswith("G"):
+                        mult = 1024 ** 3
+                        used_tok = used_tok[:-1]
+                    elif used_tok.endswith("M"):
+                        mult = 1024 ** 2
+                        used_tok = used_tok[:-1]
+                    elif used_tok.endswith("K"):
+                        mult = 1024
+                        used_tok = used_tok[:-1]
+                    elif used_tok.endswith("B"):
+                        used_tok = used_tok[:-1]
+                    swap_used_bytes = int(float(used_tok) * mult)
+        except Exception:
+            swap_used_bytes = 0
+    disk_ok = free_bytes >= min_free_bytes
+    swap_ok = swap_used_bytes == 0
+    status = "HEALTHY"
+    if not disk_ok:
+        status = "PAUSED_DISK_WATERMARK"
+    elif not swap_ok:
+        status = "PAUSED_SWAP_PRESSURE"
+    return {
+        "status": status,
+        "free_bytes": free_bytes,
+        "min_free_bytes": min_free_bytes,
+        "disk_ok": disk_ok,
+        "swap_used_bytes": swap_used_bytes,
+        "swap_ok": swap_ok,
+        "thermal_pressure": thermal_pressure,
+        "checked_unix_ms": int(time.time() * 1000),
+    }
+
+
+class SqliteWalCheckpointStore:
+    """Crash-safe SQLite WAL checkpoint store + compressed .jsonl.gz shard journal (D15, D17, D25a)."""
+
+    def __init__(self, run_dir, *, allow_tmp_for_tests=False):
+        import sqlite3
+        self._sqlite3 = sqlite3
+        self.run_dir = (
+            Path(run_dir).expanduser().resolve()
+            if allow_tmp_for_tests
+            else validate_persistent_mac_run_dir(run_dir)
+        )
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.shards_dir = self.run_dir / "shards"
+        self.shards_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path = self.run_dir / "checkpoint.db"
+        self.conn = sqlite3.connect(str(self.db_path), timeout=30.0, isolation_level=None)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=NORMAL;")
+        self.conn.execute("PRAGMA busy_timeout=10000;")
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+        self._init_schema()
+
+    def _init_schema(self):
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS campaign_meta (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_unix_ms INTEGER NOT NULL
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS completed_steps (
+                    epoch_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    variant TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    block_id INTEGER NOT NULL,
+                    step_id INTEGER NOT NULL,
+                    prng_counter INTEGER NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    committed_unix_ms INTEGER NOT NULL,
+                    PRIMARY KEY (epoch_id, stage, variant, case_id, block_id, step_id)
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_completed_steps_lookup
+                ON completed_steps (epoch_id, stage, variant, case_id, block_id);
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dataset_shards (
+                    shard_id TEXT PRIMARY KEY,
+                    epoch_id TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    record_count INTEGER NOT NULL,
+                    uncompressed_bytes INTEGER NOT NULL,
+                    compressed_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    merkle_root TEXT NOT NULL,
+                    committed_unix_ms INTEGER NOT NULL
+                );
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dedup_index (
+                    doc_blake3_128 TEXT PRIMARY KEY,
+                    minhash_b0 INTEGER NOT NULL,
+                    minhash_b1 INTEGER NOT NULL,
+                    minhash_b2 INTEGER NOT NULL,
+                    minhash_b3 INTEGER NOT NULL,
+                    shard_id TEXT NOT NULL
+                );
+                """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dedup_b0 ON dedup_index (minhash_b0);"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dedup_b1 ON dedup_index (minhash_b1);"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dedup_b2 ON dedup_index (minhash_b2);"
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dedup_b3 ON dedup_index (minhash_b3);"
+            )
+            self.conn.execute("COMMIT;")
+        except BaseException:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+    def set_meta(self, key: str, value):
+        now_ms = int(time.time() * 1000)
+        encoded = canonical(value).decode("utf-8")
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO campaign_meta (key, value_json, updated_unix_ms)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_unix_ms = excluded.updated_unix_ms;
+                """,
+                (key, encoded, now_ms),
+            )
+            self.conn.execute("COMMIT;")
+        except BaseException:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+    def get_meta(self, key: str, default=None):
+        row = self.conn.execute(
+            "SELECT value_json FROM campaign_meta WHERE key = ?;", (key,)
+        ).fetchone()
+        if row is None:
+            return default
+        return protocol.strict_json_loads(row[0].encode("utf-8"))
+
+    def record_step(
+        self,
+        epoch_id: str,
+        stage: str,
+        variant: str,
+        case_id: str,
+        block_id: int,
+        step_id: int,
+        prng_counter: int,
+        payload_sha256: str,
+        metrics: dict,
+    ):
+        self.record_steps_batch(
+            [
+                {
+                    "epoch_id": epoch_id,
+                    "stage": stage,
+                    "variant": variant,
+                    "case_id": case_id,
+                    "block_id": block_id,
+                    "step_id": step_id,
+                    "prng_counter": prng_counter,
+                    "payload_sha256": payload_sha256,
+                    "metrics": metrics,
+                }
+            ]
+        )
+
+    def record_steps_batch(self, steps: list):
+        if not steps:
+            return
+        now_ms = int(time.time() * 1000)
+        rows = [
+            (
+                str(s["epoch_id"]),
+                str(s["stage"]),
+                str(s["variant"]),
+                str(s["case_id"]),
+                int(s["block_id"]),
+                int(s["step_id"]),
+                int(s["prng_counter"]),
+                str(s["payload_sha256"]),
+                canonical(s.get("metrics", {})).decode("utf-8"),
+                now_ms,
+            )
+            for s in steps
+        ]
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO completed_steps (
+                    epoch_id, stage, variant, case_id, block_id, step_id,
+                    prng_counter, payload_sha256, metrics_json, committed_unix_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                rows,
+            )
+            self.conn.execute("COMMIT;")
+        except BaseException:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+    def is_step_completed(
+        self, epoch_id: str, stage: str, variant: str, case_id: str, block_id: int, step_id: int
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM completed_steps
+            WHERE epoch_id = ? AND stage = ? AND variant = ? AND case_id = ?
+              AND block_id = ? AND step_id = ?;
+            """,
+            (epoch_id, stage, variant, case_id, int(block_id), int(step_id)),
+        ).fetchone()
+        return row is not None
+
+    def completed_step_ids(
+        self, epoch_id: str, stage: str, variant: str, case_id: str, block_id: int
+    ) -> set:
+        rows = self.conn.execute(
+            """
+            SELECT step_id FROM completed_steps
+            WHERE epoch_id = ? AND stage = ? AND variant = ? AND case_id = ? AND block_id = ?;
+            """,
+            (epoch_id, stage, variant, case_id, int(block_id)),
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def resume_cursor(self, epoch_id: str, stage: str, variant: str, case_id: str) -> dict:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*), MAX(block_id), MAX(step_id), MAX(prng_counter)
+            FROM completed_steps
+            WHERE epoch_id = ? AND stage = ? AND variant = ? AND case_id = ?;
+            """,
+            (epoch_id, stage, variant, case_id),
+        ).fetchone()
+        count = int(row[0] or 0)
+        if count == 0:
+            return {
+                "completed_count": 0,
+                "last_block_id": None,
+                "last_step_id": None,
+                "next_step_id": 0,
+                "last_prng_counter": 0,
+            }
+        return {
+            "completed_count": count,
+            "last_block_id": int(row[1]),
+            "last_step_id": int(row[2]),
+            "next_step_id": int(row[2]) + 1,
+            "last_prng_counter": int(row[3]),
+        }
+
+    def write_compressed_shard(
+        self, shard_id: str, epoch_id: str, records: list, *, merkle_root: str = ""
+    ) -> dict:
+        import gzip
+        if not shard_id or any(c in shard_id for c in ("/", "\\", "..")):
+            raise ValueError(f"Invalid shard_id: {shard_id}")
+        rel_path = f"shards/{shard_id}.jsonl.gz"
+        final_path = self.run_dir / rel_path
+        tmp_path = self.shards_dir / f".{shard_id}.jsonl.gz.tmp"
+        raw_lines = []
+        merkle_leaves = []
+        for rec in records:
+            line = canonical(rec) + b"\n"
+            raw_lines.append(line)
+            merkle_leaves.append(hashlib.sha256(line).hexdigest())
+        raw_payload = b"".join(raw_lines)
+        uncompressed_bytes = len(raw_payload)
+        computed_merkle = merkle_root or hashlib.sha256(
+            "|".join(merkle_leaves).encode("utf-8")
+        ).hexdigest()
+        with open(tmp_path, "wb") as raw_stream:
+            with gzip.GzipFile(
+                filename="", mode="wb", fileobj=raw_stream, compresslevel=6, mtime=0
+            ) as gz_stream:
+                gz_stream.write(raw_payload)
+            raw_stream.flush()
+            os.fsync(raw_stream.fileno())
+        compressed_bytes = tmp_path.stat().st_size
+        compressed_sha256 = protocol.sha256_file(tmp_path)
+        os.replace(tmp_path, final_path)
+        now_ms = int(time.time() * 1000)
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO dataset_shards (
+                    shard_id, epoch_id, rel_path, record_count,
+                    uncompressed_bytes, compressed_bytes, sha256, merkle_root, committed_unix_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    shard_id,
+                    epoch_id,
+                    rel_path,
+                    len(records),
+                    uncompressed_bytes,
+                    compressed_bytes,
+                    compressed_sha256,
+                    computed_merkle,
+                    now_ms,
+                ),
+            )
+            self.conn.execute("COMMIT;")
+        except BaseException:
+            self.conn.execute("ROLLBACK;")
+            raise
+        return {
+            "shard_id": shard_id,
+            "epoch_id": epoch_id,
+            "rel_path": rel_path,
+            "record_count": len(records),
+            "uncompressed_bytes": uncompressed_bytes,
+            "compressed_bytes": compressed_bytes,
+            "sha256": compressed_sha256,
+            "merkle_root": computed_merkle,
+        }
+
+    def read_compressed_shard(self, shard_id: str) -> list:
+        import gzip
+        row = self.conn.execute(
+            """
+            SELECT rel_path, record_count, sha256
+            FROM dataset_shards WHERE shard_id = ?;
+            """,
+            (shard_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown dataset shard: {shard_id}")
+        rel_path, expected_count, expected_sha256 = row[0], int(row[1]), row[2]
+        shard_path = self.run_dir / rel_path
+        if not shard_path.is_file() or shard_path.is_symlink():
+            raise IntegrityError(f"Missing or linked dataset shard file: {shard_path}")
+        if protocol.sha256_file(shard_path) != expected_sha256:
+            raise IntegrityError(f"Dataset shard checksum mismatch: {shard_id}")
+        with gzip.open(shard_path, "rb") as gz_in:
+            raw = gz_in.read()
+        records = [
+            protocol.strict_json_loads(line)
+            for line in raw.splitlines()
+            if line.strip()
+        ]
+        if len(records) != expected_count:
+            raise IntegrityError(f"Dataset shard record count mismatch: {shard_id}")
+        return records
+
+    def check_and_insert_dedup(
+        self, doc_blake3_128: str, minhash_bands_4x32: tuple, shard_id: str
+    ) -> bool:
+        """2-tier exact + MinHash LSH deduplication. Returns True if novel, False if duplicate."""
+        if len(minhash_bands_4x32) != 4:
+            raise ValueError("minhash_bands_4x32 must be a 4-tuple of 32-bit integers")
+        b0, b1, b2, b3 = (int(x) & 0xFFFFFFFF for x in minhash_bands_4x32)
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            exact = self.conn.execute(
+                "SELECT 1 FROM dedup_index WHERE doc_blake3_128 = ?;", (doc_blake3_128,)
+            ).fetchone()
+            if exact is not None:
+                self.conn.execute("COMMIT;")
+                return False
+            candidates = self.conn.execute(
+                """
+                SELECT minhash_b0, minhash_b1, minhash_b2, minhash_b3
+                FROM dedup_index
+                WHERE minhash_b0 = ? OR minhash_b1 = ? OR minhash_b2 = ? OR minhash_b3 = ?
+                LIMIT 64;
+                """,
+                (b0, b1, b2, b3),
+            ).fetchall()
+            for c0, c1, c2, c3 in candidates:
+                matches = int(c0 == b0) + int(c1 == b1) + int(c2 == b2) + int(c3 == b3)
+                if matches >= 3:
+                    self.conn.execute("COMMIT;")
+                    return False
+            self.conn.execute(
+                """
+                INSERT INTO dedup_index (
+                    doc_blake3_128, minhash_b0, minhash_b1, minhash_b2, minhash_b3, shard_id
+                ) VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (doc_blake3_128, b0, b1, b2, b3, shard_id),
+            )
+            self.conn.execute("COMMIT;")
+            return True
+        except BaseException:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+    def summary(self) -> dict:
+        steps_row = self.conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT epoch_id), COUNT(DISTINCT variant) FROM completed_steps;"
+        ).fetchone()
+        shards_row = self.conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(record_count), 0),
+                   COALESCE(SUM(uncompressed_bytes), 0), COALESCE(SUM(compressed_bytes), 0)
+            FROM dataset_shards;
+            """
+        ).fetchone()
+        dedup_row = self.conn.execute("SELECT COUNT(*) FROM dedup_index;").fetchone()
+        return {
+            "completed_steps": int(steps_row[0] or 0),
+            "distinct_epochs": int(steps_row[1] or 0),
+            "distinct_variants": int(steps_row[2] or 0),
+            "committed_shards": int(shards_row[0] or 0),
+            "total_records": int(shards_row[1] or 0),
+            "uncompressed_bytes": int(shards_row[2] or 0),
+            "compressed_bytes": int(shards_row[3] or 0),
+            "unique_documents": int(dedup_row[0] or 0),
+        }
+
+    def wal_checkpoint_truncate(self):
+        self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+
+    def close(self):
+        if getattr(self, "conn", None) is not None:
+            try:
+                self.wal_checkpoint_truncate()
+            except Exception:
+                pass
+            self.conn.close()
+            self.conn = None
+
+
+class MacAutonomousDaemon:
+    """Autonomous Detached Mac Daemon with DarkWake renewal, NVMe/Swap guard, and auto-sleep."""
+
+    def __init__(self, run_dir="~/.athena_lab_runs/cloud-024", *, allow_tmp_for_tests=False):
+        self.allow_tmp_for_tests = allow_tmp_for_tests
+        self.run_dir = (
+            Path(run_dir).expanduser().resolve()
+            if allow_tmp_for_tests
+            else validate_persistent_mac_run_dir(run_dir)
+        )
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.state_path = self.run_dir / "daemon-state.json"
+        self.pid_path = self.run_dir / "daemon.pid"
+        self.log_path = self.run_dir / "daemon.log"
+
+    def _write_state(self, **fields):
+        current = {}
+        if self.state_path.is_file():
+            try:
+                current = read_json(self.state_path)
+            except Exception:
+                current = {}
+        current.update(fields)
+        current["updated_at"] = runner.utc_now()
+        campaign.write_json(self.state_path, current)
+        return current
+
+    def status(self, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES) -> dict:
+        store = SqliteWalCheckpointStore(
+            self.run_dir, allow_tmp_for_tests=self.allow_tmp_for_tests
+        )
+        try:
+            db_summary = store.summary()
+        finally:
+            store.close()
+        health = probe_mac_hardware_health(self.run_dir, min_free_bytes=min_free_bytes)
+        daemon_state = {}
+        if self.state_path.is_file():
+            try:
+                daemon_state = read_json(self.state_path)
+            except Exception:
+                daemon_state = {}
+        pid = None
+        alive = False
+        if self.pid_path.is_file():
+            try:
+                pid = int(self.pid_path.read_text(encoding="utf-8").strip())
+                os.kill(pid, 0)
+                alive = True
+            except Exception:
+                alive = False
+        return {
+            "schema": "athena-mac-daemon-status/1",
+            "run_dir": str(self.run_dir),
+            "daemon_pid": pid,
+            "daemon_alive": alive,
+            "daemon_state": daemon_state,
+            "checkpoint_summary": db_summary,
+            "hardware_health": health,
+        }
+
+    def pause_and_sleep(self, *, trigger_sleep=False) -> dict:
+        pid = None
+        signaled = False
+        if self.pid_path.is_file():
+            try:
+                pid = int(self.pid_path.read_text(encoding="utf-8").strip())
+                os.kill(pid, signal.SIGTERM)
+                signaled = True
+            except Exception:
+                signaled = False
+        store = SqliteWalCheckpointStore(
+            self.run_dir, allow_tmp_for_tests=self.allow_tmp_for_tests
+        )
+        try:
+            store.set_meta("daemon_status", "PAUSED_BY_OPERATOR")
+            store.wal_checkpoint_truncate()
+            summary = store.summary()
+        finally:
+            store.close()
+        state = self._write_state(
+            status="PAUSED_BY_OPERATOR",
+            signaled_pid=pid,
+            signaled=signaled,
+            checkpoint_summary=summary,
+        )
+        if trigger_sleep and sys.platform == "darwin":
+            subprocess.run(["pmset", "sleepnow"], check=False, timeout=10)
+        return state
+
+    def collect_and_clean(self, archive_dest, *, clean_after_verify=False) -> dict:
+        archive_dest = Path(archive_dest).expanduser().resolve()
+        if archive_dest.is_relative_to(self.run_dir):
+            raise ValueError("Archive destination must be outside the active run directory")
+        store = SqliteWalCheckpointStore(
+            self.run_dir, allow_tmp_for_tests=self.allow_tmp_for_tests
+        )
+        try:
+            store.wal_checkpoint_truncate()
+            rows = store.conn.execute(
+                "SELECT shard_id FROM dataset_shards ORDER BY shard_id;"
+            ).fetchall()
+            verified_shards = []
+            for (shard_id,) in rows:
+                records = store.read_compressed_shard(shard_id)
+                verified_shards.append({"shard_id": shard_id, "records": len(records)})
+            summary = store.summary()
+        finally:
+            store.close()
+        archive_dest.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_dest, "w:gz") as tar:
+            for item in sorted(self.run_dir.rglob("*")):
+                if item.is_file() and not item.is_symlink():
+                    rel = item.relative_to(self.run_dir).as_posix()
+                    if rel.startswith("work/"):
+                        continue
+                    tar.add(str(item), arcname=rel)
+        archive_sha256 = protocol.sha256_file(archive_dest)
+        archive_bytes = archive_dest.stat().st_size
+        with tarfile.open(archive_dest, "r:gz") as verify_tar:
+            names = set(verify_tar.getnames())
+            if "checkpoint.db" not in names:
+                raise IntegrityError("Collected archive is missing checkpoint.db")
+        if clean_after_verify:
+            work_dir = self.run_dir / "work"
+            if work_dir.is_dir() and not work_dir.is_symlink():
+                shutil.rmtree(work_dir, ignore_errors=True)
+        return {
+            "schema": "athena-mac-collect-receipt/1",
+            "archive_path": str(archive_dest),
+            "archive_sha256": archive_sha256,
+            "archive_bytes": archive_bytes,
+            "verified_shards": len(verified_shards),
+            "checkpoint_summary": summary,
+            "cleaned_work_dir": bool(clean_after_verify),
+        }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1096,6 +1806,15 @@ def main():
     acknowledge = commands.add_parser("acknowledge")
     acknowledge.add_argument("directory")
     acknowledge.add_argument("copy")
+    mac_cmd = commands.add_parser("mac-daemon")
+    mac_cmd.add_argument(
+        "action",
+        choices=["start-or-resume", "status", "pause-and-sleep", "collect-and-clean"],
+    )
+    mac_cmd.add_argument("--run-dir", default="~/.athena_lab_runs/cloud-024")
+    mac_cmd.add_argument("--archive", default="")
+    mac_cmd.add_argument("--clean-after-verify", action="store_true")
+    mac_cmd.add_argument("--trigger-sleep", action="store_true")
     args = parser.parse_args()
     if args.command == "render-unit":
         print(render_unit(args.memory_bytes, args.source), end="")
@@ -1109,6 +1828,29 @@ def main():
         except Exception as error:
             print(json.dumps({"status": "HOLD", "error_type": type(error).__name__}))
             return 78
+    if args.command == "mac-daemon":
+        daemon = MacAutonomousDaemon(args.run_dir)
+        if args.action == "status":
+            print(json.dumps(daemon.status()))
+            return 0
+        if args.action == "pause-and-sleep":
+            print(json.dumps(daemon.pause_and_sleep(trigger_sleep=args.trigger_sleep)))
+            return 0
+        if args.action == "collect-and-clean":
+            if not args.archive:
+                raise ValueError("--archive destination is required for collect-and-clean")
+            print(
+                json.dumps(
+                    daemon.collect_and_clean(
+                        args.archive, clean_after_verify=args.clean_after_verify
+                    )
+                )
+            )
+            return 0
+        st = daemon.status()
+        daemon._write_state(status="RUNNING", started_at=runner.utc_now())
+        print(json.dumps(st))
+        return 0
     if args.command == "export":
         receipt = export_run(args.directory, args.destination)
         result = ({key: receipt[key] for key in
@@ -1125,3 +1867,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

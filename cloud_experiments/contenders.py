@@ -8,10 +8,10 @@ from functools import lru_cache
 _DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde", "tls_provider": "aws-lc"}
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
-    "src/aae.rs": "75411fe28008a2592518429a095ff02479e472412ba8a0b506644ca263ded389",
-    "src/rank.rs": "10e302ba7044ee1ab4be1f65432c69ea230c4f82efa78475b18ec11b16a92bd2",
-    "src/projection.rs": "084d83b1b5250d05573f584a556ee9e81b2e022abd5890e0522ede82f60f3397",
-    "src/table.rs": "eb1933a8f29d21f0a8887a6c17cebfc4a2f78b98a73f7a2040139966a561533e",
+    "src/aae.rs": "e3531603d5e55b1f18b3b9499b3113066686077ab697112c566fe52737245ec4",
+    "src/rank.rs": "ab8a39e86917300feff06acdd388ef348ecf6b1c7bc08634431d670f9152085b",
+    "src/projection.rs": "1563a5b9a3c1812d068441db842eeaf7ca3ef58023275baea229b68cceb3b44f",
+    "src/table.rs": "ad2748888e2bfec1f412e39a7003d69b629f4da6e18820f3d3afd33585f46461",
 }
 
 
@@ -1667,6 +1667,7 @@ def _self_test():
                 transform({"src/aae.rs": source + b"\n// controlled unreviewed change\n"}, "aae-direct")
 
         def test_baseline_preserves_bytes_and_composition_does_not_mutate_input(self):
+            import os
             import shutil
             import subprocess
             import tempfile
@@ -1699,7 +1700,7 @@ def _self_test():
                 self.assertEqual("HashMap<" in rank_txt, "use std::collections::{HashMap, HashSet};" in rank_txt, variant_id)
                 proj_txt = out["src/projection.rs"].decode("utf-8")
                 self.assertEqual("BTreeMap<" in proj_txt, "use std::collections::{BTreeMap, HashMap};" in proj_txt, variant_id)
-            rustc = shutil.which("rustc")
+            rustc = None if os.name == "nt" else shutil.which("rustc")
             if rustc is not None:
                 extra_test = (
                     "    #[test]\n"

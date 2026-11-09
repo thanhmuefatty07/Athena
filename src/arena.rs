@@ -20,6 +20,17 @@ pub enum Tag {
     H2,
     H3,
     H4,
+    H5,
+    H6,
+    Blockquote,
+    Dl,
+    Dt,
+    Dd,
+    Figcaption,
+    Caption,
+    Br,
+    Sup,
+    Sub,
     Table,
     Thead,
     Tbody,
@@ -40,7 +51,75 @@ pub enum Tag {
     Form,
     Script,
     Style,
+    Math,
+    Mrow,
+    Msup,
+    Msub,
+    Mmsubsup,
+    Mfrac,
+    Msqrt,
+    Mroot,
+    Mtable,
+    Mtr,
+    Mtd,
+    Mover,
+    Munder,
+    Munderover,
+    Mi,
+    Mn,
+    Mo,
+    Mtext,
+    Mspace,
+    Mstyle,
+    Mpadded,
+    Semantics,
+    Annotation,
     Unknown,
+}
+
+impl Tag {
+    #[inline]
+    pub const fn is_math_tag(self) -> bool {
+        matches!(
+            self,
+            Self::Math
+                | Self::Mrow
+                | Self::Msup
+                | Self::Msub
+                | Self::Mmsubsup
+                | Self::Mfrac
+                | Self::Msqrt
+                | Self::Mroot
+                | Self::Mtable
+                | Self::Mtr
+                | Self::Mtd
+                | Self::Mover
+                | Self::Munder
+                | Self::Munderover
+                | Self::Mi
+                | Self::Mn
+                | Self::Mo
+                | Self::Mtext
+                | Self::Mspace
+                | Self::Mstyle
+                | Self::Mpadded
+                | Self::Semantics
+                | Self::Annotation
+        )
+    }
+
+    #[inline]
+    pub const fn heading_level(self) -> Option<usize> {
+        match self {
+            Self::H1 => Some(1),
+            Self::H2 => Some(2),
+            Self::H3 => Some(3),
+            Self::H4 => Some(4),
+            Self::H5 => Some(5),
+            Self::H6 => Some(6),
+            _ => None,
+        }
+    }
 }
 
 /// 32-byte payload, alignment 4, stored contiguously.
@@ -100,6 +179,12 @@ pub fn set_pending_bib_hrefs(hrefs: Vec<(NodeId, String)>) {
     });
 }
 
+pub fn clear_pending_bib_hrefs() {
+    PENDING_BIB_HREFS.with(|cell| {
+        cell.borrow_mut().clear();
+    });
+}
+
 /// Owns a ref-counted raw buffer. Reuse across unrelated requests is safe
 /// from a Rust lifetime perspective; sharing still requires synchronization.
 pub struct DomArena {
@@ -121,12 +206,49 @@ impl DomArena {
         }
     }
 
+    pub fn with_unindexed_bib_hrefs(
+        raw: Bytes,
+        capacity: usize,
+        mut unindexed_bib_hrefs: Vec<(NodeId, String)>,
+    ) -> Self {
+        let mut nodes = Vec::with_capacity(capacity.max(1));
+        nodes.push(Node::root());
+        let pending = PENDING_BIB_HREFS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        if unindexed_bib_hrefs.is_empty() && !pending.is_empty() {
+            unindexed_bib_hrefs = pending;
+        }
+        Self {
+            raw,
+            nodes,
+            unindexed_bib_hrefs,
+        }
+    }
+
+    #[inline]
+    pub fn set_unindexed_bib_hrefs(&mut self, hrefs: Vec<(NodeId, String)>) {
+        self.unindexed_bib_hrefs = hrefs;
+    }
+
+    #[inline]
+    pub fn approx_bytes(&self) -> usize {
+        let href_heap: usize = self
+            .unindexed_bib_hrefs
+            .iter()
+            .map(|(_, h)| h.capacity())
+            .sum();
+        self.raw.len()
+            + self.nodes.capacity() * std::mem::size_of::<Node>()
+            + self.unindexed_bib_hrefs.capacity() * std::mem::size_of::<(NodeId, String)>()
+            + href_heap
+    }
+
     #[inline]
     pub fn reset(&mut self, raw: Bytes) {
         self.raw = raw;
         self.nodes.truncate(1);
         self.nodes[0] = Node::root();
         self.unindexed_bib_hrefs.clear();
+        clear_pending_bib_hrefs();
     }
 
     #[inline]

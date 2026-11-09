@@ -5388,6 +5388,174 @@ class HighEfficiencyDesignAndForecastTests(unittest.TestCase):
             self.assertIn("collect_unindexed_bib_hrefs(", proj_txt, variant_id)
             self.assertIn("hybrid_rrf_simhash_highlight_indices", rank_txt, variant_id)
 
+    def test_cloud_024_breakthrough_deliverables_and_autonomous_daemon_contracts(self):
+        from cloud_experiments import contenders, experimental_design, lifecycle, workloads
+
+        root = Path(__file__).resolve().parents[1]
+        names = [
+            "src/aae.rs",
+            "src/arena.rs",
+            "src/bandit.rs",
+            "src/network.rs",
+            "src/orchestrator.rs",
+            "src/rank.rs",
+            "src/projection.rs",
+            "src/table.rs",
+            "cloud_experiments/core_probe.rs",
+            "Cargo.toml",
+            "Cargo.lock",
+        ]
+        source = {name: (root / name).read_bytes() for name in names}
+        for lock_path in (root / "cloud_experiments/locks").glob("*.lock"):
+            source[f"cloud_experiments/locks/{lock_path.name}"] = lock_path.read_bytes()
+
+        # Verify Deliverable 1 core upgrades across all 8 Rust files
+        self.assertIn(b"pub fn clear_pending_bib_hrefs()", source["src/arena.rs"])
+        self.assertIn(b"pub fn approx_bytes(&self) -> usize", source["src/arena.rs"])
+        self.assertIn(b"pub const fn is_math_tag(self) -> bool", source["src/arena.rs"])
+        self.assertIn(b"Mspace,", source["src/arena.rs"])
+        self.assertIn(b"Semantics,", source["src/arena.rs"])
+        self.assertIn(b"pub fn expand_tolerant(", source["src/table.rs"])
+        self.assertIn(b"pub fn ground_grid_cells(", source["src/table.rs"])
+        self.assertIn(b"pub fn normalize_unicode_nfc(", source["src/projection.rs"])
+        self.assertIn(b"pub fn extract_math_and_script_latex(", source["src/projection.rs"])
+        self.assertIn(b"pub fn sanitize_and_split_code_block(", source["src/projection.rs"])
+        self.assertIn(b"pub fn parse_html_breakthrough(", source["src/projection.rs"])
+        self.assertIn(b"pub fn stem_token_guarded(", source["src/rank.rs"])
+        self.assertIn(b"pub fn saturate_stem_tf(", source["src/rank.rs"])
+        self.assertIn(b"pub fn split_compound_identifier(", source["src/rank.rs"])
+        self.assertIn(b"pub fn simhash_64_idf_numeric(", source["src/rank.rs"])
+        self.assertIn(b"pub fn minhash_128_signature(", source["src/rank.rs"])
+        self.assertIn(b"fn min_window_span(pos_lists: &[Vec<u32>]) -> u32", source["src/rank.rs"])
+        self.assertIn(b"pub fn bm25f_fused_single_pass(", source["src/rank.rs"])
+        self.assertIn(b"pub fn bm25f_guarded_dual_channel_highlight_indices(", source["src/rank.rs"])
+        self.assertIn(b"pub struct MerkleProvenanceTuple", source["src/aae.rs"])
+        self.assertIn(b"pub merkle_hash_hex: String,", source["src/aae.rs"])
+        self.assertIn(b"pub fn export_contrastive_training_records(", source["src/aae.rs"])
+        self.assertIn(b"pub fn detect_soft_block_with_headers(", source["src/network.rs"])
+        self.assertIn(b"pub struct EmpiricalBayesProxyPool", source["src/bandit.rs"])
+        self.assertIn(b"pub fn observe(&mut self, asn: &str, subnet: &str, ip: &str, success: bool)", source["src/bandit.rs"])
+        self.assertIn(b"pub fn posterior_survival(&self, asn: &str, subnet: &str, ip: &str) -> f64", source["src/bandit.rs"])
+        self.assertIn(b"pub struct CusumDetector", source["src/bandit.rs"])
+        self.assertIn(b"pub fn reset(&mut self)", source["src/bandit.rs"])
+        self.assertIn(b"empty_projected_chunks_js_shell", source["src/orchestrator.rs"])
+        self.assertIn(b"detect_soft_block_with_headers(body.as_bytes(), headers)", source["cloud_experiments/core_probe.rs"])
+        self.assertIn(b"export_contrastive_training_records(&bt, &input.url, q, 3, 4)", source["cloud_experiments/core_probe.rs"])
+        self.assertIn(b"--checkpoint-db", source["cloud_experiments/core_probe.rs"])
+        self.assertEqual(
+            source["cloud_experiments/core_probe.rs"].count(
+                b"let bytes = serde_json::to_vec(frame).map_err(|e| e.to_string())?;"
+            ),
+            1,
+        )
+
+        # Verify all 225 contender transformations preserve cloud-024 symbols
+        for variant_id in experimental_design.native_design()["variants"]:
+            out = contenders.transform(source, variant_id)
+            self.assertIn(b"pub fn expand_tolerant(", out["src/table.rs"], variant_id)
+            self.assertIn(b"pub fn parse_html_breakthrough(", out["src/projection.rs"], variant_id)
+            self.assertIn(b"pub fn bm25f_fused_single_pass(", out["src/rank.rs"], variant_id)
+            self.assertIn(b"pub fn export_contrastive_training_records(", out["src/aae.rs"], variant_id)
+
+        # Verify Deliverable 2: SqliteWalCheckpointStore (WAL mode, compressed .jsonl.gz shards, 2-tier dedup)
+        with tempfile.TemporaryDirectory(prefix="athena-cloud024-ckpt-") as folder:
+            run_dir = Path(folder) / "cloud-024-run"
+            store = lifecycle.SqliteWalCheckpointStore(run_dir, allow_tmp_for_tests=True)
+            try:
+                mode_row = store.conn.execute("PRAGMA journal_mode;").fetchone()
+                self.assertEqual(str(mode_row[0]).lower(), "wal")
+                store.set_meta("campaign_session_id", "sess01")
+                self.assertEqual(store.get_meta("campaign_session_id"), "sess01")
+                batch = [
+                    {
+                        "epoch_id": "epoch-01",
+                        "stage": "confirm",
+                        "variant": "baseline",
+                        "case_id": "cloud-024-mathml-latex-led",
+                        "block_id": 0,
+                        "step_id": i,
+                        "prng_counter": 100 + i,
+                        "payload_sha256": f"{i:064x}",
+                        "metrics": {"math_led": 0.0, "step": i},
+                    }
+                    for i in range(5)
+                ]
+                store.record_steps_batch(batch)
+                self.assertEqual(
+                    store.completed_step_ids(
+                        "epoch-01", "confirm", "baseline", "cloud-024-mathml-latex-led", 0
+                    ),
+                    {0, 1, 2, 3, 4},
+                )
+                cursor = store.resume_cursor(
+                    "epoch-01", "confirm", "baseline", "cloud-024-mathml-latex-led"
+                )
+                self.assertEqual(cursor["completed_count"], 5)
+                self.assertEqual(cursor["next_step_id"], 5)
+                self.assertEqual(cursor["last_prng_counter"], 104)
+
+                shard_info = store.write_compressed_shard(
+                    "shard-0000", "epoch-01", batch, merkle_root="a" * 64
+                )
+                self.assertTrue((run_dir / shard_info["rel_path"]).is_file())
+                read_back = store.read_compressed_shard("shard-0000")
+                self.assertEqual(len(read_back), 5)
+
+                # 2-tier deduplication index (Blake3-128 exact + 4x32 MinHash LSH >= 3/4 bands)
+                self.assertTrue(
+                    store.check_and_insert_dedup(
+                        "00112233445566778899aabbccddeeff",
+                        (0x11111111, 0x22222222, 0x33333333, 0x44444444),
+                        "shard-0000",
+                    )
+                )
+                self.assertFalse(
+                    store.check_and_insert_dedup(
+                        "00112233445566778899aabbccddeeff",
+                        (0x99999999, 0x88888888, 0x77777777, 0x66666666),
+                        "shard-0000",
+                    )
+                )
+                self.assertFalse(
+                    store.check_and_insert_dedup(
+                        "ffeeddccbbaa99887766554433221100",
+                        (0x11111111, 0x22222222, 0x33333333, 0x99999999),
+                        "shard-0000",
+                    )
+                )
+            finally:
+                store.close()
+
+            # Verify MacAutonomousDaemon rejects volatile /tmp paths
+            with self.assertRaisesRegex(ValueError, "ephemeral tmp storage"):
+                lifecycle.validate_persistent_mac_run_dir("/private/tmp/athena-volatile")
+            with self.assertRaisesRegex(ValueError, "ephemeral tmp storage"):
+                lifecycle.validate_persistent_mac_run_dir("/var/folders/ab/cd/athena")
+
+        # Verify Deliverable 2: cloud_024_breakthrough_cases and Philox CRN substream orthogonality
+        for split in ("screen", "confirm"):
+            cases = workloads.cloud_024_breakthrough_cases(split)
+            self.assertEqual(len(cases), 6)
+            self.assertEqual(
+                [c["id"] for c in cases],
+                [
+                    "cloud-024-mathml-latex-led",
+                    "cloud-024-tolerant-table-teds",
+                    "cloud-024-code-ast-sanitization",
+                    "cloud-024-orphan-prose-discourse-cleaneval",
+                    "cloud-024-multihop-ir-contrastive-aae2",
+                    "cloud-024-deconfounded-waf-crn-replay",
+                ],
+            )
+            default_native = workloads.native_cases(split)
+            with_c024 = workloads.native_cases(split, include_cloud_024=True)
+            self.assertEqual(len(with_c024), len(default_native) + 6)
+        u_env_1 = workloads.philox_u01(12345, 77, 0, 0)
+        _u_bandit = workloads.philox_u01(12345, 77, 1, 50)
+        u_env_2 = workloads.philox_u01(12345, 77, 0, 0)
+        self.assertEqual(u_env_1, u_env_2)
+        self.assertTrue(0.0 < u_env_1 < 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -610,7 +610,7 @@ def _bootstrap_batches(rounds, probabilities, draws, seed, batch_size, deadline=
 
 
 
-def synthetic_cases(split, *, include_harsh_stress=False, include_annas_archive=False):
+def synthetic_cases(split, *, include_harsh_stress=False, include_annas_archive=False, include_cloud_024=False):
     """Finite causal partitions, with fresh bytes but no domain-generalization claim."""
     if split not in ("screen", "confirm"):
         raise ValueError("Unknown fixture split")
@@ -674,6 +674,7 @@ def synthetic_cases(split, *, include_harsh_stress=False, include_annas_archive=
             split,
             include_harsh_stress=include_harsh_stress,
             include_annas_archive=include_annas_archive,
+            include_cloud_024=include_cloud_024,
         )
     )
     return cases
@@ -815,13 +816,14 @@ def readiness(design, records):
             "result_authenticity": AUTHENTICITY}
 
 
-def study_cases(files, split, *, include_harsh_stress=False, include_annas_archive=False):
+def study_cases(files, split, *, include_harsh_stress=False, include_annas_archive=False, include_cloud_024=False):
     from cloud_experiments import workloads
     return (
         synthetic_cases(
             split,
             include_harsh_stress=include_harsh_stress,
             include_annas_archive=include_annas_archive,
+            include_cloud_024=include_cloud_024,
         )
         + workloads.corpus_cases(files, split)
     )
@@ -829,7 +831,7 @@ def study_cases(files, split, *, include_harsh_stress=False, include_annas_archi
 
 def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
             screen_blocks=None, screen_iterations=None, confirm_blocks=None, confirm_iterations=None,
-            include_harsh_stress=False, include_annas_archive=False, slots_per_owner=None):
+            include_harsh_stress=False, include_annas_archive=False, include_cloud_024=False, slots_per_owner=None):
     from cloud_experiments import contenders, libraries, workloads
     destination = Path(destination)
 
@@ -877,6 +879,8 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
             design["include_harsh_stress"] = True
         if include_annas_archive:
             design["include_annas_archive"] = True
+        if include_cloud_024:
+            design["include_cloud_024"] = True
         if slots_per_owner is not None:
             if type(slots_per_owner) is not int or not 1 <= slots_per_owner <= 16:
                 raise ValueError("Invalid selection slots_per_owner")
@@ -884,7 +888,7 @@ def prepare(destination, corpus_manifest=None, wall_seconds=None, *,
         design.update(source_sha256=hashlib.sha256(archive).hexdigest(),
                       files={k: hashlib.sha256(v).hexdigest() for k, v in sorted(files.items())},
                       variants=contenders.definitions(),
-                      fixtures={split: fixture_inventory(study_cases(files, split, include_harsh_stress=include_harsh_stress, include_annas_archive=include_annas_archive), split)
+                      fixtures={split: fixture_inventory(study_cases(files, split, include_harsh_stress=include_harsh_stress, include_annas_archive=include_annas_archive, include_cloud_024=include_cloud_024), split)
                                 for split in ("screen", "confirm")},
                       library_dossier=libraries.dossier(ROOT),
                       corpus={"status": "NOT_PROVIDED"} if corpus is None else
@@ -1603,11 +1607,19 @@ def _build(run, workspace, files, variant, target_cache):
         dependency_inputs = libraries.verify_build_inputs(files, transformed, definition["factors"])
         if previous.get("dependency_input_evidence") != dependency_inputs:
             raise lifecycle.IntegrityError("Resumed binary lacks matching pre-build dependency verification")
-        _materialize(workspace, files, variant, transformed)
-        with _cargo_environment(build, target_cache) as cargo_home:
-            _assert_cargo_configuration_absent(workspace, cargo_home)
-            graph = libraries.offline_dependency_metadata(
-                run, workspace, cargo_feature_args=build["cargo_feature_args"])
+        lock_key = (hashlib.sha256(transformed["Cargo.lock"]).hexdigest(), tuple(build["cargo_feature_args"]))
+        dep_cache = getattr(run, "_resumed_dep_graphs", None)
+        if dep_cache is None:
+            dep_cache = {}
+            setattr(run, "_resumed_dep_graphs", dep_cache)
+        graph = dep_cache.get(lock_key)
+        if graph is None:
+            _materialize(workspace, files, variant, transformed)
+            with _cargo_environment(build, target_cache) as cargo_home:
+                _assert_cargo_configuration_absent(workspace, cargo_home)
+                graph = libraries.offline_dependency_metadata(
+                    run, workspace, cargo_feature_args=build["cargo_feature_args"])
+            dep_cache[lock_key] = graph
         if graph["lock_sha256"] != previous.get("lock_sha256"):
             raise lifecycle.IntegrityError("Resumed dependency graph differs from the recorded lockfile")
         dependency_evidence = libraries.verify_graph(files["Cargo.lock"], transformed["Cargo.lock"],
@@ -1615,7 +1627,7 @@ def _build(run, workspace, files, variant, target_cache):
         if dependency_evidence != previous.get("dependency_evidence"):
             raise lifecycle.IntegrityError("Resumed target dependency features differ from the recorded provider profile")
         campaign.dependency_advisories(run, graph)
-        isolation = _verify_build_network_isolation(run)
+        isolation = run.manifest.get("child_process_isolation_evidence") or _verify_build_network_isolation(run)
         prior_isolation = previous.get("build_network_isolation", {})
         if (prior_isolation.get("status") != isolation["status"]
                 or prior_isolation.get("host_netns") == prior_isolation.get("child_netns")
@@ -2429,6 +2441,11 @@ def load_confirmation(directory, variant):
             if (receipt.get("context") != expected_context or identity(descriptor) != path.parent.name
                     or receipt.get("version") != "athena-collection-block/1"):
                 raise ValueError("Raw collection receipt identity changed")
+            if descriptor.get("channel") is not None and descriptor.get("channel") != "confirm:" + variant:
+                if path.stat().st_size != receipt.get("bytes") or protocol.sha256_file(path) != receipt.get("sha256"):
+                    raise ValueError("Raw collection bytes do not match their commit receipt")
+                raw_inputs[name] = receipt["sha256"]
+                continue
         row_count = 0
         with path.open("rb") as stream:
             before = os.fstat(stream.fileno())
@@ -3268,12 +3285,14 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
         cache.mkdir(exist_ok=True)
         include_harsh_stress = bool(design.get("include_harsh_stress"))
         include_annas_archive = bool(design.get("include_annas_archive"))
+        include_cloud_024 = bool(design.get("include_cloud_024"))
         phases = {
             split: study_cases(
                 files,
                 split,
                 include_harsh_stress=include_harsh_stress,
                 include_annas_archive=include_annas_archive,
+                include_cloud_024=include_cloud_024,
             )
             for split in ("screen", "confirm")
         }
@@ -3804,7 +3823,7 @@ def execute_service_study(run, *, resume=False):
                    (ROOT / "cloud_experiments" / "service_probe.rs").read_bytes()).hexdigest()}
     binding_sha = identity(binding)
     if not output.exists():
-        if resume:
+        if resume and run.manifest.get("h07_service_study") is not None:
             raise ValueError("Cannot resume H07 study without its owned output directory")
         output.mkdir(mode=0o700, parents=False, exist_ok=False)
         blocks_dir.mkdir(mode=0o700)
@@ -4276,6 +4295,7 @@ def main():
     prepare_parser.add_argument("--confirm-iterations", type=int)
     prepare_parser.add_argument("--include-harsh-stress", action="store_true")
     prepare_parser.add_argument("--include-annas-archive", action="store_true")
+    prepare_parser.add_argument("--include-cloud-024", action="store_true")
     prepare_parser.add_argument("--slots-per-owner", type=int)
     commands.add_parser("inventory")
     run_parser = commands.add_parser("run-native")
@@ -4329,6 +4349,7 @@ def main():
             "confirm_iterations",
             "include_harsh_stress",
             "include_annas_archive",
+            "include_cloud_024",
             "slots_per_owner",
         ):
             val = getattr(args, key, None)
