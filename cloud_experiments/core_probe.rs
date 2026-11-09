@@ -6265,13 +6265,52 @@ fn execute_cloud_024_fixture(input: &Fixture) -> Result<Value, String> {
     }))
 }
 
+/// Rows already persisted below `resume_step` for the same `seed_offset` survive a resume;
+/// rows at or after the resume point are recomputed deterministically and rewritten.
+fn retained_checkpoint_rows(
+    path: &str,
+    resume_step: usize,
+    seed_offset: u64,
+) -> Result<String, String> {
+    let mut body = String::new();
+    if resume_step == 0 {
+        return Ok(body);
+    }
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(body),
+        Err(e) => return Err(e.to_string()),
+    };
+    for line in existing.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: Value =
+            serde_json::from_str(line).map_err(|e| format!("corrupt checkpoint row: {e}"))?;
+        let step = row["step_index"]
+            .as_u64()
+            .ok_or("checkpoint row missing step_index")?;
+        let row_offset = row["seed_offset"].as_u64().unwrap_or(0);
+        if row_offset == seed_offset && step < resume_step as u64 {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    Ok(body)
+}
+
 fn run_cloud_024_campaign(
     seeds: usize,
+    seed_offset: u64,
     resume_step: usize,
     checkpoint_jsonl: Option<&str>,
 ) -> Result<Value, String> {
     let start = Instant::now();
     let requests_per_seed = 250usize;
+    require(
+        resume_step <= seeds * requests_per_seed,
+        "--resume-step exceeds campaign length",
+    )?;
     let mut ebayes = EmpiricalBayesProxyPool::new(2.0, 2.0);
     let mut cusum = CusumDetector::new(0.05, 4.0);
     let mut usable_latencies = Vec::new();
@@ -6283,11 +6322,12 @@ fn run_cloud_024_campaign(
     for seed_idx in 0..seeds {
         for req_idx in 0..requests_per_seed {
             let global_step = seed_idx * requests_per_seed + req_idx;
-            if global_step < resume_step {
-                continue;
-            }
-            total_executed += 1;
-            let seed_u64 = 0xC024_0000_u64 + (seed_idx as u64);
+            // Steps before the resume point are replayed (not reported) so the posterior and
+            // CUSUM state match an uninterrupted run exactly.
+            let replay = global_step < resume_step;
+            let seed_u64 = 0xC024_0000_u64
+                .wrapping_add(seed_offset)
+                .wrapping_add(seed_idx as u64);
             let step_u64 = global_step as u64;
             let env_u = philox_u01(seed_u64, step_u64, 0, 0);
             let lat_u = philox_u01(seed_u64, step_u64, 0, 1);
@@ -6312,6 +6352,10 @@ fn run_cloud_024_campaign(
             if cusum.observe(!success) {
                 cusum.reset();
             }
+            if replay {
+                continue;
+            }
+            total_executed += 1;
             if success {
                 usable_count += 1;
                 usable_latencies.push(35.0 + 95.0 * lat_u);
@@ -6322,6 +6366,7 @@ fn run_cloud_024_campaign(
                 checkpoint_rows.push(json!({
                     "step_index": global_step,
                     "seed_index": seed_idx,
+                    "seed_offset": seed_offset,
                     "usable": success,
                 }));
             }
@@ -6329,12 +6374,20 @@ fn run_cloud_024_campaign(
     }
 
     if let Some(path) = checkpoint_jsonl {
-        let mut body = String::new();
+        let mut body = retained_checkpoint_rows(path, resume_step, seed_offset)?;
         for row in &checkpoint_rows {
             body.push_str(&serde_json::to_string(row).map_err(|e| e.to_string())?);
             body.push('\n');
         }
-        fs::write(path, body.as_bytes()).map_err(|e| e.to_string())?;
+        // Device/special targets (e.g. /dev/null) cannot be replaced by rename.
+        let special_target = fs::metadata(path).is_ok_and(|m| !m.is_file());
+        if special_target {
+            fs::write(path, body.as_bytes()).map_err(|e| e.to_string())?;
+        } else {
+            let tmp = format!("{path}.tmp");
+            fs::write(&tmp, body.as_bytes()).map_err(|e| e.to_string())?;
+            fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        }
     }
 
     usable_latencies.sort_by(|a, b| a.total_cmp(b));
@@ -6358,6 +6411,7 @@ fn run_cloud_024_campaign(
         "protocol": "athena-cloud-024-campaign/1",
         "prng": "philox-4x32-10-stateless-crn",
         "seeds": seeds,
+        "seed_offset": seed_offset,
         "resume_step": resume_step,
         "executed_steps": total_executed,
         "usable_requests": usable_count,
@@ -6371,6 +6425,7 @@ fn run_cloud_024_campaign(
 fn run() -> Result<(), String> {
     let raw_args = env::args().collect::<Vec<_>>();
     let mut resume_step = 0usize;
+    let mut seed_offset = 0u64;
     let mut checkpoint_jsonl: Option<String> = None;
     let mut args = Vec::with_capacity(raw_args.len());
     let mut idx = 0usize;
@@ -6383,6 +6438,13 @@ fn run() -> Result<(), String> {
                 .parse::<usize>()
                 .map_err(|e| e.to_string())?;
             resume_step = val;
+        } else if raw_args[idx] == "--seed-offset" {
+            idx += 1;
+            seed_offset = raw_args
+                .get(idx)
+                .ok_or("missing value for --seed-offset")?
+                .parse::<u64>()
+                .map_err(|e| e.to_string())?;
         } else if raw_args[idx] == "--checkpoint-jsonl" || raw_args[idx] == "--checkpoint-db" {
             idx += 1;
             let val = raw_args
@@ -6429,7 +6491,12 @@ fn run() -> Result<(), String> {
             (1..=500).contains(&iterations),
             "cloud-024-campaign seeds must be in 1..=500",
         )?;
-        let report = run_cloud_024_campaign(iterations, resume_step, checkpoint_jsonl.as_deref())?;
+        let report = run_cloud_024_campaign(
+            iterations,
+            seed_offset,
+            resume_step,
+            checkpoint_jsonl.as_deref(),
+        )?;
         println!(
             "{}",
             serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
@@ -7380,9 +7447,50 @@ mod tests {
         assert_eq!(waf_out["cache_poisoning_rate"], 0.0);
         assert_eq!(waf_out["crn_substream_orthogonality"], true);
 
-        let camp_full = run_cloud_024_campaign(2, 0, None).unwrap();
-        let camp_resumed = run_cloud_024_campaign(2, 250, None).unwrap();
+        let camp_full = run_cloud_024_campaign(2, 0, 0, None).unwrap();
+        let camp_resumed = run_cloud_024_campaign(2, 0, 250, None).unwrap();
         assert_eq!(camp_full["executed_steps"], 500);
         assert_eq!(camp_resumed["executed_steps"], 250);
+    }
+
+    #[test]
+    fn cloud_024_campaign_resume_replays_state_and_preserves_checkpoint_rows() {
+        for offset in [0u64, 500, 1_000_000] {
+            let full = run_cloud_024_campaign(2, offset, 0, None).unwrap();
+            let prefix = run_cloud_024_campaign(1, offset, 0, None).unwrap();
+            let resumed = run_cloud_024_campaign(2, offset, 250, None).unwrap();
+            assert_eq!(
+                full["usable_requests"].as_u64().unwrap(),
+                prefix["usable_requests"].as_u64().unwrap()
+                    + resumed["usable_requests"].as_u64().unwrap(),
+                "resumed suffix must match the uninterrupted run at offset {offset}"
+            );
+        }
+        assert_ne!(
+            run_cloud_024_campaign(4, 0, 0, None).unwrap()["usable_requests"],
+            run_cloud_024_campaign(4, 500, 0, None).unwrap()["usable_requests"],
+            "distinct seed offsets must draw distinct substreams"
+        );
+        assert!(run_cloud_024_campaign(1, 0, 251, None).is_err());
+
+        let path = env::temp_dir().join(format!("athena-c024-ckpt-{}.jsonl", std::process::id()));
+        let path_str = path.to_str().unwrap();
+        let _ = fs::remove_file(&path);
+        run_cloud_024_campaign(2, 7, 0, Some(path_str)).unwrap();
+        let uninterrupted = fs::read_to_string(&path).unwrap();
+        assert_eq!(uninterrupted.lines().count(), 10);
+        // Simulate a crash that lost the tail, then resume at step 250.
+        let head: String = uninterrupted
+            .lines()
+            .take(5)
+            .map(|l| format!("{l}\n"))
+            .collect();
+        fs::write(&path, head).unwrap();
+        run_cloud_024_campaign(2, 7, 250, Some(path_str)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), uninterrupted);
+        // A second resume must not duplicate rows.
+        run_cloud_024_campaign(2, 7, 250, Some(path_str)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), uninterrupted);
+        let _ = fs::remove_file(&path);
     }
 }

@@ -1302,6 +1302,287 @@ with research._analysis_lock(root/'execution.lock'):
                 self.assertEqual(lifecycle.tree_bytes(root), 17)
 
 
+class _InstantEvent:
+    """Stop-event double: wait() never sleeps; optionally sets itself after N waits."""
+
+    def __init__(self, stop_after=None):
+        self.waits = []
+        self.stop_after = stop_after
+        self._set = False
+
+    def is_set(self):
+        return self._set
+
+    def set(self):
+        self._set = True
+
+    def wait(self, timeout=None):
+        self.waits.append(timeout)
+        if self.stop_after is not None and len(self.waits) >= self.stop_after:
+            self._set = True
+        return self._set
+
+
+def _fake_campaign_report(offset, seeds, drift=0):
+    import random
+
+    steps = seeds * lifecycle.CAMPAIGN_REQUESTS_PER_SEED
+    usable = (offset // max(seeds, 1) * 37 + drift) % 1000 + steps // 4
+    return {"protocol": lifecycle.CAMPAIGN_PUMP_PROTOCOL, "prng": "philox-4x32-10-stateless-crn",
+            "seeds": seeds, "seed_offset": offset, "resume_step": 0, "executed_steps": steps,
+            "usable_requests": usable, "usable_rate": usable / steps,
+            "usable_latency_p99_ms": 120.5, "block_latency_p99_ms": 590.0,
+            "wall_ms": random.random() * 50}
+
+
+class MacCampaignPumpControls(unittest.TestCase):
+    def setUp(self):
+        self._folder = tempfile.TemporaryDirectory(prefix="athena-mac-pump-")
+        self.root = Path(self._folder.name)
+        self.run_dir = self.root / "run"
+        self.probe = self.root / "core_probe"
+        self.probe.write_bytes(b"fake core_probe v1")
+        self.calls = []
+        self.drift_below = None
+
+    def tearDown(self):
+        self._folder.cleanup()
+
+    def runner(self, argv, timeout):
+        position = argv.index("--seed-offset")
+        offset, seeds = int(argv[position + 1]), int(argv[position - 1])
+        self.calls.append(offset)
+        drift = 1 if self.drift_below is not None and offset < self.drift_below else 0
+        return 0, json.dumps(_fake_campaign_report(offset, seeds, drift)).encode(), b""
+
+    def pump(self, **overrides):
+        options = dict(seeds_per_block=500, block_interval_s=0, shard_blocks=2,
+                       canary_every_shards=1, block_runner=self.runner,
+                       health_probe=lambda: {"status": "HEALTHY"}, stop_event=_InstantEvent())
+        options.update(overrides)
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        return daemon, daemon.run_campaign_pump(self.probe, **options)
+
+    def store(self):
+        return lifecycle.SqliteWalCheckpointStore(self.run_dir, allow_tmp_for_tests=True)
+
+    def test_qos_wrapper_never_emits_pid_only_flag(self):
+        with patch.object(lifecycle.sys, "platform", "darwin"), \
+                patch.object(Path, "is_file", return_value=True):
+            self.assertEqual(lifecycle.mac_qos_command(["probe", 1], role="worker"),
+                             ["probe", "1"])
+            wrapped = lifecycle.mac_qos_command(["probe"], role="background")
+            self.assertEqual(Path(wrapped[0]).as_posix(), "/usr/sbin/taskpolicy")
+            self.assertEqual(wrapped[1:], ["-b", "probe"])
+
+    def test_health_probe_fails_closed_and_reads_pressure_and_swap(self):
+        def sysctl_for(swap, pressure):
+            return lambda name: swap if name == "vm.swapusage" else pressure
+
+        def probe(sysctl, **kwargs):
+            return lifecycle.probe_mac_hardware_health(self.root, sysctl=sysctl,
+                                                       platform="darwin", min_free_bytes=0,
+                                                       **kwargs)
+
+        healthy = probe(sysctl_for("total = 2048.00M  used = 512.00M  free = 1536.00M  "
+                                   "(encrypted)", "1"))
+        self.assertEqual(healthy["status"], "HEALTHY")
+        self.assertEqual(healthy["swap_used_bytes"], 512 * 1024 ** 2)
+        self.assertEqual(healthy["memory_pressure_level"], 1)
+        self.assertEqual(probe(sysctl_for("total = 0.00M  used = 0.00M  free = 0.00M",
+                                          "1"))["swap_used_bytes"], 0)
+
+        def broken(name):
+            raise RuntimeError("sysctl unavailable")
+
+        unknown = probe(broken)
+        self.assertEqual(unknown["status"], "PAUSED_HEALTH_UNKNOWN")
+        self.assertIn("sysctl unavailable", unknown["probe_error"])
+        self.assertEqual(probe(sysctl_for("garbage", "1"))["status"], "PAUSED_HEALTH_UNKNOWN")
+        self.assertEqual(probe(sysctl_for("used = 1.00M", "4"))["status"],
+                         "PAUSED_MEMORY_PRESSURE")
+        self.assertEqual(probe(sysctl_for("used = 5.50G", "1"))["status"],
+                         "PAUSED_SWAP_PRESSURE")
+        self.assertEqual(lifecycle.probe_mac_hardware_health(
+            self.root, min_free_bytes=1 << 62, platform="darwin",
+            sysctl=sysctl_for("used = 0.00M", "1"))["status"], "PAUSED_DISK_WATERMARK")
+        self.assertEqual(lifecycle.probe_mac_hardware_health(
+            self.root, min_free_bytes=0, platform="linux", sysctl=broken)["status"], "HEALTHY")
+
+    def test_pump_commits_resumes_without_double_counting_and_pins_binary(self):
+        daemon, first = self.pump(max_blocks=5)
+        self.assertEqual((first["status"], first["exit_code"]), ("COMPLETED_MAX_BLOCKS", 0))
+        self.assertEqual(first["next_block"], 5)
+        self.assertEqual(first["running_stats"]["blocks"], 5)
+        produced = [c for c in self.calls]
+        # 5 fresh blocks plus one canary rerun per committed shard (3 shards).
+        self.assertEqual(sorted(set(produced)), [0, 500, 1000, 1500, 2000])
+        self.assertEqual(len(produced), 8)
+        store = self.store()
+        try:
+            summary = store.summary()
+            self.assertEqual(summary["completed_steps"], 5)
+            self.assertEqual(summary["committed_shards"], 3)
+            records = store.read_compressed_shard("campaign-00000000")
+            self.assertEqual([r["block_id"] for r in records], [0, 1])
+            self.assertEqual(store.get_meta("next_block"), 5)
+        finally:
+            store.close()
+        self.assertFalse(daemon.pid_path.exists())
+        pinned = list((self.run_dir / "bin").glob("core_probe-*"))
+        self.assertEqual(len(pinned), 1)
+
+        # A later rebuild of the source binary must not change the running dataset.
+        self.probe.write_bytes(b"fake core_probe v2 (rebuilt)")
+        self.calls.clear()
+        _, second = self.pump(max_blocks=3, canary_every_shards=0)
+        self.assertEqual(second["exit_code"], 0)
+        self.assertEqual(self.calls, [2500, 3000, 3500])
+        self.assertEqual(second["next_block"], 8)
+        self.assertEqual(second["running_stats"]["blocks"], 8)
+        self.assertIn(b"source_binary_differs", (self.run_dir / "daemon.log").read_bytes())
+        expected = [_fake_campaign_report(b * 500, 500)["usable_rate"] for b in range(8)]
+        self.assertAlmostEqual(second["running_stats"]["mean_usable_rate"],
+                               sum(expected) / len(expected))
+
+        # Missing pinned copy + changed source: refuse instead of mixing binaries.
+        for path in (self.run_dir / "bin").glob("core_probe-*"):
+            path.unlink()
+        _, held = self.pump(max_blocks=1)
+        self.assertEqual((held["status"], held["exit_code"]), ("HOLD", lifecycle.EXIT_HOLD))
+        self.assertIn("Pinned core_probe copy is missing", held["last_error"])
+
+    def test_determinism_canary_and_config_drift_hold(self):
+        self.pump(max_blocks=4, canary_every_shards=0)
+        self.drift_below = 2000  # previously committed blocks now produce different output
+        _, held = self.pump(max_blocks=2, shard_blocks=1)
+        self.assertEqual(held["exit_code"], lifecycle.EXIT_HOLD)
+        self.assertIn("Determinism canary failed", held["last_error"])
+        self.drift_below = None
+        _, mismatch = self.pump(max_blocks=1, seeds_per_block=250)
+        self.assertEqual(mismatch["exit_code"], lifecycle.EXIT_HOLD)
+        self.assertIn("seeds_per_block", mismatch["last_error"])
+
+    def test_block_failures_back_off_then_hold_and_invalid_reports_rejected(self):
+        event = _InstantEvent()
+        failing = lambda argv, timeout: (1, b"", b"boom")
+        _, held = self.pump(block_runner=failing, max_consecutive_failures=3, stop_event=event)
+        self.assertEqual(held["exit_code"], lifecycle.EXIT_HOLD)
+        self.assertEqual(event.waits, [5.0, 10.0])
+        self.assertIn("boom", held["last_error"])
+
+        def wrong_offset(argv, timeout):
+            return 0, json.dumps(_fake_campaign_report(12345, 500)).encode(), b""
+
+        _, rejected = self.pump(block_runner=wrong_offset, max_consecutive_failures=1)
+        self.assertIn("failed validation", rejected["last_error"])
+
+    def test_unhealthy_host_pauses_without_running_blocks_and_stops_cleanly(self):
+        event = _InstantEvent(stop_after=2)
+        _, stopped = self.pump(health_probe=lambda: {"status": "PAUSED_MEMORY_PRESSURE"},
+                               stop_event=event, health_backoff_s=60.0)
+        self.assertEqual((stopped["status"], stopped["exit_code"]), ("STOPPED", 0))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(event.waits, [60.0, 60.0])
+
+    @unittest.skipUnless(os.name == "posix", "flock exclusivity is POSIX-only")
+    def test_second_daemon_cannot_take_the_run_lock(self):
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        fd = daemon._acquire_lock()
+        try:
+            with self.assertRaises(lifecycle.DaemonLockHeld):
+                self.pump(max_blocks=1)
+        finally:
+            os.close(fd)
+        _, ok = self.pump(max_blocks=1)
+        self.assertEqual(ok["exit_code"], 0)
+
+    def test_supervisor_restart_policy_and_stop_marker(self):
+        class Child:
+            def __init__(self, returncode, on_start=None):
+                self.returncode = returncode
+                if on_start:
+                    on_start()
+
+            def poll(self):
+                return self.returncode
+
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        codes = iter([lifecycle.EXIT_RETRY, 1, lifecycle.EXIT_HOLD])
+        launches, event = [], _InstantEvent()
+
+        def launcher(argv):
+            launches.append(argv)
+            return Child(next(codes))
+
+        self.assertEqual(daemon.supervise(["pump"], launcher=launcher, stop_event=event),
+                         lifecycle.EXIT_HOLD)
+        self.assertEqual(len(launches), 3)
+        self.assertEqual(event.waits, [45.0, 15.0])
+
+        daemon.stop_path.write_text("old marker")  # stale marker is cleared by a new supervisor
+        launches.clear()
+
+        def stop_launcher(argv):
+            launches.append(argv)
+            return Child(0, on_start=lambda: daemon.stop_path.write_text("operator pause"))
+
+        self.assertEqual(daemon.supervise(["pump"], launcher=stop_launcher,
+                                          stop_event=_InstantEvent()), 0)
+        self.assertEqual(len(launches), 1)
+
+    def test_daemon_log_rotates_and_keeps_bounded_history(self):
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        with patch.object(lifecycle, "DAEMON_LOG_MAX_BYTES", 400), \
+                patch.object(lifecycle, "DAEMON_LOG_KEEP", 3):
+            for index in range(200):
+                daemon._log("tick", index=index, padding="x" * 40)
+        self.assertTrue((self.run_dir / "daemon.log.1.gz").is_file())
+        self.assertEqual(sorted(p.name for p in self.run_dir.glob("daemon.log.*.gz")),
+                         ["daemon.log.1.gz", "daemon.log.2.gz", "daemon.log.3.gz"])
+        self.assertLessEqual((self.run_dir / "daemon.log").stat().st_size, 400)
+
+
+class MacCampaignPumpEndToEnd(unittest.TestCase):
+    """Runs the real CLI against a built core_probe (skipped where it is not built)."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+    BINARY = Path(os.environ.get("ATHENA_CORE_PROBE_BIN",
+                                 ROOT / "target" / "release" / "core_probe"))
+
+    @unittest.skipUnless(BINARY.is_file() and os.name == "posix", "core_probe not built here")
+    def test_cli_start_or_resume_pumps_real_blocks_and_resumes(self):
+        import uuid as _uuid
+
+        run_dir = self.ROOT / "target" / f"test-mac-pump-{_uuid.uuid4().hex[:12]}"
+        command = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                   "start-or-resume", "--run-dir", str(run_dir), "--core-probe-bin",
+                   str(self.BINARY), "--seeds-per-block", "4", "--block-interval-s", "0",
+                   "--shard-blocks", "2", "--max-blocks", "3"]
+        try:
+            for expected_next in (3, 6):
+                proc = subprocess.run(command, cwd=self.ROOT, capture_output=True, text=True,
+                                      timeout=300)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                summary = json.loads(proc.stdout.strip().splitlines()[-1])
+                self.assertEqual(summary["status"], "COMPLETED_MAX_BLOCKS")
+                self.assertEqual(summary["next_block"], expected_next)
+            store = lifecycle.SqliteWalCheckpointStore(run_dir, allow_tmp_for_tests=True)
+            try:
+                rows = store.conn.execute(
+                    "SELECT block_id, prng_counter, payload_sha256, metrics_json "
+                    "FROM completed_steps ORDER BY block_id;").fetchall()
+            finally:
+                store.close()
+            self.assertEqual([r[0] for r in rows], list(range(6)))
+            self.assertEqual([r[1] for r in rows], [b * 4 for b in range(6)])
+            self.assertEqual(len({r[2] for r in rows}), 6)
+            usable = [json.loads(r[3])["usable_requests"] for r in rows]
+            self.assertGreater(len(set(usable)), 1, "fresh seed ranges must change outcomes")
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
 

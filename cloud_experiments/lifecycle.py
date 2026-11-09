@@ -1131,6 +1131,8 @@ def supervise(job_path):
 # ==============================================================================
 
 MAC_MIN_DISK_FREE_BYTES = 20 * 1024 ** 3  # 20 GiB NVMe watermark
+MAC_MAX_SWAP_USED_BYTES = 4 * 1024 ** 3  # macOS swaps routinely; pause only on sustained growth
+MAC_CRITICAL_PRESSURE_LEVEL = 4  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
 
 
 def validate_persistent_mac_run_dir(run_dir):
@@ -1164,7 +1166,11 @@ def validate_persistent_mac_run_dir(run_dir):
 
 
 def mac_qos_command(command, *, role="worker"):
-    """Pin Apple Silicon child processes to P-cores (worker) or E-cores (background/io)."""
+    """Run background/io roles throttled on E-cores; worker roles keep default QoS.
+
+    ``taskpolicy -B`` is only accepted together with ``-p pid`` (it clears the background
+    state of an existing process), so it cannot prefix a program launch.
+    """
     argv = [str(x) for x in command]
     if sys.platform != "darwin":
         return argv
@@ -1173,54 +1179,60 @@ def mac_qos_command(command, *, role="worker"):
         return argv
     if role in ("background", "io", "sqlite", "compress"):
         return [str(taskpolicy), "-b", *argv]
-    return [str(taskpolicy), "-B", *argv]
+    return argv
 
 
-def probe_mac_hardware_health(run_dir, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES):
-    """Check NVMe free-space watermark (>= 20 GiB) and Darwin vm.swapusage == 0."""
+def _parse_darwin_swap_used(text):
+    import re
+
+    match = re.search(r"used\s*=\s*([0-9]+(?:\.[0-9]+)?)([KMGT]?)", text or "")
+    if match is None:
+        raise ValueError("Unrecognized vm.swapusage output")
+    scale = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}[match.group(2)]
+    return int(float(match.group(1)) * scale)
+
+
+def _sysctl_value(name):
+    proc = subprocess.run(["sysctl", "-n", name], capture_output=True, text=True, timeout=5,
+                          check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(f"sysctl {name} failed")
+    return proc.stdout.strip()
+
+
+def probe_mac_hardware_health(run_dir, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES,
+                              max_swap_bytes=MAC_MAX_SWAP_USED_BYTES, sysctl=None,
+                              platform=None):
+    """Check the NVMe free-space watermark, swap ceiling and kernel memory pressure.
+
+    On Darwin a failed or unparseable probe pauses work (fail closed) instead of
+    reporting healthy.
+    """
+    sysctl = sysctl or _sysctl_value
+    platform = platform or sys.platform
     target = Path(run_dir).expanduser()
     probe_target = target if target.exists() else target.parent
     usage = shutil.disk_usage(probe_target)
     free_bytes = int(usage.free)
-    swap_used_bytes = 0
-    thermal_pressure = "nominal"
-    if sys.platform == "darwin":
+    swap_used_bytes = None
+    pressure_level = None
+    probe_error = None
+    if platform == "darwin":
         try:
-            proc = subprocess.run(
-                ["sysctl", "-n", "vm.swapusage"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if proc.returncode == 0 and proc.stdout:
-                # Example: "total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)"
-                for token in proc.stdout.replace("=", " ").split():
-                    if token.endswith("M") or token.endswith("G") or token.endswith("K"):
-                        pass
-                parts = proc.stdout.split("used =")
-                if len(parts) > 1:
-                    used_tok = parts[1].strip().split()[0].upper()
-                    mult = 1
-                    if used_tok.endswith("G"):
-                        mult = 1024 ** 3
-                        used_tok = used_tok[:-1]
-                    elif used_tok.endswith("M"):
-                        mult = 1024 ** 2
-                        used_tok = used_tok[:-1]
-                    elif used_tok.endswith("K"):
-                        mult = 1024
-                        used_tok = used_tok[:-1]
-                    elif used_tok.endswith("B"):
-                        used_tok = used_tok[:-1]
-                    swap_used_bytes = int(float(used_tok) * mult)
-        except Exception:
-            swap_used_bytes = 0
+            swap_used_bytes = _parse_darwin_swap_used(sysctl("vm.swapusage"))
+            pressure_level = int(sysctl("kern.memorystatus_vm_pressure_level"))
+        except Exception as error:
+            probe_error = f"{type(error).__name__}: {error}"
     disk_ok = free_bytes >= min_free_bytes
-    swap_ok = swap_used_bytes == 0
+    swap_ok = swap_used_bytes is None or swap_used_bytes <= max_swap_bytes
+    pressure_ok = pressure_level is None or pressure_level < MAC_CRITICAL_PRESSURE_LEVEL
     status = "HEALTHY"
     if not disk_ok:
         status = "PAUSED_DISK_WATERMARK"
+    elif probe_error is not None:
+        status = "PAUSED_HEALTH_UNKNOWN"
+    elif not pressure_ok:
+        status = "PAUSED_MEMORY_PRESSURE"
     elif not swap_ok:
         status = "PAUSED_SWAP_PRESSURE"
     return {
@@ -1229,8 +1241,11 @@ def probe_mac_hardware_health(run_dir, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES
         "min_free_bytes": min_free_bytes,
         "disk_ok": disk_ok,
         "swap_used_bytes": swap_used_bytes,
+        "max_swap_bytes": max_swap_bytes,
         "swap_ok": swap_ok,
-        "thermal_pressure": thermal_pressure,
+        "memory_pressure_level": pressure_level,
+        "probe_error": probe_error,
+        "thermal_pressure": "not_probed",
         "checked_unix_ms": int(time.time() * 1000),
     }
 
@@ -1337,11 +1352,15 @@ class SqliteWalCheckpointStore:
             raise
 
     def set_meta(self, key: str, value):
+        self.set_meta_many({key: value})
+
+    def set_meta_many(self, values: dict):
+        """Upsert several meta keys in one IMMEDIATE transaction (all or nothing)."""
         now_ms = int(time.time() * 1000)
-        encoded = canonical(value).decode("utf-8")
+        rows = [(str(key), canonical(value).decode("utf-8"), now_ms) for key, value in values.items()]
         self.conn.execute("BEGIN IMMEDIATE;")
         try:
-            self.conn.execute(
+            self.conn.executemany(
                 """
                 INSERT INTO campaign_meta (key, value_json, updated_unix_ms)
                 VALUES (?, ?, ?)
@@ -1349,7 +1368,7 @@ class SqliteWalCheckpointStore:
                     value_json = excluded.value_json,
                     updated_unix_ms = excluded.updated_unix_ms;
                 """,
-                (key, encoded, now_ms),
+                rows,
             )
             self.conn.execute("COMMIT;")
         except BaseException:
@@ -1652,6 +1671,29 @@ class SqliteWalCheckpointStore:
             self.conn = None
 
 
+CAMPAIGN_PUMP_EPOCH = "cloud-024-campaign/v1"
+CAMPAIGN_PUMP_PROTOCOL = "athena-cloud-024-campaign/1"
+CAMPAIGN_REQUESTS_PER_SEED = 250
+DAEMON_LOG_MAX_BYTES = 8 * 1024 ** 2
+DAEMON_LOG_KEEP = 8
+EXIT_RETRY = 75  # transient: supervisor restarts after a delay
+EXIT_HOLD = 78  # needs an operator: supervisor stops
+
+
+class DaemonLockHeld(RuntimeError):
+    pass
+
+
+def campaign_payload_sha256(report):
+    """Digest of a campaign report without its wall-clock field (deterministic per block)."""
+    return digest({key: value for key, value in report.items() if key != "wall_ms"})
+
+
+def _run_block_subprocess(argv, timeout):
+    proc = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 class MacAutonomousDaemon:
     """Autonomous Detached Mac Daemon with DarkWake renewal, NVMe/Swap guard, and auto-sleep."""
 
@@ -1666,6 +1708,8 @@ class MacAutonomousDaemon:
         self.state_path = self.run_dir / "daemon-state.json"
         self.pid_path = self.run_dir / "daemon.pid"
         self.log_path = self.run_dir / "daemon.log"
+        self.lock_path = self.run_dir / "daemon.lock"
+        self.stop_path = self.run_dir / "STOP"
 
     def _write_state(self, **fields):
         current = {}
@@ -1716,6 +1760,7 @@ class MacAutonomousDaemon:
     def pause_and_sleep(self, *, trigger_sleep=False) -> dict:
         pid = None
         signaled = False
+        self.stop_path.write_text(runner.utc_now() + "\n", encoding="utf-8")
         if self.pid_path.is_file():
             try:
                 pid = int(self.pid_path.read_text(encoding="utf-8").strip())
@@ -1789,6 +1834,310 @@ class MacAutonomousDaemon:
             "cleaned_work_dir": bool(clean_after_verify),
         }
 
+    # ------------------------------------------------------------------ pump internals
+
+    def _log(self, event, **fields):
+        line = canonical({"ts": runner.utc_now(), "event": event, **fields}) + b"\n"
+        try:
+            if (self.log_path.is_file()
+                    and self.log_path.stat().st_size + len(line) > DAEMON_LOG_MAX_BYTES):
+                self._rotate_log()
+            with open(self.log_path, "ab") as stream:
+                stream.write(line)
+        except OSError:
+            pass  # logging must never stop the pump
+
+    def _rotate_log(self):
+        import gzip
+
+        (self.run_dir / f"daemon.log.{DAEMON_LOG_KEEP}.gz").unlink(missing_ok=True)
+        for index in range(DAEMON_LOG_KEEP - 1, 0, -1):
+            source = self.run_dir / f"daemon.log.{index}.gz"
+            if source.exists():
+                os.replace(source, self.run_dir / f"daemon.log.{index + 1}.gz")
+        with open(self.log_path, "rb") as raw, \
+                gzip.open(self.run_dir / "daemon.log.1.gz", "wb") as packed:
+            shutil.copyfileobj(raw, packed)
+        self.log_path.unlink()
+
+    def _acquire_lock(self):
+        try:
+            import fcntl
+        except ImportError:  # non-POSIX hosts (unit tests on Windows): no exclusivity
+            return None
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise DaemonLockHeld(f"Another daemon holds {self.lock_path}")
+        return fd
+
+    def _pin_core_probe(self, store, core_probe_bin):
+        """Run from a content-pinned copy so a later cargo rebuild cannot alter this run."""
+        source = Path(core_probe_bin).expanduser()
+        source_sha = protocol.sha256_file(source) if source.is_file() else None
+        pinned_sha = store.get_meta("core_probe_sha256")
+        if pinned_sha is None:
+            if source_sha is None:
+                raise IntegrityError(f"core_probe binary not found: {source}")
+            pinned_sha = source_sha
+            store.set_meta("core_probe_sha256", pinned_sha)
+        bin_dir = self.run_dir / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        pinned = bin_dir / f"core_probe-{pinned_sha[:16]}"
+        if not pinned.is_file() or protocol.sha256_file(pinned) != pinned_sha:
+            if source_sha != pinned_sha:
+                raise IntegrityError("Pinned core_probe copy is missing and the source binary "
+                                     "no longer matches this run; start a new run directory")
+            staging = bin_dir / f".{pinned.name}.tmp"
+            shutil.copyfile(source, staging)
+            os.chmod(staging, 0o755)
+            os.replace(staging, pinned)
+        if source_sha is not None and source_sha != pinned_sha:
+            self._log("source_binary_differs", pinned=pinned_sha, source=source_sha)
+        return pinned, pinned_sha
+
+    def run_campaign_pump(self, core_probe_bin, *, seeds_per_block=500, block_interval_s=1.0,
+                          shard_blocks=256, max_blocks=None, block_timeout_s=300.0,
+                          health_backoff_s=60.0, failure_backoff_max_s=900.0,
+                          max_consecutive_failures=20, canary_every_shards=16,
+                          heartbeat_s=60.0, qos_role="background",
+                          min_free_bytes=MAC_MIN_DISK_FREE_BYTES,
+                          max_swap_bytes=MAC_MAX_SWAP_USED_BYTES,
+                          block_runner=None, health_probe=None, stop_event=None) -> dict:
+        """Continuously pump fresh-seed cloud-024 campaign blocks into the WAL store.
+
+        Each block runs ``core_probe cloud-024-campaign`` over its own seed range
+        (``seed_offset = block * seeds_per_block``), so every block is new data and every
+        block is reproducible. Returns a summary with ``exit_code`` 0 (stopped or bounded
+        run finished), EXIT_RETRY (transient) or EXIT_HOLD (operator needed).
+        """
+        if type(seeds_per_block) is not int or not 1 <= seeds_per_block <= 500:
+            raise ValueError("seeds_per_block must be an integer in 1..=500")
+        if type(shard_blocks) is not int or shard_blocks < 1:
+            raise ValueError("shard_blocks must be a positive integer")
+        if max_blocks is not None and (type(max_blocks) is not int or max_blocks < 0):
+            raise ValueError("max_blocks must be a non-negative integer")
+        block_runner = block_runner or _run_block_subprocess
+        health_probe = health_probe or (lambda: probe_mac_hardware_health(
+            self.run_dir, min_free_bytes=min_free_bytes, max_swap_bytes=max_swap_bytes))
+        stop_event = stop_event or threading.Event()
+        lock_fd = self._acquire_lock()
+        store = None
+        pending = []
+        stats = {}
+        next_block = 0
+        blocks_this_session = 0
+        final_status, exit_code, last_error = "STOPPED", 0, None
+        try:
+            store = SqliteWalCheckpointStore(self.run_dir,
+                                             allow_tmp_for_tests=self.allow_tmp_for_tests)
+            self.pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            probe_bin, probe_sha = self._pin_core_probe(store, core_probe_bin)
+            pinned_seeds = store.get_meta("seeds_per_block")
+            if pinned_seeds is None:
+                store.set_meta("seeds_per_block", seeds_per_block)
+            elif int(pinned_seeds) != seeds_per_block:
+                raise IntegrityError(f"Run was started with seeds_per_block={pinned_seeds}")
+            next_block = int(store.get_meta("next_block", 0))
+            shard_seq = int(store.get_meta("next_shard", 0))
+            stats = store.get_meta("running_stats") or {
+                "blocks": 0, "steps": 0, "usable": 0,
+                "mean_usable_rate": 0.0, "m2_usable_rate": 0.0}
+            store.set_meta("daemon_status", "RUNNING")
+            started = runner.utc_now()
+            self._write_state(status="RUNNING", pid=os.getpid(), started_at=started,
+                              next_block=next_block, core_probe_sha256=probe_sha,
+                              last_error=None, consecutive_failures=0)
+            self._log("start", pid=os.getpid(), next_block=next_block, shard_seq=shard_seq,
+                      core_probe_sha256=probe_sha)
+
+            def run_block(block):
+                offset = block * seeds_per_block
+                argv = mac_qos_command(
+                    [probe_bin, "cloud-024-campaign", "-", str(seeds_per_block),
+                     "--seed-offset", str(offset)], role=qos_role)
+                returncode, stdout, stderr = block_runner(argv, block_timeout_s)
+                if returncode != 0:
+                    tail = (stderr or b"")[-300:].decode("utf-8", "replace")
+                    raise RuntimeError(f"core_probe exited {returncode}: {tail}")
+                report = protocol.strict_json_loads(stdout)
+                if (not isinstance(report, dict)
+                        or report.get("protocol") != CAMPAIGN_PUMP_PROTOCOL
+                        or report.get("seed_offset") != offset
+                        or report.get("seeds") != seeds_per_block
+                        or report.get("executed_steps")
+                        != seeds_per_block * CAMPAIGN_REQUESTS_PER_SEED):
+                    raise RuntimeError("core_probe campaign report failed validation")
+                return report
+
+            def canary(current_shard):
+                committed = next_block
+                if committed <= 0:
+                    return
+                block = (current_shard * 7919) % committed
+                row = store.conn.execute(
+                    "SELECT payload_sha256 FROM completed_steps WHERE epoch_id = ? AND stage = ?"
+                    " AND variant = ? AND case_id = ? AND block_id = ? AND step_id = 0;",
+                    (CAMPAIGN_PUMP_EPOCH, "campaign", "baseline", "seed-block", block),
+                ).fetchone()
+                if row is None:
+                    raise IntegrityError(f"Committed block {block} has no step row")
+                rerun = campaign_payload_sha256(run_block(block))
+                if rerun != row[0]:
+                    raise IntegrityError(f"Determinism canary failed for block {block}")
+                self._log("canary_ok", block=block)
+
+            def flush():
+                nonlocal pending, next_block, shard_seq, stats
+                if not pending:
+                    return
+                shard_id = f"campaign-{shard_seq:08d}"
+                store.write_compressed_shard(shard_id, CAMPAIGN_PUMP_EPOCH, pending)
+                store.record_steps_batch([{
+                    "epoch_id": CAMPAIGN_PUMP_EPOCH, "stage": "campaign",
+                    "variant": "baseline", "case_id": "seed-block",
+                    "block_id": item["block_id"], "step_id": 0,
+                    "prng_counter": item["seed_offset"],
+                    "payload_sha256": item["payload_sha256"],
+                    "metrics": {key: item["report"][key] for key in (
+                        "usable_rate", "usable_requests", "executed_steps",
+                        "usable_latency_p99_ms", "block_latency_p99_ms")},
+                } for item in pending])
+                updated = dict(stats)
+                for item in pending:  # Welford running mean/variance of per-block usable rate
+                    report = item["report"]
+                    updated["blocks"] += 1
+                    updated["steps"] += int(report["executed_steps"])
+                    updated["usable"] += int(report["usable_requests"])
+                    rate = float(report["usable_rate"])
+                    delta = rate - updated["mean_usable_rate"]
+                    updated["mean_usable_rate"] += delta / updated["blocks"]
+                    updated["m2_usable_rate"] += delta * (rate - updated["mean_usable_rate"])
+                new_next_block = pending[-1]["block_id"] + 1
+                store.set_meta_many({"running_stats": updated, "next_block": new_next_block,
+                                     "next_shard": shard_seq + 1})
+                stats, next_block, shard_seq, pending = updated, new_next_block, shard_seq + 1, []
+                self._log("shard_committed", shard_id=shard_id, next_block=next_block)
+                if canary_every_shards and shard_seq % canary_every_shards == 0:
+                    canary(shard_seq)
+                if shard_seq % 64 == 0:
+                    store.wal_checkpoint_truncate()
+
+            failures = 0
+            last_heartbeat = 0.0
+            while not stop_event.is_set():
+                if max_blocks is not None and blocks_this_session >= max_blocks:
+                    final_status = "COMPLETED_MAX_BLOCKS"
+                    break
+                health = health_probe()
+                if health["status"] != "HEALTHY":
+                    flush()
+                    self._write_state(status=health["status"], hardware_health=health,
+                                      next_block=next_block)
+                    self._log("paused", health=health)
+                    stop_event.wait(health_backoff_s)
+                    continue
+                block = next_block + len(pending)
+                try:
+                    report = run_block(block)
+                except Exception as error:
+                    failures += 1
+                    last_error = f"{type(error).__name__}: {error}"[:500]
+                    self._log("block_failed", block=block, failures=failures, error=last_error)
+                    self._write_state(status="BACKOFF", last_error=last_error,
+                                      consecutive_failures=failures, next_block=next_block)
+                    if failures >= max_consecutive_failures:
+                        raise IntegrityError(f"{failures} consecutive block failures; last: "
+                                             f"{last_error}")
+                    stop_event.wait(min(failure_backoff_max_s, 5.0 * 2 ** (failures - 1)))
+                    continue
+                failures = 0
+                pending.append({"block_id": block, "seed_offset": block * seeds_per_block,
+                                "payload_sha256": campaign_payload_sha256(report),
+                                "report": report})
+                blocks_this_session += 1
+                if len(pending) >= shard_blocks:
+                    flush()
+                now = time.monotonic()
+                if now - last_heartbeat >= heartbeat_s:
+                    last_heartbeat = now
+                    self._write_state(status="RUNNING", next_block=next_block,
+                                      pending_blocks=len(pending),
+                                      blocks_this_session=blocks_this_session,
+                                      running_stats=stats, last_error=last_error,
+                                      consecutive_failures=0, hardware_health=health)
+                if block_interval_s > 0:
+                    stop_event.wait(block_interval_s)
+            flush()
+        except DaemonLockHeld:
+            raise
+        except IntegrityError as error:
+            final_status, exit_code = "HOLD", EXIT_HOLD
+            last_error = f"{type(error).__name__}: {error}"[:500]
+        except Exception as error:
+            final_status, exit_code = "RETRY", EXIT_RETRY
+            last_error = f"{type(error).__name__}: {error}"[:500]
+        finally:
+            if store is not None:
+                try:
+                    store.set_meta("daemon_status", final_status)
+                except Exception:
+                    pass
+                store.close()
+            try:
+                if self.pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                    self.pid_path.unlink()
+            except OSError:
+                pass
+            if lock_fd is not None:
+                os.close(lock_fd)
+        summary = {
+            "schema": "athena-mac-pump-summary/1",
+            "status": final_status,
+            "exit_code": exit_code,
+            "blocks_this_session": blocks_this_session,
+            "next_block": next_block,
+            "running_stats": stats,
+            "last_error": last_error,
+        }
+        self._write_state(**{key: value for key, value in summary.items() if key != "schema"})
+        self._log("exit", **summary)
+        return summary
+
+    def supervise(self, child_argv, *, restart_delay_s=15.0, lock_retry_s=45.0,
+                  max_restarts=None, stop_event=None, launcher=None) -> int:
+        """Restart the pump after crashes/transient exits until STOP, a HOLD or a signal."""
+        stop_event = stop_event or threading.Event()
+        launcher = launcher or (lambda argv: subprocess.Popen(argv))
+        self.stop_path.unlink(missing_ok=True)  # a fresh supervisor is the operator's intent
+        restarts = 0
+        self._log("supervisor_start", pid=os.getpid(), argv=[str(x) for x in child_argv])
+        while True:
+            if self.stop_path.exists() or stop_event.is_set():
+                self._log("supervisor_stop", reason="stop_requested")
+                return 0
+            child = launcher([str(x) for x in child_argv])
+            while child.poll() is None:
+                if stop_event.wait(1.0):
+                    child.terminate()
+                    try:
+                        child.wait(timeout=120)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+            returncode = child.returncode
+            self._log("child_exit", returncode=returncode, restarts=restarts)
+            if returncode == EXIT_HOLD:
+                return EXIT_HOLD
+            if stop_event.is_set() or self.stop_path.exists():
+                return 0
+            restarts += 1
+            if max_restarts is not None and restarts > max_restarts:
+                return returncode if returncode else EXIT_RETRY
+            stop_event.wait(lock_retry_s if returncode == EXIT_RETRY else restart_delay_s)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1809,12 +2158,21 @@ def main():
     mac_cmd = commands.add_parser("mac-daemon")
     mac_cmd.add_argument(
         "action",
-        choices=["start-or-resume", "status", "pause-and-sleep", "collect-and-clean"],
+        choices=["start-or-resume", "supervise", "status", "pause-and-sleep",
+                 "collect-and-clean"],
     )
     mac_cmd.add_argument("--run-dir", default="~/.athena_lab_runs/cloud-024")
     mac_cmd.add_argument("--archive", default="")
     mac_cmd.add_argument("--clean-after-verify", action="store_true")
     mac_cmd.add_argument("--trigger-sleep", action="store_true")
+    mac_cmd.add_argument("--core-probe-bin",
+                         default=str(Path(__file__).resolve().parents[1]
+                                     / "target" / "release" / "core_probe"))
+    mac_cmd.add_argument("--seeds-per-block", type=int, default=500)
+    mac_cmd.add_argument("--block-interval-s", type=float, default=1.0)
+    mac_cmd.add_argument("--shard-blocks", type=int, default=256)
+    mac_cmd.add_argument("--max-blocks", type=int, default=None)
+    mac_cmd.add_argument("--qos", choices=["background", "worker"], default="background")
     args = parser.parse_args()
     if args.command == "render-unit":
         print(render_unit(args.memory_bytes, args.source), end="")
@@ -1847,10 +2205,38 @@ def main():
                 )
             )
             return 0
-        st = daemon.status()
-        daemon._write_state(status="RUNNING", started_at=runner.utc_now())
-        print(json.dumps(st))
-        return 0
+        stop = threading.Event()
+
+        def request_stop(signum, frame):
+            stop.set()
+
+        signal.signal(signal.SIGTERM, request_stop)
+        signal.signal(signal.SIGINT, request_stop)
+        if hasattr(signal, "SIGHUP"):
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        pump_args = ["--run-dir", str(daemon.run_dir), "--core-probe-bin", args.core_probe_bin,
+                     "--seeds-per-block", str(args.seeds_per_block),
+                     "--block-interval-s", str(args.block_interval_s),
+                     "--shard-blocks", str(args.shard_blocks), "--qos", args.qos]
+        if args.max_blocks is not None:
+            pump_args += ["--max-blocks", str(args.max_blocks)]
+        if args.action == "supervise":
+            root = Path(__file__).resolve().parents[1]
+            child = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                     "start-or-resume", *pump_args]
+            return daemon.supervise(
+                child, stop_event=stop,
+                launcher=lambda argv: subprocess.Popen(argv, cwd=root))
+        try:
+            summary = daemon.run_campaign_pump(
+                args.core_probe_bin, seeds_per_block=args.seeds_per_block,
+                block_interval_s=args.block_interval_s, shard_blocks=args.shard_blocks,
+                max_blocks=args.max_blocks, qos_role=args.qos, stop_event=stop)
+        except DaemonLockHeld as error:
+            print(json.dumps({"status": "LOCK_HELD", "error": str(error)}))
+            return EXIT_RETRY
+        print(json.dumps(summary))
+        return summary["exit_code"]
     if args.command == "export":
         receipt = export_run(args.directory, args.destination)
         result = ({key: receipt[key] for key in
