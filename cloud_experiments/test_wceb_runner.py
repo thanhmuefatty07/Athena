@@ -57,7 +57,7 @@ class WcebRunnerTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in frozen["candidates"]], ["scraper"])
         self.assertFalse(frozen["public_test_is_independent_secret_holdout"])
         with tempfile.TemporaryDirectory(prefix="athena-wceb-freeze-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             dev_path = root / "dev.json"
             freeze_path = root / "freeze.json"
             dev_path.write_text(json.dumps(report), encoding="utf-8")

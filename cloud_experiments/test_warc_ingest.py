@@ -268,6 +268,94 @@ class Aae2AndQueueTests(unittest.TestCase):
                 pinned_queue = warc_ingest.resolve_warc_queue(data_root=root_path)
                 self.assertEqual(pinned_queue, [(pinned_src.relpath, pinned_dest.resolve())])
 
+            sub = root_path / "sub"
+            sub.mkdir()
+            dup_file = sub / "sample.warc.gz"
+            build_warc(dup_file)
+            both = warc_ingest.resolve_warc_queue(
+                warc_paths=[warc_file, dup_file], data_root=root_path
+            )
+            self.assertEqual([k for k, _ in both], ["sample.warc.gz", "1:sample.warc.gz"])
+
+    def test_normalize_probe_url_and_admission_cap_errors(self):
+        self.assertEqual(
+            warc_ingest.normalize_probe_url("<https://example.org/a/b?c=1>"),
+            "https://example.org/a/b?c=1",
+        )
+        self.assertEqual(
+            warc_ingest.normalize_probe_url("http://bad host/x"),
+            "https://cc.invalid/",
+        )
+        self.assertEqual(
+            warc_ingest.normalize_probe_url("https://example.org:99999/x"),
+            "https://cc.invalid/",
+        )
+        self.assertEqual(
+            warc_ingest.normalize_probe_url("https://example.org/" + "a" * 3000),
+            "https://cc.invalid/",
+        )
+        self.assertEqual(
+            warc_ingest.normalize_probe_url("ftp://example.org/file"),
+            "https://cc.invalid/",
+        )
+        self.assertEqual(
+            warc_ingest.sanitize_html_for_probe(
+                "<meta http-equiv=content-type content=text/html;charset =iso-8859-9 />"
+            ),
+            "<meta http-equiv=content-type content=text/html;charset=iso-8859-9 />",
+        )
+        self.assertEqual(
+            warc_ingest.sanitize_html_for_probe(
+                '<meta http-equiv="Content-Type" content="text/html;charset">'
+            ),
+            '<meta http-equiv="Content-Type" content="text/html;char-set">',
+        )
+        self.assertEqual(
+            warc_ingest.sanitize_html_for_probe(
+                '<meta name="description" content="Learn about charset">'
+            ),
+            '<meta name="description" content="Learn about charset">',
+        )
+
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "t.warc.gz"
+            build_warc(path)
+            pages = {page.target_uri: page for _, page in warc_ingest.iter_pages(path)}
+            ok_page = pages["https://example.org/a"]
+
+            def dom_cap_runner(argv, payload, timeout):
+                return 2, b"", b'{"status":"ERROR","error":"max DOM nodes exceeded"}'
+
+            with self.assertRaises(warc_ingest.WarcAdmissionCapError):
+                warc_ingest.extract_page_aae2(
+                    ok_page,
+                    warc_relpath="cc/test.warc.gz",
+                    core_probe_bin=Path(root) / "core_probe",
+                    runner=dom_cap_runner,
+                )
+
+            with unittest.mock.patch.object(warc_ingest, "MAX_FIXTURE_JSON_BYTES", 32):
+                with self.assertRaises(warc_ingest.WarcAdmissionCapError):
+                    warc_ingest.extract_page_aae2(
+                        ok_page,
+                        warc_relpath="cc/test.warc.gz",
+                        core_probe_bin=Path(root) / "core_probe",
+                        runner=dom_cap_runner,
+                    )
+
+    def test_concurrent_transcode_error_counting(self):
+        import concurrent.futures
+
+        def worker(error_count: int) -> int:
+            payload = b"<p>" + (b"\x81" * error_count) + b"ok</p>"
+            res = warc_ingest.transcode_to_utf8(payload, "text/html; charset=windows-1252")
+            return res.decode_errors
+
+        counts = [((i % 7) + 1) for i in range(48)]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            actual = list(pool.map(worker, counts))
+        self.assertEqual(actual, counts)
+
 
 if __name__ == "__main__":
     unittest.main()

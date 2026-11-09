@@ -1730,6 +1730,91 @@ class MacWarcPumpControls(unittest.TestCase):
         self.assertEqual(wrong_mode["exit_code"], lifecycle.EXIT_HOLD)
         self.assertIn("Cannot run campaign pump on a WARC run directory", wrong_mode["last_error"])
 
+    def test_warc_pump_multi_file_queue_rollover_and_mid_queue_resume(self):
+        from cloud_experiments import test_warc_ingest
+
+        warc2 = self.root / "second.warc.gz"
+        test_warc_ingest.build_warc(warc2)
+
+        # Pump 8 pages across [sample.warc.gz (6 pages), second.warc.gz (6 pages)].
+        _, first = self.warc_pump(
+            warc_paths=[self.warc, warc2], max_pages=8, shard_pages=3, canary_every_shards=0
+        )
+        self.assertEqual((first["status"], first["exit_code"]), ("COMPLETED_MAX_PAGES", 0))
+        self.assertEqual(len(self.calls), 8)
+        stats1 = first["running_stats"]
+        self.assertEqual(stats1["html_ok_pages"], 8)
+        self.assertEqual(stats1["status_counts"]["OK"], 8)
+        self.assertEqual(stats1["warc_files_completed"], 1)
+        self.assertTrue(first["warc_cursors"]["sample.warc.gz"]["completed"])
+        self.assertEqual(first["warc_cursors"]["sample.warc.gz"]["html_ok"], 6)
+        self.assertFalse(first["warc_cursors"]["second.warc.gz"]["completed"])
+        self.assertEqual(first["warc_cursors"]["second.warc.gz"]["html_ok"], 2)
+
+        self.calls.clear()
+        _, second = self.warc_pump(
+            warc_paths=[self.warc, warc2], max_pages=10, shard_pages=3, canary_every_shards=0
+        )
+        self.assertEqual((second["status"], second["exit_code"]), ("COMPLETED_WARC_QUEUE", 0))
+        self.assertEqual(len(self.calls), 4)
+        stats2 = second["running_stats"]
+        self.assertEqual(stats2["html_ok_pages"], 12)
+        self.assertEqual(stats2["status_counts"]["OK"], 12)
+        self.assertEqual(stats2["warc_files_completed"], 2)
+        self.assertTrue(second["warc_cursors"]["second.warc.gz"]["completed"])
+        self.assertEqual(second["warc_cursors"]["second.warc.gz"]["html_ok"], 6)
+        self.assertEqual(
+            stats2["warc_response_records"],
+            sum(stats2["status_counts"].values()),
+        )
+
+    def test_warc_pump_admission_cap_skip_and_no_double_count_on_backoff_stop(self):
+        stop_event = _InstantEvent()
+        call_num = 0
+
+        def custom_runner(argv, payload, timeout):
+            nonlocal call_num
+            call_num += 1
+            if call_num == 2:
+                # Deterministic resource-admission rejection: must skip without retry/HOLD.
+                return 2, b"", b'{"status":"ERROR","error":"max DOM nodes exceeded"}'
+            if call_num == 3:
+                # Transient error that triggers backoff, during which stop_event is set.
+                stop_event.set()
+                raise RuntimeError("transient probe failure before stop")
+            return self.page_runner(argv, payload, timeout)
+
+        _, interrupted = self.warc_pump(
+            page_runner=custom_runner,
+            stop_event=stop_event,
+            shard_pages=4,
+            canary_every_shards=0,
+        )
+        self.assertEqual((interrupted["status"], interrupted["exit_code"]), ("STOPPED", 0))
+        stats1 = interrupted["running_stats"]
+        # Page 1 succeeded (OK), Page 2 hit ADMISSION_CAP, Page 3 failed and stopped in backoff.
+        self.assertEqual(stats1["html_ok_pages"], 1)
+        self.assertEqual(stats1["status_counts"].get("OK"), 1)
+        self.assertEqual(stats1["status_counts"].get("ADMISSION_CAP"), 1)
+        self.assertEqual(interrupted["warc_cursors"]["sample.warc.gz"]["html_ok"], 1)
+        self.assertEqual(
+            stats1["warc_response_records"],
+            sum(stats1["status_counts"].values()),
+        )
+
+        # Resume with normal runner: remaining 4 OK pages (including the interrupted Page 3) complete.
+        _, resumed = self.warc_pump(shard_pages=4, canary_every_shards=0)
+        self.assertEqual((resumed["status"], resumed["exit_code"]), ("COMPLETED_WARC_QUEUE", 0))
+        stats2 = resumed["running_stats"]
+        self.assertEqual(stats2["html_ok_pages"], 5)
+        self.assertEqual(stats2["status_counts"]["OK"], 5)
+        self.assertEqual(stats2["status_counts"]["ADMISSION_CAP"], 1)
+        self.assertEqual(resumed["warc_cursors"]["sample.warc.gz"]["html_ok"], 5)
+        self.assertEqual(
+            stats2["warc_response_records"],
+            sum(stats2["status_counts"].values()),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

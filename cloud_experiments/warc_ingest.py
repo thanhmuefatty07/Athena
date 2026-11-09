@@ -30,10 +30,14 @@ import json
 from pathlib import Path
 import re
 import sys
+import threading
 import time
+import urllib.parse
 import zlib
 
 MAX_HTML_BYTES = 4 * 1024 * 1024  # src/projection.rs DEFAULT_MAX_HTML_BYTES
+MAX_FIXTURE_JSON_BYTES = 8 * 1024 * 1024  # cloud_experiments/core_probe.rs MAX_FIXTURE_BYTES
+MAX_URL_BYTES = 2048  # Safe UTF-8 URL cap so percent-encoded URL stays <= 8192 bytes in core_probe
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 READ_CHUNK = 1024 * 1024
 HTML_TYPES = ("text/html", "application/xhtml+xml")
@@ -41,6 +45,10 @@ HTML_TYPES = ("text/html", "application/xhtml+xml")
 
 class WarcFormatError(ValueError):
     pass
+
+
+class WarcAdmissionCapError(ValueError):
+    """Raised when a WARC page deterministically exceeds a hard core_probe resource-admission cap."""
 
 
 # ----------------------------------------------------------------------------- gzip members
@@ -278,11 +286,11 @@ _SINGLE_BYTE = {codec for codec in _WHATWG.values()
 
 _META_CHARSET = re.compile(rb"""<meta[^>]+?charset\s*=\s*["']?\s*([A-Za-z0-9_:.+-]{1,40})""", re.I)
 _CT_CHARSET = re.compile(r"""charset\s*=\s*["']?\s*([A-Za-z0-9_:.+-]{1,40})""", re.I)
-_DECODE_ERRORS = [0]
+_DECODE_ERROR_STATE = threading.local()
 
 
 def _count_replace(error):
-    _DECODE_ERRORS[0] += 1
+    _DECODE_ERROR_STATE.count = getattr(_DECODE_ERROR_STATE, "count", 0) + 1
     return "\ufffd", error.end
 
 
@@ -343,9 +351,9 @@ def transcode_to_utf8(payload: bytes, content_type: str | None) -> Transcoded:
     if source in ("http", "meta") and codec in _SINGLE_BYTE and _is_valid_utf8(payload) \
             and any(byte >= 0x80 for byte in payload):
         codec, decision = "utf-8", "utf8_override_of_declared"
-    _DECODE_ERRORS[0] = 0
+    _DECODE_ERROR_STATE.count = 0
     text = payload.decode(codec, "athena-count-replace")
-    errors = _DECODE_ERRORS[0]
+    errors = int(getattr(_DECODE_ERROR_STATE, "count", 0))
     return Transcoded(text, len(text.encode("utf-8", "surrogatepass")), codec, source, http_label,
                       meta_label, errors, decision)
 
@@ -636,6 +644,65 @@ def warc_probe_argv(binary: str | Path, *, qos_role: str = "background") -> list
     return lifecycle.mac_qos_command(argv, role=qos_role)
 
 
+_FALLBACK_PROBE_URL = "https://cc.invalid/"
+_ADMISSION_CAP_SNIPPETS = (
+    "max DOM nodes exceeded",
+    "max parser DOM nodes exceeded",
+    "decoded text byte budget exceeded",
+    "DOM arena capacity/depth/range error",
+    "fixture JSON exceeds hard probe admission",
+    "fixture HTML exceeds hard probe admission",
+    "fixture URL exceeds hard probe admission",
+)
+
+
+def normalize_probe_url(target_uri: str) -> str:
+    """Sanitize a WARC-Target-URI for core_probe while keeping raw target_uri in metadata."""
+    raw = str(target_uri or "").strip()
+    if raw.startswith("<") and raw.endswith(">"):
+        raw = raw[1:-1].strip()
+    if not raw.startswith(("http://", "https://")):
+        return _FALLBACK_PROBE_URL
+    if len(raw.encode("utf-8", "replace")) > MAX_URL_BYTES:
+        return _FALLBACK_PROBE_URL
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw):
+        return _FALLBACK_PROBE_URL
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        host = parts.hostname
+        _ = parts.port
+    except ValueError:
+        return _FALLBACK_PROBE_URL
+    if not host or ".." in host or host.startswith(".") or any(ch in host for ch in "/\\:?#@%"):
+        return _FALLBACK_PROBE_URL
+    try:
+        host.encode("idna")
+    except UnicodeError:
+        return _FALLBACK_PROBE_URL
+    return raw
+
+
+_META_TAG_RE = re.compile(r"<meta\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", re.I | re.S)
+_META_CHARSET_EQ_WS_RE = re.compile(r"(?i)(charset)\s*=\s*(?=[A-Za-z0-9_'\"-])")
+_META_BARE_CHARSET_RE = re.compile(r"(?i)charset(?![=][A-Za-z0-9_'\"-])")
+
+
+def sanitize_html_for_probe(html: str) -> str:
+    """Prevent html5ever 0.39.0 encoding.rs:39 OOB panic on <meta> content ending in bare 'charset'."""
+    low = html.lower()
+    if "charset" not in low or "http-equiv" not in low:
+        return html
+
+    def _fix_meta(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if "http-equiv" not in tag.lower():
+            return tag
+        tag = _META_CHARSET_EQ_WS_RE.sub(r"\1=", tag)
+        return _META_BARE_CHARSET_RE.sub("char-set", tag)
+
+    return _META_TAG_RE.sub(_fix_meta, html)
+
+
 def _default_probe_runner(argv: list[str], payload: bytes, timeout: float):
     import subprocess
     proc = subprocess.run(argv, input=payload, capture_output=True, timeout=timeout, check=False)
@@ -652,12 +719,10 @@ def extract_page_aae2(page: Page, *, warc_relpath: str, core_probe_bin: str | Pa
     if page.status != "OK" or page.transcoded is None:
         raise ValueError(f"extract_page_aae2 requires an OK transcoded page, got {page.status}")
     runner = runner or _default_probe_runner
-    html = page.transcoded.text
+    html = sanitize_html_for_probe(page.transcoded.text)
     title = page_title(html)
     query = derive_page_query(html, page.target_uri)
-    url = (page.target_uri
-           if str(page.target_uri).startswith(("http://", "https://"))
-           else "https://cc.invalid/")
+    url = normalize_probe_url(page.target_uri)
     fixture = {
         "html": html,
         "url": url,
@@ -667,10 +732,16 @@ def extract_page_aae2(page: Page, *, warc_relpath: str, core_probe_bin: str | Pa
         "link_mode": "none",
     }
     payload = json.dumps(fixture, ensure_ascii=False).encode("utf-8")
+    if len(payload) > MAX_FIXTURE_JSON_BYTES:
+        raise WarcAdmissionCapError(
+            f"fixture JSON ({len(payload)} bytes) exceeds hard probe admission ({MAX_FIXTURE_JSON_BYTES})"
+        )
     argv = warc_probe_argv(core_probe_bin, qos_role=qos_role)
     returncode, stdout, stderr = runner(argv, payload, timeout)
     if returncode != 0:
         tail = (stderr or b"")[-300:].decode("utf-8", "replace")
+        if any(snippet in tail for snippet in _ADMISSION_CAP_SNIPPETS):
+            raise WarcAdmissionCapError(f"core_probe cloud-024 admission cap ({returncode}): {tail}")
         raise RuntimeError(f"core_probe cloud-024 exited {returncode}: {tail}")
     probe_out = protocol.strict_json_loads(stdout)
     if not isinstance(probe_out, dict) or probe_out.get("schema") != "athena-cloud-024-breakthrough/1":
@@ -715,11 +786,14 @@ def resolve_warc_queue(*, warc_paths=(), data_root: str | Path = "~/athena_data"
 
     if warc_paths:
         resolved = []
-        for item in warc_paths:
+        seen_keys: set[str] = set()
+        for idx, item in enumerate(warc_paths):
             path = Path(item).expanduser().resolve()
             if not path.is_file() or path.is_symlink():
                 raise FileNotFoundError(f"WARC file missing or linked: {path}")
-            resolved.append((path.name, path))
+            key = path.name if path.name not in seen_keys else f"{idx}:{path.name}"
+            seen_keys.add(key)
+            resolved.append((key, path))
         return resolved
 
     root = Path(data_root).expanduser().resolve()

@@ -235,7 +235,7 @@ class CampaignControls(unittest.TestCase):
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory(prefix="athena-source-total-cap-") as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             names = ("a.rs", "b.rs", "c.rs")
             for name in names:
                 with (root / name).open("wb") as stream:
@@ -1621,7 +1621,7 @@ class GcpSecretRuntimeControls(unittest.TestCase):
 
         task = agent_lab.tasks()[0]
         with tempfile.TemporaryDirectory(prefix="athena-secret-runtime-") as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             binary = root / "core_probe"
             binary.write_bytes(b"synthetic probe identity")
             captured = {}
@@ -1892,12 +1892,14 @@ class ExpandedResearchControls(unittest.TestCase):
 
         cargo = shutil.which("cargo")
         self.assertIsNotNone(cargo, "The pinned Rust toolchain is required to inspect the real feature graph")
+        plus_probe = subprocess.run([cargo, "+1.99.1", "--version"], capture_output=True, timeout=30)
+        cargo_prefix = [cargo, "+1.99.1"] if plus_probe.returncode == 0 else [cargo]
 
         class CargoRun:
             def run(self, command, *, cwd, log_output=False):
                 if "--offline" not in command:
                     raise AssertionError("Research dependency-graph inspection must stay offline")
-                result = subprocess.run([cargo, "+1.99.1", *command[1:]], cwd=cwd,
+                result = subprocess.run([*cargo_prefix, *command[1:]], cwd=cwd,
                                         capture_output=True, timeout=120)
                 if result.returncode:
                     raise AssertionError(result.stderr.decode("utf-8", errors="replace"))
@@ -2762,6 +2764,7 @@ class ExpandedResearchControls(unittest.TestCase):
             run = RunWithoutCargo(run_dir)
             with (
                 patch.object(research.platform, "system", return_value="Linux"),
+                patch.object(research.platform, "machine", return_value="x86_64"),
                 patch.object(research, "_current_network_namespace_id", return_value="net:[host]"),
                 patch.object(research, "_current_pid_namespace_id", return_value="pid:[host]"),
                 patch.object(research, "_network_namespace_command",

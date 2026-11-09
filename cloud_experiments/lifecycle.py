@@ -21,6 +21,19 @@ import uuid
 from cloud_experiments import campaign, process_isolation
 from kaggle_experiments import protocol, runner
 
+if sys.platform == "darwin" and hasattr(os, "killpg"):
+    _ORIG_KILLPG = os.killpg
+
+    def _darwin_safe_killpg(pgid, sig):
+        try:
+            return _ORIG_KILLPG(pgid, sig)
+        except PermissionError as error:
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError(error.errno, error.strerror) from error
+            raise
+
+    os.killpg = _darwin_safe_killpg
+
 MAX_SUPERVISOR_ATTEMPTS = 3
 
 
@@ -2182,7 +2195,9 @@ class MacAutonomousDaemon:
         lock_fd = self._acquire_lock()
         store = None
         pending = []
+        pending_non_ok = []
         pending_skips = []
+        pending_cursors = {}
         stats = {}
         warc_cursors = {}
         pages_this_session = 0
@@ -2224,6 +2239,11 @@ class MacAutonomousDaemon:
                 "status_counts": {},
                 "codec_counts": {},
             })
+            sc_init = stats.setdefault("status_counts", {})
+            if sc_init and int(sc_init.get("OK", 0)) != int(stats.get("html_ok_pages", 0)):
+                sc_init["OK"] = int(stats.get("html_ok_pages", 0))
+                stats["warc_response_records"] = sum(int(v) for v in sc_init.values())
+                store.set_meta("running_stats", stats)
             store.set_meta("daemon_status", "RUNNING")
             started = runner.utc_now()
             self._write_state(status="RUNNING", pump_mode="warc", pid=os.getpid(),
@@ -2236,17 +2256,24 @@ class MacAutonomousDaemon:
                       core_probe_sha256=probe_sha)
 
             def canary(current_shard):
-                rows = store.conn.execute(
+                total_row = store.conn.execute(
+                    "SELECT COUNT(*) FROM completed_steps "
+                    "WHERE epoch_id = ? AND stage = 'warc_ingest';",
+                    (WARC_PUMP_EPOCH,),
+                ).fetchone()
+                total_ok = int(total_row[0]) if total_row else 0
+                if total_ok <= 0:
+                    return
+                pick_offset = (current_shard * 7919) % total_ok
+                row = store.conn.execute(
                     "SELECT case_id, block_id, payload_sha256, metrics_json "
                     "FROM completed_steps WHERE epoch_id = ? AND stage = 'warc_ingest' "
-                    "ORDER BY case_id, block_id;",
-                    (WARC_PUMP_EPOCH,),
-                ).fetchall()
-                if not rows:
+                    "ORDER BY case_id, block_id LIMIT 1 OFFSET ?;",
+                    (WARC_PUMP_EPOCH, pick_offset),
+                ).fetchone()
+                if row is None:
                     return
-                case_id, block_id, expected_sha, metrics_raw = rows[
-                    (current_shard * 7919) % len(rows)
-                ]
+                case_id, block_id, expected_sha, metrics_raw = row
                 warc_file = warc_path_by_key.get(case_id)
                 if warc_file is None or not warc_file.is_file():
                     return
@@ -2270,10 +2297,26 @@ class MacAutonomousDaemon:
                 self._log("canary_ok", warc=case_id, member_offset=int(block_id))
 
             def flush(*, force_meta=False):
-                nonlocal pending, pending_skips, shard_seq, stats
-                if not pending and not pending_skips and not force_meta:
+                nonlocal pending, pending_non_ok, pending_skips, pending_cursors, shard_seq, stats
+                if (
+                    not pending
+                    and not pending_non_ok
+                    and not pending_skips
+                    and not pending_cursors
+                    and not force_meta
+                ):
                     return
                 committed_new_shard = bool(pending)
+                for item in pending_non_ok:
+                    stats["warc_response_records"] += 1
+                    status_counts = stats.setdefault("status_counts", {})
+                    st = item["status"]
+                    status_counts[st] = int(status_counts.get(st, 0)) + 1
+                    if item["truncated"]:
+                        stats["warc_truncated_pages"] += 1
+                    if item["oversize"]:
+                        stats["oversize_pages"] += 1
+                pending_non_ok = []
                 step_rows = list(pending_skips)
                 pending_skips = []
                 if pending:
@@ -2310,6 +2353,11 @@ class MacAutonomousDaemon:
                                 "is_novel": is_novel,
                             },
                         })
+                        stats["warc_response_records"] += 1
+                        status_counts = stats.setdefault("status_counts", {})
+                        status_counts["OK"] = int(status_counts.get("OK", 0)) + 1
+                        if page.truncated:
+                            stats["warc_truncated_pages"] += 1
                         stats["html_ok_pages"] += 1
                         stats["novel_pages"] += int(is_novel)
                         stats["duplicate_pages"] += int(not is_novel)
@@ -2328,6 +2376,9 @@ class MacAutonomousDaemon:
                               novel_pages=stats["novel_pages"])
                 if step_rows:
                     store.record_steps_batch(step_rows)
+                for key, cur in pending_cursors.items():
+                    warc_cursors[key] = dict(cur)
+                pending_cursors = {}
                 stats["warc_files_completed"] = sum(
                     1 for c in warc_cursors.values() if c.get("completed")
                 )
@@ -2353,13 +2404,14 @@ class MacAutonomousDaemon:
                     stopped_early = True
                     break
                 file_bytes = warc_path.stat().st_size
-                cursor = dict(warc_cursors.get(warc_key) or {
+                base_cursor = pending_cursors.get(warc_key) or warc_cursors.get(warc_key) or {
                     "next_offset": 0,
                     "records_seen": 0,
                     "html_ok": 0,
                     "completed": False,
                     "file_bytes": file_bytes,
-                })
+                }
+                cursor = dict(base_cursor)
                 if cursor.get("completed") and int(cursor.get("next_offset", 0)) == file_bytes:
                     continue
                 start_offset = int(cursor.get("next_offset", 0))
@@ -2391,52 +2443,100 @@ class MacAutonomousDaemon:
                         stopped_early = True
                         break
                     next_offset = member.offset + member.length
-                    stats["warc_response_records"] += 1
-                    status_counts = stats.setdefault("status_counts", {})
-                    status_counts[page.status] = int(status_counts.get(page.status, 0)) + 1
-                    if page.truncated:
-                        stats["warc_truncated_pages"] += 1
-                        self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
-                                  reason=page.truncated, status=page.status,
-                                  target_uri=page.target_uri[:200])
-                    if page.status in ("OVERSIZE", "READER_OVERSIZE"):
-                        stats["oversize_pages"] += 1
-                        utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
-                        self._log("warc_oversize", warc=warc_key, member_offset=member.offset,
-                                  status=page.status, payload_bytes=page.payload_bytes,
-                                  utf8_bytes=utf8_len, target_uri=page.target_uri[:200])
-                        pending_skips.append({
-                            "epoch_id": WARC_PUMP_EPOCH,
-                            "stage": "warc_skip",
-                            "variant": page.status,
-                            "case_id": warc_key,
-                            "block_id": member.offset,
-                            "step_id": 0,
-                            "prng_counter": next_offset,
-                            "payload_sha256": hashlib.sha256(
-                                f"{warc_key}:{member.offset}:{page.status}".encode("utf-8")
-                            ).hexdigest(),
-                            "metrics": {
-                                "status": page.status,
-                                "payload_bytes": page.payload_bytes,
-                                "utf8_bytes": utf8_len,
-                            },
-                        })
                     if page.status != "OK":
+                        if page.truncated:
+                            self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
+                                      reason=page.truncated, status=page.status,
+                                      target_uri=page.target_uri[:200])
+                        is_oversize = page.status in ("OVERSIZE", "READER_OVERSIZE")
+                        if is_oversize:
+                            utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
+                            self._log("warc_oversize", warc=warc_key, member_offset=member.offset,
+                                      status=page.status, payload_bytes=page.payload_bytes,
+                                      utf8_bytes=utf8_len, target_uri=page.target_uri[:200])
+                            pending_skips.append({
+                                "epoch_id": WARC_PUMP_EPOCH,
+                                "stage": "warc_skip",
+                                "variant": page.status,
+                                "case_id": warc_key,
+                                "block_id": member.offset,
+                                "step_id": 0,
+                                "prng_counter": next_offset,
+                                "payload_sha256": hashlib.sha256(
+                                    f"{warc_key}:{member.offset}:{page.status}".encode("utf-8")
+                                ).hexdigest(),
+                                "metrics": {
+                                    "status": page.status,
+                                    "payload_bytes": page.payload_bytes,
+                                    "utf8_bytes": utf8_len,
+                                },
+                            })
+                        pending_non_ok.append({
+                            "status": page.status,
+                            "truncated": bool(page.truncated),
+                            "oversize": is_oversize,
+                        })
                         cursor["next_offset"] = next_offset
                         cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
-                        warc_cursors[warc_key] = dict(cursor)
+                        pending_cursors[warc_key] = dict(cursor)
                         non_ok_since_meta += 1
                         if non_ok_since_meta >= 500 and not pending:
                             non_ok_since_meta = 0
                             flush(force_meta=True)
                         continue
+                    admission_skipped = False
                     while True:
                         try:
                             aae2_rec = warc_ingest.extract_page_aae2(
                                 page, warc_relpath=warc_key, core_probe_bin=probe_bin,
                                 boilerplate=boilerplate, qos_role=qos_role,
                                 timeout=page_timeout_s, runner=page_runner)
+                            break
+                        except warc_ingest.WarcAdmissionCapError as error:
+                            admission_skipped = True
+                            aae2_rec = None
+                            failures = 0
+                            if page.truncated:
+                                self._log("warc_truncated", warc=warc_key,
+                                          member_offset=member.offset,
+                                          reason=page.truncated, status="ADMISSION_CAP",
+                                          target_uri=page.target_uri[:200])
+                            utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
+                            self._log("warc_oversize", warc=warc_key,
+                                      member_offset=member.offset,
+                                      status="ADMISSION_CAP", payload_bytes=page.payload_bytes,
+                                      utf8_bytes=utf8_len, reason=str(error)[:200],
+                                      target_uri=page.target_uri[:200])
+                            pending_skips.append({
+                                "epoch_id": WARC_PUMP_EPOCH,
+                                "stage": "warc_skip",
+                                "variant": "ADMISSION_CAP",
+                                "case_id": warc_key,
+                                "block_id": member.offset,
+                                "step_id": 0,
+                                "prng_counter": next_offset,
+                                "payload_sha256": hashlib.sha256(
+                                    f"{warc_key}:{member.offset}:ADMISSION_CAP".encode("utf-8")
+                                ).hexdigest(),
+                                "metrics": {
+                                    "status": "ADMISSION_CAP",
+                                    "payload_bytes": page.payload_bytes,
+                                    "utf8_bytes": utf8_len,
+                                    "error": str(error)[:200],
+                                },
+                            })
+                            pending_non_ok.append({
+                                "status": "ADMISSION_CAP",
+                                "truncated": bool(page.truncated),
+                                "oversize": True,
+                            })
+                            cursor["next_offset"] = next_offset
+                            cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
+                            pending_cursors[warc_key] = dict(cursor)
+                            non_ok_since_meta += 1
+                            if non_ok_since_meta >= 500 and not pending:
+                                non_ok_since_meta = 0
+                                flush(force_meta=True)
                             break
                         except Exception as error:
                             failures += 1
@@ -2448,6 +2548,7 @@ class MacAutonomousDaemon:
                                               consecutive_failures=failures,
                                               warc_cursors=warc_cursors)
                             if failures >= max_consecutive_failures:
+                                flush(force_meta=True)
                                 raise IntegrityError(
                                     f"{failures} consecutive page failures; last: {last_error}"
                                 )
@@ -2457,16 +2558,22 @@ class MacAutonomousDaemon:
                             if stop_event.is_set() or self.stop_path.exists():
                                 aae2_rec = None
                                 break
+                    if admission_skipped:
+                        continue
                     if aae2_rec is None:
                         reached_eof = False
                         stopped_early = True
                         break
+                    if page.truncated:
+                        self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
+                                  reason=page.truncated, status=page.status,
+                                  target_uri=page.target_uri[:200])
                     failures = 0
                     non_ok_since_meta = 0
                     cursor["next_offset"] = next_offset
                     cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
                     cursor["html_ok"] = int(cursor.get("html_ok", 0)) + 1
-                    warc_cursors[warc_key] = dict(cursor)
+                    pending_cursors[warc_key] = dict(cursor)
                     pending.append({
                         "warc_key": warc_key,
                         "member_offset": member.offset,
@@ -2477,6 +2584,11 @@ class MacAutonomousDaemon:
                     pages_this_session += 1
                     if len(pending) >= shard_pages:
                         flush()
+                    if max_pages is not None and pages_this_session >= max_pages and next_offset < file_bytes:
+                        final_status = "COMPLETED_MAX_PAGES"
+                        reached_eof = False
+                        stopped_early = True
+                        break
                     now = time.monotonic()
                     if now - last_heartbeat >= heartbeat_s:
                         last_heartbeat = now
@@ -2493,7 +2605,7 @@ class MacAutonomousDaemon:
                 if reached_eof:
                     cursor["next_offset"] = file_bytes
                     cursor["completed"] = True
-                    warc_cursors[warc_key] = dict(cursor)
+                    pending_cursors[warc_key] = dict(cursor)
                     flush(force_meta=True)
                 if stopped_early:
                     break
