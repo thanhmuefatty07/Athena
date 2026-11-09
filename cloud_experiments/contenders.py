@@ -8,10 +8,10 @@ from functools import lru_cache
 _DEFAULTS = {"writer": "frame", "hash": "joined", "reserve": "none", "lookup": "hash", "selection": "sort", "prepared": "oneshot", "projection": "separate", "links": "hash", "table": "dense", "html_extractor": "traversal", "lto": "thin", "codegen_units": 8, "cpu": "portable", "digest_library": "default", "html_library": "default", "json_library": "serde", "tls_provider": "aws-lc"}
 _STAGES = ["parser", "parse", "projection", "export", "pipeline", "rank", "selection", "highlight", "hash", "block_ids", "serialization", "prepared", "table", "html-table", "budget"]
 _SOURCE_SHA256 = {
-    "src/aae.rs": "e3531603d5e55b1f18b3b9499b3113066686077ab697112c566fe52737245ec4",
-    "src/rank.rs": "ab8a39e86917300feff06acdd388ef348ecf6b1c7bc08634431d670f9152085b",
-    "src/projection.rs": "1563a5b9a3c1812d068441db842eeaf7ca3ef58023275baea229b68cceb3b44f",
-    "src/table.rs": "ad2748888e2bfec1f412e39a7003d69b629f4da6e18820f3d3afd33585f46461",
+    "src/aae.rs": "300651ed7a6f781c86aaded99b0b49e28734054525233a2b2642b306d238454b",
+    "src/rank.rs": "6d91cca9a10034b20564b6575be6b55956cc7072c8d09c3c1b7d1e70cdba99b8",
+    "src/projection.rs": "45d15e784b4e7ff5c434d1b5954ae51fba339ea53bece937ad2e29d6fd237f10",
+    "src/table.rs": "68bb5e79887fff59b2a2d49b76d6da68b46e1bc4a62787144a006649b4bc8a5a",
 }
 
 

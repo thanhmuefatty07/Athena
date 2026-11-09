@@ -962,30 +962,33 @@ pub fn stem_token_guarded(token: &str) -> Cow<'_, str> {
         "ible",
         "ally",
     ] {
-        if let Some(stem) = token.strip_suffix(suffix) {
-            if stem.len() >= 4 {
-                return Cow::Borrowed(stem);
-            }
-        }
-    }
-    if let Some(stem) = token.strip_suffix("ies") {
-        if stem.len() >= 3 {
-            let mut owned = String::with_capacity(stem.len() + 1);
-            owned.push_str(stem);
-            owned.push('y');
-            return Cow::Owned(owned);
-        }
-    }
-    if let Some(stem) = token.strip_suffix("es") {
-        if stem.len() >= 4 && !stem.ends_with('s') {
-            return Cow::Borrowed(stem);
-        }
-    }
-    if let Some(stem) = token.strip_suffix('s') {
-        if stem.len() >= 4 && !token.ends_with("ss") && !token.ends_with("us") && !token.ends_with("is")
+        if let Some(stem) = token.strip_suffix(suffix)
+            && stem.len() >= 4
         {
             return Cow::Borrowed(stem);
         }
+    }
+    if let Some(stem) = token.strip_suffix("ies")
+        && stem.len() >= 3
+    {
+        let mut owned = String::with_capacity(stem.len() + 1);
+        owned.push_str(stem);
+        owned.push('y');
+        return Cow::Owned(owned);
+    }
+    if let Some(stem) = token.strip_suffix("es")
+        && stem.len() >= 4
+        && !stem.ends_with('s')
+    {
+        return Cow::Borrowed(stem);
+    }
+    if let Some(stem) = token.strip_suffix('s')
+        && stem.len() >= 4
+        && !token.ends_with("ss")
+        && !token.ends_with("us")
+        && !token.ends_with("is")
+    {
+        return Cow::Borrowed(stem);
     }
     Cow::Borrowed(token)
 }
@@ -1006,7 +1009,7 @@ pub fn saturate_stem_tf(raw_stem_tf: f64) -> f64 {
 /// into lowercase sub-tokens while preserving the full identifier (`R2-1`).
 pub fn split_compound_identifier(raw: &str) -> Vec<String> {
     let mut parts = Vec::<String>::new();
-    for segment in raw.split(|c: char| c == '_' || c == '-' || c == '/' || c == '.') {
+    for segment in raw.split(['_', '-', '/', '.']) {
         if segment.is_empty() {
             continue;
         }

@@ -181,16 +181,16 @@ pub fn ground_grid_cells(grid: &Grid) -> Vec<GroundedTableCell> {
     let mut origins: Vec<Option<(usize, usize, usize, usize)>> = vec![None; n_cells];
     for (r, row) in grid.slots.iter().enumerate() {
         for (c, slot) in row.iter().enumerate() {
-            if let Some(id) = *slot {
-                if id < n_cells {
-                    match &mut origins[id] {
-                        None => origins[id] = Some((r, c, r + 1, c + 1)),
-                        Some((r0, c0, r1, c1)) => {
-                            *r0 = (*r0).min(r);
-                            *c0 = (*c0).min(c);
-                            *r1 = (*r1).max(r + 1);
-                            *c1 = (*c1).max(c + 1);
-                        }
+            if let Some(id) = *slot
+                && id < n_cells
+            {
+                match &mut origins[id] {
+                    None => origins[id] = Some((r, c, r + 1, c + 1)),
+                    Some((r0, c0, r1, c1)) => {
+                        *r0 = (*r0).min(r);
+                        *c0 = (*c0).min(c);
+                        *r1 = (*r1).max(r + 1);
+                        *c1 = (*c1).max(c + 1);
                     }
                 }
             }
@@ -206,13 +206,15 @@ pub fn ground_grid_cells(grid: &Grid) -> Vec<GroundedTableCell> {
         let mut col_headers = Vec::new();
         for hr in 0..r0 {
             if let Some(hrow) = grid.slots.get(hr) {
-                for hc in c0..c1.min(hrow.len()) {
-                    if let Some(hid) = hrow[hc] {
-                        if hid != id && hid < n_cells && grid.cells[hid].is_header {
-                            let htxt = grid.cells[hid].text.trim();
-                            if !htxt.is_empty() && !col_headers.iter().any(|s: &String| s == htxt) {
-                                col_headers.push(htxt.to_owned());
-                            }
+                for slot in hrow.iter().take(c1).skip(c0) {
+                    if let Some(hid) = *slot
+                        && hid != id
+                        && hid < n_cells
+                        && grid.cells[hid].is_header
+                    {
+                        let htxt = grid.cells[hid].text.trim();
+                        if !htxt.is_empty() && !col_headers.iter().any(|s: &String| s == htxt) {
+                            col_headers.push(htxt.to_owned());
                         }
                     }
                 }
@@ -223,33 +225,32 @@ pub fn ground_grid_cells(grid: &Grid) -> Vec<GroundedTableCell> {
         let mut row_bindings = Vec::new();
         for rr in r0..r1.min(grid.slots.len()) {
             let hrow = &grid.slots[rr];
-            for hc in 0..c0.min(hrow.len()) {
-                if let Some(hid) = hrow[hc] {
-                    if hid != id && hid < n_cells {
-                        let hcell = &grid.cells[hid];
-                        let htxt = hcell.text.trim();
-                        if !htxt.is_empty()
-                            && (hcell.is_header || hc == 0)
-                            && !row_headers.iter().any(|s: &String| s == htxt)
-                        {
-                            row_headers.push(htxt.to_owned());
-                            let col_axis_hdr = grid
-                                .slots
-                                .first()
-                                .and_then(|top_row| top_row.get(hc))
-                                .and_then(|&s| s)
-                                .filter(|&top_id| {
-                                    top_id != hid
-                                        && top_id < n_cells
-                                        && grid.cells[top_id].is_header
-                                })
-                                .map(|top_id| grid.cells[top_id].text.trim())
-                                .filter(|s| !s.is_empty());
-                            if let Some(axis) = col_axis_hdr {
-                                row_bindings.push(format!("{axis} = {htxt}"));
-                            } else {
-                                row_bindings.push(htxt.to_owned());
-                            }
+            for (hc, slot) in hrow.iter().enumerate().take(c0) {
+                if let Some(hid) = *slot
+                    && hid != id
+                    && hid < n_cells
+                {
+                    let hcell = &grid.cells[hid];
+                    let htxt = hcell.text.trim();
+                    if !htxt.is_empty()
+                        && (hcell.is_header || hc == 0)
+                        && !row_headers.iter().any(|s: &String| s == htxt)
+                    {
+                        row_headers.push(htxt.to_owned());
+                        let col_axis_hdr = grid
+                            .slots
+                            .first()
+                            .and_then(|top_row| top_row.get(hc))
+                            .and_then(|&s| s)
+                            .filter(|&top_id| {
+                                top_id != hid && top_id < n_cells && grid.cells[top_id].is_header
+                            })
+                            .map(|top_id| grid.cells[top_id].text.trim())
+                            .filter(|s| !s.is_empty());
+                        if let Some(axis) = col_axis_hdr {
+                            row_bindings.push(format!("{axis} = {htxt}"));
+                        } else {
+                            row_bindings.push(htxt.to_owned());
                         }
                     }
                 }
@@ -257,21 +258,21 @@ pub fn ground_grid_cells(grid: &Grid) -> Vec<GroundedTableCell> {
         }
 
         let clean_text = cell.text.trim();
-        let grounded_context = if cell.is_header || (col_headers.is_empty() && row_bindings.is_empty())
-        {
-            clean_text.to_owned()
-        } else if !row_bindings.is_empty() && !col_headers.is_empty() {
-            format!(
-                "[{} | {}]: {}",
-                row_bindings.join(" / "),
-                col_headers.join(" / "),
-                clean_text
-            )
-        } else if !col_headers.is_empty() {
-            format!("[{}]: {}", col_headers.join(" / "), clean_text)
-        } else {
-            format!("[{}]: {}", row_bindings.join(" / "), clean_text)
-        };
+        let grounded_context =
+            if cell.is_header || (col_headers.is_empty() && row_bindings.is_empty()) {
+                clean_text.to_owned()
+            } else if !row_bindings.is_empty() && !col_headers.is_empty() {
+                format!(
+                    "[{} | {}]: {}",
+                    row_bindings.join(" / "),
+                    col_headers.join(" / "),
+                    clean_text
+                )
+            } else if !col_headers.is_empty() {
+                format!("[{}]: {}", col_headers.join(" / "), clean_text)
+            } else {
+                format!("[{}]: {}", row_bindings.join(" / "), clean_text)
+            };
 
         out.push(GroundedTableCell {
             cell_id: id as u32,

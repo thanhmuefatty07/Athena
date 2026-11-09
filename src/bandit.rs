@@ -1015,8 +1015,9 @@ impl ProxyPoolRouter {
                     let bandwidth_cost_usd = egress_mib * s.config.egress_usd_per_mib;
                     let pacing_ms = s.pacing_delay_ms(now);
                     let warm_lat_discount = if s.sticky_warm_streak >= 2 { 0.92 } else { 1.0 };
-                    let effective_latency_ms =
-                        (s.ewma_latency_ms * warm_lat_discount) + 1.35 * s.ewma_jitter_ms + pacing_ms;
+                    let effective_latency_ms = (s.ewma_latency_ms * warm_lat_discount)
+                        + 1.35 * s.ewma_jitter_ms
+                        + pacing_ms;
                     let latency_cost_usd = self.latency_value_usd_per_ms * effective_latency_ms;
                     let block_risk_usd =
                         0.0025 * s.ewma_block_rate + 0.0010 * (s.consecutive_failures as f64);
@@ -1156,7 +1157,11 @@ impl EmpiricalBayesProxyPool {
     #[must_use]
     pub fn posterior_survival(&self, asn: &str, subnet: &str, ip: &str) -> f64 {
         let (asn_s, asn_f) = self.asn_counts.get(asn).copied().unwrap_or((1.0, 1.0));
-        let (sub_s, sub_f) = self.subnet_counts.get(subnet).copied().unwrap_or((0.0, 0.0));
+        let (sub_s, sub_f) = self
+            .subnet_counts
+            .get(subnet)
+            .copied()
+            .unwrap_or((0.0, 0.0));
         let (ip_s, ip_f) = self.ip_counts.get(ip).copied().unwrap_or((0.0, 0.0));
         let (alpha, beta) = self.shrink_posterior(asn_s, asn_f, sub_s, sub_f, ip_s, ip_f);
         (alpha / (alpha + beta).max(1e-6)).clamp(0.01, 0.99)
@@ -1186,4 +1191,3 @@ impl EmpiricalBayesProxyPool {
         (ip_alpha, ip_beta)
     }
 }
-

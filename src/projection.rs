@@ -1315,7 +1315,10 @@ fn compute_dom_link_metadata(dom: &DomArena) -> (Vec<NodeId>, Vec<u32>) {
 
 fn is_navigation_table_cell(dom: &DomArena, cell_node_id: NodeId, anchor_counts: &[u32]) -> bool {
     let nodes = dom.nodes();
-    let cell_anchors = anchor_counts.get(cell_node_id as usize).copied().unwrap_or(0);
+    let cell_anchors = anchor_counts
+        .get(cell_node_id as usize)
+        .copied()
+        .unwrap_or(0);
     if cell_anchors == 0 {
         return false;
     }
@@ -2314,8 +2317,10 @@ pub fn convert_mathml_element_to_latex(el: scraper::ElementRef<'_>) -> String {
         }
     }
 
-    let child_elements: Vec<scraper::ElementRef<'_>> =
-        el.children().filter_map(scraper::ElementRef::wrap).collect();
+    let child_elements: Vec<scraper::ElementRef<'_>> = el
+        .children()
+        .filter_map(scraper::ElementRef::wrap)
+        .collect();
 
     let body = match tag_name {
         "mi" | "mn" | "mo" => {
@@ -2462,16 +2467,19 @@ pub fn render_sup_or_sub_element(el: scraper::ElementRef<'_>, prev_char: Option<
         return String::new();
     }
     if tag_name == "sup" {
-        let has_citation_link = el.children().filter_map(scraper::ElementRef::wrap).any(|c| {
-            c.value().name() == "a"
-                && c.value().attr("href").is_some_and(|h| {
-                    h.starts_with('#')
-                        || h.contains("cite")
-                        || h.contains("bib")
-                        || h.contains("ref")
-                        || h.contains("fn")
-                })
-        });
+        let has_citation_link = el
+            .children()
+            .filter_map(scraper::ElementRef::wrap)
+            .any(|c| {
+                c.value().name() == "a"
+                    && c.value().attr("href").is_some_and(|h| {
+                        h.starts_with('#')
+                            || h.contains("cite")
+                            || h.contains("bib")
+                            || h.contains("ref")
+                            || h.contains("fn")
+                    })
+            });
         let bracketed_digits = trimmed.starts_with('[')
             && trimmed.ends_with(']')
             && trimmed[1..trimmed.len() - 1]
@@ -2555,22 +2563,20 @@ pub fn sanitize_and_split_code_block(
             .value()
             .attr("data-lang")
             .or_else(|| cur.value().attr("data-language"))
+            && !dl.trim().is_empty()
         {
-            if !dl.trim().is_empty() {
-                lang = Some(dl.trim().to_ascii_lowercase());
-                break;
-            }
+            lang = Some(dl.trim().to_ascii_lowercase());
+            break;
         }
         if let Some(cls) = cur.value().attr("class") {
             for token in cls.split_whitespace() {
                 if let Some(l) = token
                     .strip_prefix("language-")
                     .or_else(|| token.strip_prefix("lang-"))
+                    && !l.is_empty()
                 {
-                    if !l.is_empty() {
-                        lang = Some(l.to_ascii_lowercase());
-                        break;
-                    }
+                    lang = Some(l.to_ascii_lowercase());
+                    break;
                 }
             }
             if lang.is_some() {
@@ -2719,12 +2725,28 @@ fn is_breakthrough_block_tag(name: &str) -> bool {
             | "form"
             | "ul"
             | "ol"
+            // Structural containers: must be descended into, otherwise the
+            // walk from `<html>` drops the entire `<body>` (and figure/details
+            // subtrees), yielding zero chunks.
+            | "body"
+            | "figure"
+            | "details"
+            | "summary"
+            | "address"
+            | "fieldset"
+            | "hgroup"
+            | "center"
+            | "menu"
     )
 }
 
+/// `ego_tree::NodeRef<'a, scraper::Node>`, named through scraper's public
+/// `ElementRef: Deref` so no extra crate is added to the pinned manifest.
+type ScraperNodeRef<'a> = <scraper::ElementRef<'a> as std::ops::Deref>::Target;
+
 fn append_rich_inline_node(
     node: scraper::node::Node,
-    child_ref: ego_tree::NodeRef<'_, scraper::node::Node>,
+    child_ref: ScraperNodeRef<'_>,
     out: &mut String,
     skip_nested_blocks: bool,
 ) {
@@ -2948,27 +2970,31 @@ fn extract_table_grid_from_element(
     table_el: scraper::ElementRef<'_>,
 ) -> Option<(crate::table::Grid, Vec<crate::table::GroundedTableCell>)> {
     let mut rows = Vec::<crate::table::Row>::new();
-    let mut stack = vec![(table_el, 1usize)]; // default group 1 = tbody
+    // Document-order (preorder) walk: rows must keep source order inside each
+    // row group, otherwise rowspans attach to the wrong rows.
+    let mut stack = vec![(table_el, 1usize, true)]; // default group 1 = tbody
     let mut tr_nodes = Vec::<(scraper::ElementRef<'_>, usize)>::new();
 
-    while let Some((cur, grp)) = stack.pop() {
+    while let Some((cur, grp, is_root)) = stack.pop() {
+        let name = cur.value().name();
+        if !is_root {
+            if name == "table" {
+                continue;
+            }
+            if name == "tr" {
+                tr_nodes.push((cur, grp));
+                continue;
+            }
+        }
         for child in cur.children().rev() {
             if let Some(child_el) = scraper::ElementRef::wrap(child) {
-                let name = child_el.value().name();
-                if name == "table" {
-                    continue;
-                }
-                let next_grp = match name {
+                let next_grp = match child_el.value().name() {
                     "thead" => 0,
                     "tbody" => 1,
                     "tfoot" => 2,
                     _ => grp,
                 };
-                if name == "tr" {
-                    tr_nodes.push((child_el, next_grp));
-                } else {
-                    stack.push((child_el, next_grp));
-                }
+                stack.push((child_el, next_grp, false));
             }
         }
     }
@@ -3101,7 +3127,7 @@ pub fn parse_html_breakthrough(
     }
 
     enum WalkOp<'a> {
-        VisitNode(ego_tree::NodeRef<'a, scraper::node::Node>, String, bool, bool),
+        VisitNode(ScraperNodeRef<'a>, String, bool, bool),
         EmitOrphanInline(String, u32, String),
         ResetHeadingStack,
     }
@@ -3169,7 +3195,7 @@ pub fn parse_html_breakthrough(
                     || (name == "header" && !now_in_main);
                 let now_in_boilerplate = in_boilerplate || is_nav_like;
 
-                if limits.boilerplate != BoilerplatePolicy::PreserveAll && now_in_boilerplate {
+                if limits.boilerplate != BoilerplatePolicy::FullDom && now_in_boilerplate {
                     heading_stack = [None, None, None, None, None, None];
                     active_lead_in = None;
                     continue;
@@ -3179,7 +3205,7 @@ pub fn parse_html_breakthrough(
                 }
 
                 if name == "table" {
-                    if limits.boilerplate != BoilerplatePolicy::PreserveAll
+                    if limits.boilerplate != BoilerplatePolicy::FullDom
                         && is_nav_layout_table_element(el, now_in_main)
                     {
                         continue;
@@ -3322,9 +3348,26 @@ pub fn parse_html_breakthrough(
                         ));
                     } else if matches!(
                         name,
-                        "div" | "section" | "article" | "main" | "header" | "body"
+                        "div"
+                            | "section"
+                            | "article"
+                            | "main"
+                            | "header"
+                            | "body"
+                            | "figure"
+                            | "details"
+                            | "summary"
+                            | "address"
+                            | "fieldset"
+                            | "hgroup"
+                            | "center"
                     ) {
-                        append_rich_inline_node(child.value().clone(), child, &mut inline_buf, true);
+                        append_rich_inline_node(
+                            child.value().clone(),
+                            child,
+                            &mut inline_buf,
+                            true,
+                        );
                     }
                 }
                 if !inline_buf.trim().is_empty() {

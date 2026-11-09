@@ -955,10 +955,7 @@ async fn fetch_pinned(
     while let Some(next) = stream.next().await {
         let part = next.map_err(|error| FetchError::Network(error.without_url()))?;
         wire.push_slice(&part)?;
-        if !prefix_checked
-            && encoding_mode == ContentEncodingMode::Identity
-            && wire.len() >= 4096
-        {
+        if !prefix_checked && encoding_mode == ContentEncodingMode::Identity && wire.len() >= 4096 {
             prefix_checked = true;
             let prefix_end = wire.len().min(16_384);
             let prefix_slice = &wire.buf[..prefix_end];
@@ -1015,16 +1012,16 @@ pub fn detect_soft_block_with_headers(
             return Some("aws_waf_captcha_interstitial");
         }
         if kl == "set-cookie" {
-            if (vl.contains("_abck=") && vl.contains("~0~")) || vl.contains("ak_bmsc=") {
-                if html.len() <= 32_768 {
-                    return Some("akamai_bot_manager_interstitial");
-                }
+            if ((vl.contains("_abck=") && vl.contains("~0~")) || vl.contains("ak_bmsc="))
+                && html.len() <= 32_768
+            {
+                return Some("akamai_bot_manager_interstitial");
             }
-            if vl.contains("visid_incap_") || vl.contains("incap_ses_") {
-                if html.len() <= 32_768 && !html.windows(5).any(|w| w.eq_ignore_ascii_case(b"<main"))
-                {
-                    return Some("imperva_incapsula_interstitial");
-                }
+            if (vl.contains("visid_incap_") || vl.contains("incap_ses_"))
+                && html.len() <= 32_768
+                && !html.windows(5).any(|w| w.eq_ignore_ascii_case(b"<main"))
+            {
+                return Some("imperva_incapsula_interstitial");
             }
         }
     }

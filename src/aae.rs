@@ -396,9 +396,7 @@ pub fn compute_merkle_provenance(
         .to_hex()
         .to_string();
     let merkle_payload = format!("{locator_payload}|content:{chunk_content_hash}");
-    let merkle_hash_hex = blake3::hash(merkle_payload.as_bytes())
-        .to_hex()
-        .to_string();
+    let merkle_hash_hex = blake3::hash(merkle_payload.as_bytes()).to_hex().to_string();
     let merkle_block_id = format!("b_{}_{}", pre_filter_dom_id, &locator_hex[..16]);
     MerkleProvenanceTuple {
         url_digest,
@@ -424,13 +422,8 @@ pub fn export_contrastive_training_records(
     if rich_page.rich_chunks.is_empty() || query.trim().is_empty() || max_positives == 0 {
         return Vec::new();
     }
-    let ranked = crate::rank::bm25f_fused_single_pass(
-        &rich_page.projection.chunks,
-        query,
-        1.2,
-        0.75,
-        0.5,
-    );
+    let ranked =
+        crate::rank::bm25f_fused_single_pass(&rich_page.projection.chunks, query, 1.2, 0.75, 0.5);
     let mut score_by_idx = vec![0.0f64; rich_page.rich_chunks.len()];
     for &(idx, sc) in &ranked {
         if idx < score_by_idx.len() {

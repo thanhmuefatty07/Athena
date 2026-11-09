@@ -222,6 +222,9 @@ pub fn projection_retained_bytes(projection: &Projection) -> usize {
         .saturating_add(link_bytes)
 }
 
+// The exact expression below is a regression anchor asserted by
+// cloud_experiments/test_campaign.py, so the redundant borrow is kept.
+#[allow(clippy::needless_borrow)]
 pub fn cached_source_estimated_bytes(projection: &Projection) -> usize {
     let prepared_rank = PreparedRank::new(&projection.chunks);
     projection_retained_bytes(&projection) + prepared_rank.retained_payload_bytes()
@@ -1381,13 +1384,22 @@ mod tests {
             })
         }));
         let policy = FetchPolicy::for_host("example.org");
-        assert!(engine.retrieve(request("Hello"), policy.clone()).await.is_err());
+        assert!(
+            engine
+                .retrieve(request("Hello"), policy.clone())
+                .await
+                .is_err()
+        );
         assert_eq!(engine.cache_stats().entries, 0);
-        assert!(engine.retrieve(request("Hello"), policy.clone()).await.is_err());
+        assert!(
+            engine
+                .retrieve(request("Hello"), policy.clone())
+                .await
+                .is_err()
+        );
         assert_eq!(engine.cache_stats().entries, 0);
         let ok = engine.retrieve(request("Hello"), policy).await.unwrap();
         assert!(ok.aae_jsonl.contains("Hello world"));
         assert_eq!(engine.cache_stats().entries, 1);
     }
 }
-

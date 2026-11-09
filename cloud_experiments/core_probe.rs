@@ -6109,8 +6109,7 @@ fn execute_cloud_024_fixture(input: &Fixture) -> Result<Value, String> {
         }
         let records = export_contrastive_training_records(&bt, &input.url, q, 3, 4);
         for rec in records {
-            contrastive_records_json
-                .push(serde_json::to_value(rec).map_err(|e| e.to_string())?);
+            contrastive_records_json.push(serde_json::to_value(rec).map_err(|e| e.to_string())?);
         }
     }
 
@@ -6122,7 +6121,9 @@ fn execute_cloud_024_fixture(input: &Fixture) -> Result<Value, String> {
     let mut block_latency_p99_ms = 0.0;
 
     if archetype == "deconfounded_waf_crn_replay" {
-        let waf_matrix: [(u16, &[(&str, &str)], &str, bool); 10] = [
+        // (status, headers, body, expected_blocked)
+        type WafCase<'a> = (u16, &'a [(&'a str, &'a str)], &'a str, bool);
+        let waf_matrix: [WafCase<'_>; 10] = [
             (
                 200,
                 &[("cf-mitigated", "challenge")],
@@ -6224,7 +6225,10 @@ fn execute_cloud_024_fixture(input: &Fixture) -> Result<Value, String> {
         ebayes.observe("AS13335", "203.0.113.0/24", "203.0.113.9", true);
         ebayes.observe("AS13335", "203.0.113.0/24", "203.0.113.10", true);
         let post = ebayes.posterior_survival("AS13335", "203.0.113.0/24", "203.0.113.11");
-        require(post > 0.5, "Hierarchical Empirical Bayes shrinkage must lift cold sibling IP")?;
+        require(
+            post > 0.5,
+            "Hierarchical Empirical Bayes shrinkage must lift cold sibling IP",
+        )?;
 
         let mut usable_lat = Vec::with_capacity(64);
         let mut block_lat = Vec::with_capacity(64);
@@ -6289,14 +6293,20 @@ fn run_cloud_024_campaign(
             let lat_u = philox_u01(seed_u64, step_u64, 0, 1);
             let _bandit_explore_u = philox_u01(seed_u64, step_u64, 1, 0);
 
-            let asn = if req_idx % 2 == 0 { "AS13335" } else { "AS16509" };
+            let asn = if req_idx % 2 == 0 {
+                "AS13335"
+            } else {
+                "AS16509"
+            };
             let subnet = if req_idx % 2 == 0 {
                 "198.51.100.0/24"
             } else {
                 "203.0.113.0/24"
             };
             let ip = format!("198.51.100.{}", (req_idx % 16) + 1);
-            let survival_threshold = ebayes.posterior_survival(asn, subnet, &ip).clamp(0.15, 0.98);
+            let survival_threshold = ebayes
+                .posterior_survival(asn, subnet, &ip)
+                .clamp(0.15, 0.98);
             let success = env_u <= survival_threshold;
             ebayes.observe(asn, subnet, &ip, success);
             if cusum.observe(!success) {
@@ -6308,7 +6318,7 @@ fn run_cloud_024_campaign(
             } else {
                 block_latencies.push(190.0 + 410.0 * lat_u);
             }
-            if global_step % 50 == 0 {
+            if global_step.is_multiple_of(50) {
                 checkpoint_rows.push(json!({
                     "step_index": global_step,
                     "seed_index": seed_idx,
@@ -6339,8 +6349,8 @@ fn run_cloud_024_campaign(
     let block_p99 = if block_latencies.is_empty() {
         0.0
     } else {
-        let idx = ((block_latencies.len() as f64 * 0.99).floor() as usize)
-            .min(block_latencies.len() - 1);
+        let idx =
+            ((block_latencies.len() as f64 * 0.99).floor() as usize).min(block_latencies.len() - 1);
         block_latencies[idx]
     };
 
