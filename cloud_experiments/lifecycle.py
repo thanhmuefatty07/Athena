@@ -1674,19 +1674,69 @@ class SqliteWalCheckpointStore:
 CAMPAIGN_PUMP_EPOCH = "cloud-024-campaign/v1"
 CAMPAIGN_PUMP_PROTOCOL = "athena-cloud-024-campaign/1"
 CAMPAIGN_REQUESTS_PER_SEED = 250
+WARC_PUMP_EPOCH = "cc-2026-43-warc/v1"
+WARC_BOILERPLATE_POLICIES = frozenset({"full_dom", "main_content_v1", "cetd_entropy_v1"})
 DAEMON_LOG_MAX_BYTES = 8 * 1024 ** 2
 DAEMON_LOG_KEEP = 8
 EXIT_RETRY = 75  # transient: supervisor restarts after a delay
 EXIT_HOLD = 78  # needs an operator: supervisor stops
+MAC_CAFFEINATE = "/usr/bin/caffeinate"
+MAC_LAUNCH_AGENT_LABEL = "com.athena.cloud024-pump"
+
+
+def render_mac_launch_agent(*, label, python, repo_root, log_path, pump_args):
+    """Per-user LaunchAgent that starts the supervised pump at login (incl. after reboot)."""
+    import plistlib
+
+    program = [str(python), "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+               "supervise", "--honor-stop", "--caffeinate", *[str(x) for x in pump_args]]
+    document = {
+        "Label": str(label),
+        "ProgramArguments": program,
+        "WorkingDirectory": str(repo_root),
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "ThrottleInterval": 60,
+        "ExitTimeOut": 150,
+        "ProcessType": "Standard",
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+        "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                                 "PYTHONUNBUFFERED": "1"},
+    }
+    return plistlib.dumps(document, sort_keys=True).decode("utf-8")
 
 
 class DaemonLockHeld(RuntimeError):
     pass
 
 
+def validate_campaign_pump_args(seeds_per_block, shard_blocks, max_blocks):
+    if type(seeds_per_block) is not int or not 1 <= seeds_per_block <= 500:
+        raise ValueError("seeds_per_block must be an integer in 1..=500")
+    if type(shard_blocks) is not int or shard_blocks < 1:
+        raise ValueError("shard_blocks must be a positive integer")
+    if max_blocks is not None and (type(max_blocks) is not int or max_blocks < 0):
+        raise ValueError("max_blocks must be a non-negative integer")
+
+
+def validate_warc_pump_args(shard_pages, max_pages, boilerplate):
+    if type(shard_pages) is not int or shard_pages < 1:
+        raise ValueError("shard_pages must be a positive integer")
+    if max_pages is not None and (type(max_pages) is not int or max_pages < 0):
+        raise ValueError("max_pages must be a non-negative integer")
+    if boilerplate not in WARC_BOILERPLATE_POLICIES:
+        raise ValueError(f"boilerplate must be one of {sorted(WARC_BOILERPLATE_POLICIES)}")
+
+
 def campaign_payload_sha256(report):
     """Digest of a campaign report without its wall-clock field (deterministic per block)."""
     return digest({key: value for key, value in report.items() if key != "wall_ms"})
+
+
+def warc_record_payload_sha256(record):
+    """Deterministic digest of an aae/2 WARC shard record."""
+    return digest(record)
 
 
 def _run_block_subprocess(argv, timeout):
@@ -1709,6 +1759,7 @@ class MacAutonomousDaemon:
         self.pid_path = self.run_dir / "daemon.pid"
         self.log_path = self.run_dir / "daemon.log"
         self.lock_path = self.run_dir / "daemon.lock"
+        self.supervisor_lock_path = self.run_dir / "supervisor.lock"
         self.stop_path = self.run_dir / "STOP"
 
     def _write_state(self, **fields):
@@ -1860,17 +1911,18 @@ class MacAutonomousDaemon:
             shutil.copyfileobj(raw, packed)
         self.log_path.unlink()
 
-    def _acquire_lock(self):
+    def _acquire_lock(self, lock_path=None):
+        lock_path = lock_path or self.lock_path
         try:
             import fcntl
         except ImportError:  # non-POSIX hosts (unit tests on Windows): no exclusivity
             return None
-        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             os.close(fd)
-            raise DaemonLockHeld(f"Another daemon holds {self.lock_path}")
+            raise DaemonLockHeld(f"Another daemon holds {lock_path}")
         return fd
 
     def _pin_core_probe(self, store, core_probe_bin):
@@ -1913,12 +1965,7 @@ class MacAutonomousDaemon:
         block is reproducible. Returns a summary with ``exit_code`` 0 (stopped or bounded
         run finished), EXIT_RETRY (transient) or EXIT_HOLD (operator needed).
         """
-        if type(seeds_per_block) is not int or not 1 <= seeds_per_block <= 500:
-            raise ValueError("seeds_per_block must be an integer in 1..=500")
-        if type(shard_blocks) is not int or shard_blocks < 1:
-            raise ValueError("shard_blocks must be a positive integer")
-        if max_blocks is not None and (type(max_blocks) is not int or max_blocks < 0):
-            raise ValueError("max_blocks must be a non-negative integer")
+        validate_campaign_pump_args(seeds_per_block, shard_blocks, max_blocks)
         block_runner = block_runner or _run_block_subprocess
         health_probe = health_probe or (lambda: probe_mac_hardware_health(
             self.run_dir, min_free_bytes=min_free_bytes, max_swap_bytes=max_swap_bytes))
@@ -1934,6 +1981,8 @@ class MacAutonomousDaemon:
             store = SqliteWalCheckpointStore(self.run_dir,
                                              allow_tmp_for_tests=self.allow_tmp_for_tests)
             self.pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            if store.get_meta("pump_mode") == "warc":
+                raise IntegrityError("Cannot run campaign pump on a WARC run directory")
             probe_bin, probe_sha = self._pin_core_probe(store, core_probe_bin)
             pinned_seeds = store.get_meta("seeds_per_block")
             if pinned_seeds is None:
@@ -2106,37 +2155,440 @@ class MacAutonomousDaemon:
         self._log("exit", **summary)
         return summary
 
+    def run_warc_pump(self, core_probe_bin, *, warc_paths=(), data_root="~/athena_data",
+                      fetch_missing=False, boilerplate="cetd_entropy_v1", shard_pages=64,
+                      max_pages=None, page_interval_s=0.05, page_timeout_s=60.0,
+                      health_backoff_s=60.0, failure_backoff_max_s=900.0,
+                      max_consecutive_failures=20, canary_every_shards=8,
+                      heartbeat_s=30.0, qos_role="background",
+                      min_free_bytes=MAC_MIN_DISK_FREE_BYTES,
+                      max_swap_bytes=MAC_MAX_SWAP_USED_BYTES,
+                      page_runner=None, health_probe=None, stop_event=None,
+                      fetcher=None) -> dict:
+        """Stream pinned Common Crawl WARC segments into WAL-checkpointed aae/2 shards.
+
+        Tracks the compressed gzip-member byte offset per WARC file in SQLite WAL metadata
+        so any pause, crash or restart resumes at the exact next member without rescanning
+        earlier members. Each emitted record carries ``schema: 'aae/2'``, per-record Common
+        Crawl license metadata, original charset telemetry, and 2-tier exact + MinHash LSH
+        deduplication status.
+        """
+        from cloud_experiments import warc_ingest
+
+        validate_warc_pump_args(shard_pages, max_pages, boilerplate)
+        health_probe = health_probe or (lambda: probe_mac_hardware_health(
+            self.run_dir, min_free_bytes=min_free_bytes, max_swap_bytes=max_swap_bytes))
+        stop_event = stop_event or threading.Event()
+        lock_fd = self._acquire_lock()
+        store = None
+        pending = []
+        pending_skips = []
+        stats = {}
+        warc_cursors = {}
+        pages_this_session = 0
+        final_status, exit_code, last_error = "STOPPED", 0, None
+        try:
+            store = SqliteWalCheckpointStore(self.run_dir,
+                                             allow_tmp_for_tests=self.allow_tmp_for_tests)
+            self.pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+            if store.get_meta("seeds_per_block") is not None or (
+                store.get_meta("pump_mode") not in (None, "warc")
+            ):
+                raise IntegrityError("Cannot run WARC pump on a synthetic campaign run directory")
+            store.set_meta("pump_mode", "warc")
+            probe_bin, probe_sha = self._pin_core_probe(store, core_probe_bin)
+            pinned_bp = store.get_meta("warc_boilerplate")
+            if pinned_bp is None:
+                store.set_meta("warc_boilerplate", boilerplate)
+            elif str(pinned_bp) != boilerplate:
+                raise IntegrityError(f"Run was started with warc_boilerplate={pinned_bp}")
+            queue = warc_ingest.resolve_warc_queue(
+                warc_paths=warc_paths, data_root=data_root,
+                fetch_missing=fetch_missing, fetcher=fetcher)
+            warc_path_by_key = {rel: path for rel, path in queue}
+            warc_cursors = deepcopy(store.get_meta("warc_cursors") or {})
+            shard_seq = int(store.get_meta("next_shard", 0))
+            stats = deepcopy(store.get_meta("running_stats") or {
+                "warc_files_completed": 0,
+                "warc_response_records": 0,
+                "html_ok_pages": 0,
+                "novel_pages": 0,
+                "duplicate_pages": 0,
+                "total_chunks": 0,
+                "total_contrastive_records": 0,
+                "utf8_bytes_processed": 0,
+                "decode_error_pages": 0,
+                "non_utf8_pages": 0,
+                "warc_truncated_pages": 0,
+                "oversize_pages": 0,
+                "status_counts": {},
+                "codec_counts": {},
+            })
+            store.set_meta("daemon_status", "RUNNING")
+            started = runner.utc_now()
+            self._write_state(status="RUNNING", pump_mode="warc", pid=os.getpid(),
+                              started_at=started, warc_boilerplate=boilerplate,
+                              core_probe_sha256=probe_sha, shard_seq=shard_seq,
+                              warc_cursors=warc_cursors, running_stats=stats,
+                              last_error=None, consecutive_failures=0)
+            self._log("warc_pump_start", pid=os.getpid(), shard_seq=shard_seq,
+                      boilerplate=boilerplate, warc_queue=[rel for rel, _ in queue],
+                      core_probe_sha256=probe_sha)
+
+            def canary(current_shard):
+                rows = store.conn.execute(
+                    "SELECT case_id, block_id, payload_sha256, metrics_json "
+                    "FROM completed_steps WHERE epoch_id = ? AND stage = 'warc_ingest' "
+                    "ORDER BY case_id, block_id;",
+                    (WARC_PUMP_EPOCH,),
+                ).fetchall()
+                if not rows:
+                    return
+                case_id, block_id, expected_sha, metrics_raw = rows[
+                    (current_shard * 7919) % len(rows)
+                ]
+                warc_file = warc_path_by_key.get(case_id)
+                if warc_file is None or not warc_file.is_file():
+                    return
+                member = warc_ingest.read_member_at(warc_file, int(block_id))
+                record = warc_ingest.parse_warc_record(member)
+                page = warc_ingest.classify_record(record)
+                if page is None or page.status != "OK":
+                    raise IntegrityError(
+                        f"WARC canary member at {case_id}@{block_id} is no longer OK"
+                    )
+                rerun = warc_ingest.extract_page_aae2(
+                    page, warc_relpath=case_id, core_probe_bin=probe_bin,
+                    boilerplate=boilerplate, qos_role=qos_role,
+                    timeout=page_timeout_s, runner=page_runner)
+                metrics_obj = protocol.strict_json_loads(metrics_raw.encode("utf-8"))
+                rerun["is_novel"] = bool(metrics_obj.get("is_novel", True))
+                if warc_record_payload_sha256(rerun) != expected_sha:
+                    raise IntegrityError(
+                        f"WARC determinism canary failed for {case_id}@{block_id}"
+                    )
+                self._log("canary_ok", warc=case_id, member_offset=int(block_id))
+
+            def flush(*, force_meta=False):
+                nonlocal pending, pending_skips, shard_seq, stats
+                if not pending and not pending_skips and not force_meta:
+                    return
+                committed_new_shard = bool(pending)
+                step_rows = list(pending_skips)
+                pending_skips = []
+                if pending:
+                    shard_id = f"warc-{shard_seq:08d}"
+                    shard_records = []
+                    for item in pending:
+                        rec = dict(item["record"])
+                        is_novel = store.check_and_insert_dedup(
+                            rec["doc_blake3_128"],
+                            tuple(rec["minhash_bands_4x32"]),
+                            shard_id,
+                        )
+                        rec["is_novel"] = is_novel
+                        payload_sha = warc_record_payload_sha256(rec)
+                        shard_records.append(rec)
+                        page = item["page"]
+                        t = page.transcoded
+                        step_rows.append({
+                            "epoch_id": WARC_PUMP_EPOCH,
+                            "stage": "warc_ingest",
+                            "variant": boilerplate,
+                            "case_id": item["warc_key"],
+                            "block_id": item["member_offset"],
+                            "step_id": 0,
+                            "prng_counter": item["next_offset"],
+                            "payload_sha256": payload_sha,
+                            "metrics": {
+                                "status": page.status,
+                                "utf8_bytes": t.utf8_bytes,
+                                "codec": t.codec,
+                                "decode_errors": t.decode_errors,
+                                "chunk_count": rec["chunk_count"],
+                                "contrastive_record_count": rec["contrastive_record_count"],
+                                "is_novel": is_novel,
+                            },
+                        })
+                        stats["html_ok_pages"] += 1
+                        stats["novel_pages"] += int(is_novel)
+                        stats["duplicate_pages"] += int(not is_novel)
+                        stats["total_chunks"] += int(rec["chunk_count"])
+                        stats["total_contrastive_records"] += int(rec["contrastive_record_count"])
+                        stats["utf8_bytes_processed"] += int(t.utf8_bytes)
+                        stats["decode_error_pages"] += int(t.decode_errors > 0)
+                        stats["non_utf8_pages"] += int(t.codec != "utf-8")
+                        codec_counts = stats.setdefault("codec_counts", {})
+                        codec_counts[t.codec] = int(codec_counts.get(t.codec, 0)) + 1
+                    store.write_compressed_shard(shard_id, WARC_PUMP_EPOCH, shard_records)
+                    shard_seq += 1
+                    pending = []
+                    self._log("shard_committed", shard_id=shard_id,
+                              html_ok_pages=stats["html_ok_pages"],
+                              novel_pages=stats["novel_pages"])
+                if step_rows:
+                    store.record_steps_batch(step_rows)
+                stats["warc_files_completed"] = sum(
+                    1 for c in warc_cursors.values() if c.get("completed")
+                )
+                store.set_meta_many({
+                    "running_stats": stats,
+                    "warc_cursors": warc_cursors,
+                    "next_shard": shard_seq,
+                })
+                if committed_new_shard and canary_every_shards and shard_seq % canary_every_shards == 0:
+                    canary(shard_seq)
+                if committed_new_shard and shard_seq % 64 == 0:
+                    store.wal_checkpoint_truncate()
+
+            failures = 0
+            last_heartbeat = 0.0
+            stopped_early = False
+            for warc_key, warc_path in queue:
+                if stop_event.is_set() or self.stop_path.exists():
+                    stopped_early = True
+                    break
+                if max_pages is not None and pages_this_session >= max_pages:
+                    final_status = "COMPLETED_MAX_PAGES"
+                    stopped_early = True
+                    break
+                file_bytes = warc_path.stat().st_size
+                cursor = dict(warc_cursors.get(warc_key) or {
+                    "next_offset": 0,
+                    "records_seen": 0,
+                    "html_ok": 0,
+                    "completed": False,
+                    "file_bytes": file_bytes,
+                })
+                if cursor.get("completed") and int(cursor.get("next_offset", 0)) == file_bytes:
+                    continue
+                start_offset = int(cursor.get("next_offset", 0))
+                non_ok_since_meta = 0
+                reached_eof = True
+                for member, page in warc_ingest.iter_pages(warc_path, start_offset=start_offset):
+                    if stop_event.is_set() or self.stop_path.exists():
+                        reached_eof = False
+                        stopped_early = True
+                        break
+                    if max_pages is not None and pages_this_session >= max_pages:
+                        final_status = "COMPLETED_MAX_PAGES"
+                        reached_eof = False
+                        stopped_early = True
+                        break
+                    while True:
+                        health = health_probe()
+                        if health["status"] == "HEALTHY":
+                            break
+                        flush(force_meta=True)
+                        self._write_state(status=health["status"], hardware_health=health,
+                                          warc_cursors=warc_cursors, running_stats=stats)
+                        self._log("paused", health=health)
+                        stop_event.wait(health_backoff_s)
+                        if stop_event.is_set() or self.stop_path.exists():
+                            break
+                    if stop_event.is_set() or self.stop_path.exists():
+                        reached_eof = False
+                        stopped_early = True
+                        break
+                    next_offset = member.offset + member.length
+                    stats["warc_response_records"] += 1
+                    status_counts = stats.setdefault("status_counts", {})
+                    status_counts[page.status] = int(status_counts.get(page.status, 0)) + 1
+                    if page.truncated:
+                        stats["warc_truncated_pages"] += 1
+                        self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
+                                  reason=page.truncated, status=page.status,
+                                  target_uri=page.target_uri[:200])
+                    if page.status in ("OVERSIZE", "READER_OVERSIZE"):
+                        stats["oversize_pages"] += 1
+                        utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
+                        self._log("warc_oversize", warc=warc_key, member_offset=member.offset,
+                                  status=page.status, payload_bytes=page.payload_bytes,
+                                  utf8_bytes=utf8_len, target_uri=page.target_uri[:200])
+                        pending_skips.append({
+                            "epoch_id": WARC_PUMP_EPOCH,
+                            "stage": "warc_skip",
+                            "variant": page.status,
+                            "case_id": warc_key,
+                            "block_id": member.offset,
+                            "step_id": 0,
+                            "prng_counter": next_offset,
+                            "payload_sha256": hashlib.sha256(
+                                f"{warc_key}:{member.offset}:{page.status}".encode("utf-8")
+                            ).hexdigest(),
+                            "metrics": {
+                                "status": page.status,
+                                "payload_bytes": page.payload_bytes,
+                                "utf8_bytes": utf8_len,
+                            },
+                        })
+                    if page.status != "OK":
+                        cursor["next_offset"] = next_offset
+                        cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
+                        warc_cursors[warc_key] = dict(cursor)
+                        non_ok_since_meta += 1
+                        if non_ok_since_meta >= 500 and not pending:
+                            non_ok_since_meta = 0
+                            flush(force_meta=True)
+                        continue
+                    while True:
+                        try:
+                            aae2_rec = warc_ingest.extract_page_aae2(
+                                page, warc_relpath=warc_key, core_probe_bin=probe_bin,
+                                boilerplate=boilerplate, qos_role=qos_role,
+                                timeout=page_timeout_s, runner=page_runner)
+                            break
+                        except Exception as error:
+                            failures += 1
+                            last_error = f"{type(error).__name__}: {error}"[:500]
+                            self._log("page_failed", warc=warc_key,
+                                      member_offset=member.offset, failures=failures,
+                                      error=last_error)
+                            self._write_state(status="BACKOFF", last_error=last_error,
+                                              consecutive_failures=failures,
+                                              warc_cursors=warc_cursors)
+                            if failures >= max_consecutive_failures:
+                                raise IntegrityError(
+                                    f"{failures} consecutive page failures; last: {last_error}"
+                                )
+                            stop_event.wait(
+                                min(failure_backoff_max_s, 5.0 * 2 ** (failures - 1))
+                            )
+                            if stop_event.is_set() or self.stop_path.exists():
+                                aae2_rec = None
+                                break
+                    if aae2_rec is None:
+                        reached_eof = False
+                        stopped_early = True
+                        break
+                    failures = 0
+                    non_ok_since_meta = 0
+                    cursor["next_offset"] = next_offset
+                    cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
+                    cursor["html_ok"] = int(cursor.get("html_ok", 0)) + 1
+                    warc_cursors[warc_key] = dict(cursor)
+                    pending.append({
+                        "warc_key": warc_key,
+                        "member_offset": member.offset,
+                        "next_offset": next_offset,
+                        "page": page,
+                        "record": aae2_rec,
+                    })
+                    pages_this_session += 1
+                    if len(pending) >= shard_pages:
+                        flush()
+                    now = time.monotonic()
+                    if now - last_heartbeat >= heartbeat_s:
+                        last_heartbeat = now
+                        self._write_state(
+                            status="RUNNING", pump_mode="warc",
+                            shard_seq=shard_seq, pending_pages=len(pending),
+                            pages_this_session=pages_this_session,
+                            warc_cursors=warc_cursors, running_stats=stats,
+                            last_error=last_error, consecutive_failures=0,
+                            hardware_health=health,
+                        )
+                    if page_interval_s > 0:
+                        stop_event.wait(page_interval_s)
+                if reached_eof:
+                    cursor["next_offset"] = file_bytes
+                    cursor["completed"] = True
+                    warc_cursors[warc_key] = dict(cursor)
+                    flush(force_meta=True)
+                if stopped_early:
+                    break
+            flush(force_meta=True)
+            if not stopped_early and all(
+                warc_cursors.get(rel, {}).get("completed") for rel, _ in queue
+            ):
+                final_status = "COMPLETED_WARC_QUEUE"
+        except DaemonLockHeld:
+            raise
+        except IntegrityError as error:
+            final_status, exit_code = "HOLD", EXIT_HOLD
+            last_error = f"{type(error).__name__}: {error}"[:500]
+        except Exception as error:
+            final_status, exit_code = "RETRY", EXIT_RETRY
+            last_error = f"{type(error).__name__}: {error}"[:500]
+        finally:
+            if store is not None:
+                try:
+                    store.set_meta("daemon_status", final_status)
+                except Exception:
+                    pass
+                store.close()
+            try:
+                if self.pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                    self.pid_path.unlink()
+            except OSError:
+                pass
+            if lock_fd is not None:
+                os.close(lock_fd)
+        summary = {
+            "schema": "athena-mac-warc-pump-summary/1",
+            "pump_mode": "warc",
+            "status": final_status,
+            "exit_code": exit_code,
+            "pages_this_session": pages_this_session,
+            "warc_cursors": warc_cursors,
+            "running_stats": stats,
+            "last_error": last_error,
+        }
+        self._write_state(**{key: value for key, value in summary.items() if key != "schema"})
+        self._log("exit", **summary)
+        return summary
+
     def supervise(self, child_argv, *, restart_delay_s=15.0, lock_retry_s=45.0,
-                  max_restarts=None, stop_event=None, launcher=None) -> int:
+                  max_restarts=None, stop_event=None, launcher=None, honor_stop=False) -> int:
         """Restart the pump after crashes/transient exits until STOP, a HOLD or a signal."""
         stop_event = stop_event or threading.Event()
         launcher = launcher or (lambda argv: subprocess.Popen(argv))
-        self.stop_path.unlink(missing_ok=True)  # a fresh supervisor is the operator's intent
-        restarts = 0
-        self._log("supervisor_start", pid=os.getpid(), argv=[str(x) for x in child_argv])
-        while True:
-            if self.stop_path.exists() or stop_event.is_set():
-                self._log("supervisor_stop", reason="stop_requested")
-                return 0
-            child = launcher([str(x) for x in child_argv])
-            while child.poll() is None:
-                if stop_event.wait(1.0):
-                    child.terminate()
-                    try:
-                        child.wait(timeout=120)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait()
-            returncode = child.returncode
-            self._log("child_exit", returncode=returncode, restarts=restarts)
-            if returncode == EXIT_HOLD:
-                return EXIT_HOLD
-            if stop_event.is_set() or self.stop_path.exists():
-                return 0
-            restarts += 1
-            if max_restarts is not None and restarts > max_restarts:
-                return returncode if returncode else EXIT_RETRY
-            stop_event.wait(lock_retry_s if returncode == EXIT_RETRY else restart_delay_s)
+        if honor_stop and self.stop_path.exists():
+            self._log("supervisor_stop", reason="stop_marker_present", pid=os.getpid())
+            return 0
+        try:
+            lock_fd = self._acquire_lock(self.supervisor_lock_path)
+        except DaemonLockHeld:
+            self._log("supervisor_stop", reason="another_supervisor_running", pid=os.getpid())
+            return 0
+        try:
+            if not honor_stop:
+                self.stop_path.unlink(missing_ok=True)  # a fresh supervisor is the operator's intent
+            restarts = 0
+            self._log("supervisor_start", pid=os.getpid(), honor_stop=bool(honor_stop),
+                      argv=[str(x) for x in child_argv])
+            while True:
+                if self.stop_path.exists() or stop_event.is_set():
+                    self._log("supervisor_stop", reason="stop_requested")
+                    return 0
+                child = launcher([str(x) for x in child_argv])
+                while child.poll() is None:
+                    if stop_event.wait(1.0):
+                        child.terminate()
+                        try:
+                            child.wait(timeout=120)
+                        except subprocess.TimeoutExpired:
+                            child.kill()
+                            child.wait()
+                returncode = child.returncode
+                self._log("child_exit", returncode=returncode, restarts=restarts)
+                if returncode == EXIT_HOLD:
+                    self.stop_path.write_text(
+                        f"HOLD {runner.utc_now()}: pump exited {EXIT_HOLD}; see daemon.log, "
+                        "fix the cause, then delete this file to resume\n", encoding="utf-8")
+                    return EXIT_HOLD
+                if stop_event.is_set() or self.stop_path.exists():
+                    return 0
+                if returncode == 0:
+                    self._log("supervisor_stop", reason="child_completed")
+                    return 0
+                restarts += 1
+                if max_restarts is not None and restarts > max_restarts:
+                    return returncode if returncode else EXIT_RETRY
+                stop_event.wait(lock_retry_s if returncode == EXIT_RETRY else restart_delay_s)
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
 
 
 def main():
@@ -2159,8 +2611,9 @@ def main():
     mac_cmd.add_argument(
         "action",
         choices=["start-or-resume", "supervise", "status", "pause-and-sleep",
-                 "collect-and-clean"],
+                 "collect-and-clean", "render-launch-agent"],
     )
+    mac_cmd.add_argument("--mode", choices=["campaign", "warc"], default="campaign")
     mac_cmd.add_argument("--run-dir", default="~/.athena_lab_runs/cloud-024")
     mac_cmd.add_argument("--archive", default="")
     mac_cmd.add_argument("--clean-after-verify", action="store_true")
@@ -2172,7 +2625,20 @@ def main():
     mac_cmd.add_argument("--block-interval-s", type=float, default=1.0)
     mac_cmd.add_argument("--shard-blocks", type=int, default=256)
     mac_cmd.add_argument("--max-blocks", type=int, default=None)
+    mac_cmd.add_argument("--data-root", default="~/athena_data")
+    mac_cmd.add_argument("--warc", action="append", default=[])
+    mac_cmd.add_argument("--fetch-missing", action="store_true")
+    mac_cmd.add_argument("--boilerplate", default="cetd_entropy_v1")
+    mac_cmd.add_argument("--shard-pages", type=int, default=64)
+    mac_cmd.add_argument("--max-pages", type=int, default=None)
+    mac_cmd.add_argument("--page-interval-s", type=float, default=0.05)
     mac_cmd.add_argument("--qos", choices=["background", "worker"], default="background")
+    mac_cmd.add_argument("--honor-stop", action="store_true",
+                         help="supervise: respect an existing STOP marker (launchd/boot starts)")
+    mac_cmd.add_argument("--caffeinate", action="store_true",
+                         help="supervise: hold a caffeinate -ims assertion for this process")
+    mac_cmd.add_argument("--label", default=MAC_LAUNCH_AGENT_LABEL)
+    mac_cmd.add_argument("--log-path", default="")
     args = parser.parse_args()
     if args.command == "render-unit":
         print(render_unit(args.memory_bytes, args.source), end="")
@@ -2205,6 +2671,50 @@ def main():
                 )
             )
             return 0
+        try:
+            if args.mode == "warc":
+                validate_warc_pump_args(args.shard_pages, args.max_pages, args.boilerplate)
+                if not math.isfinite(args.page_interval_s) or args.page_interval_s < 0:
+                    raise ValueError("page_interval_s must be a finite non-negative number")
+            else:
+                validate_campaign_pump_args(args.seeds_per_block, args.shard_blocks, args.max_blocks)
+                if not math.isfinite(args.block_interval_s) or args.block_interval_s < 0:
+                    raise ValueError("block_interval_s must be a finite non-negative number")
+        except ValueError as error:
+            print(json.dumps({"status": "CONFIG_INVALID", "error": str(error)}))
+            return EXIT_HOLD
+        if args.mode == "warc":
+            pump_args = [
+                "--mode", "warc",
+                "--run-dir", str(daemon.run_dir),
+                "--core-probe-bin", args.core_probe_bin,
+                "--data-root", str(Path(args.data_root).expanduser()),
+                "--boilerplate", args.boilerplate,
+                "--shard-pages", str(args.shard_pages),
+                "--page-interval-s", str(args.page_interval_s),
+                "--qos", args.qos,
+            ]
+            if args.fetch_missing:
+                pump_args.append("--fetch-missing")
+            for warc_file in args.warc:
+                pump_args += ["--warc", str(warc_file)]
+            if args.max_pages is not None:
+                pump_args += ["--max-pages", str(args.max_pages)]
+        else:
+            pump_args = ["--run-dir", str(daemon.run_dir), "--core-probe-bin", args.core_probe_bin,
+                         "--seeds-per-block", str(args.seeds_per_block),
+                         "--block-interval-s", str(args.block_interval_s),
+                         "--shard-blocks", str(args.shard_blocks), "--qos", args.qos]
+            if args.max_blocks is not None:
+                pump_args += ["--max-blocks", str(args.max_blocks)]
+        root = Path(__file__).resolve().parents[1]
+        if args.action == "render-launch-agent":
+            log_path = args.log_path or str(daemon.run_dir.parent
+                                            / f"{daemon.run_dir.name}-supervisor.out")
+            print(render_mac_launch_agent(label=args.label, python=sys.executable,
+                                          repo_root=root, log_path=log_path,
+                                          pump_args=pump_args), end="")
+            return 0
         stop = threading.Event()
 
         def request_stop(signum, frame):
@@ -2214,24 +2724,28 @@ def main():
         signal.signal(signal.SIGINT, request_stop)
         if hasattr(signal, "SIGHUP"):
             signal.signal(signal.SIGHUP, signal.SIG_IGN)
-        pump_args = ["--run-dir", str(daemon.run_dir), "--core-probe-bin", args.core_probe_bin,
-                     "--seeds-per-block", str(args.seeds_per_block),
-                     "--block-interval-s", str(args.block_interval_s),
-                     "--shard-blocks", str(args.shard_blocks), "--qos", args.qos]
-        if args.max_blocks is not None:
-            pump_args += ["--max-blocks", str(args.max_blocks)]
         if args.action == "supervise":
-            root = Path(__file__).resolve().parents[1]
+            if args.caffeinate and sys.platform == "darwin" and Path(MAC_CAFFEINATE).is_file():
+                subprocess.Popen([MAC_CAFFEINATE, "-ims", "-w", str(os.getpid())],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
             child = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
                      "start-or-resume", *pump_args]
             return daemon.supervise(
-                child, stop_event=stop,
+                child, stop_event=stop, honor_stop=args.honor_stop,
                 launcher=lambda argv: subprocess.Popen(argv, cwd=root))
         try:
-            summary = daemon.run_campaign_pump(
-                args.core_probe_bin, seeds_per_block=args.seeds_per_block,
-                block_interval_s=args.block_interval_s, shard_blocks=args.shard_blocks,
-                max_blocks=args.max_blocks, qos_role=args.qos, stop_event=stop)
+            if args.mode == "warc":
+                summary = daemon.run_warc_pump(
+                    args.core_probe_bin, warc_paths=args.warc, data_root=args.data_root,
+                    fetch_missing=args.fetch_missing, boilerplate=args.boilerplate,
+                    shard_pages=args.shard_pages, max_pages=args.max_pages,
+                    page_interval_s=args.page_interval_s, qos_role=args.qos, stop_event=stop)
+            else:
+                summary = daemon.run_campaign_pump(
+                    args.core_probe_bin, seeds_per_block=args.seeds_per_block,
+                    block_interval_s=args.block_interval_s, shard_blocks=args.shard_blocks,
+                    max_blocks=args.max_blocks, qos_role=args.qos, stop_event=stop)
         except DaemonLockHeld as error:
             print(json.dumps({"status": "LOCK_HELD", "error": str(error)}))
             return EXIT_RETRY
@@ -2253,4 +2767,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -1582,7 +1582,154 @@ class MacCampaignPumpEndToEnd(unittest.TestCase):
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    @unittest.skipUnless(BINARY.is_file() and os.name == "posix", "core_probe not built here")
+    def test_cli_warc_pump_pumps_real_pages_and_resumes(self):
+        import uuid as _uuid
+        from cloud_experiments import test_warc_ingest
+
+        run_dir = self.ROOT / "target" / f"test-mac-warc-{_uuid.uuid4().hex[:12]}"
+        warc_path = self.ROOT / "target" / f"test-warc-{_uuid.uuid4().hex[:12]}.warc.gz"
+        test_warc_ingest.build_warc(warc_path)
+        command = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                   "start-or-resume", "--mode", "warc", "--run-dir", str(run_dir),
+                   "--core-probe-bin", str(self.BINARY), "--warc", str(warc_path),
+                   "--shard-pages", "2", "--page-interval-s", "0", "--max-pages", "3"]
+        try:
+            for expected_pages, expected_status in (
+                (3, "COMPLETED_MAX_PAGES"),
+                (6, "COMPLETED_WARC_QUEUE"),
+            ):
+                proc = subprocess.run(command, cwd=self.ROOT, capture_output=True, text=True,
+                                      timeout=300)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                summary = json.loads(proc.stdout.strip().splitlines()[-1])
+                self.assertEqual(summary["status"], expected_status)
+                self.assertEqual(summary["running_stats"]["html_ok_pages"], expected_pages)
+            store = lifecycle.SqliteWalCheckpointStore(run_dir, allow_tmp_for_tests=True)
+            try:
+                shard0 = store.read_compressed_shard("warc-00000000")
+                self.assertEqual(len(shard0), 2)
+                self.assertEqual(shard0[0]["schema"], "aae/2")
+                self.assertGreaterEqual(shard0[0]["chunk_count"], 1)
+            finally:
+                store.close()
+        finally:
+            warc_path.unlink(missing_ok=True)
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+
+class MacWarcPumpControls(unittest.TestCase):
+    def setUp(self):
+        from cloud_experiments import test_warc_ingest
+
+        self._folder = tempfile.TemporaryDirectory(prefix="athena-warc-pump-")
+        self.root = Path(self._folder.name)
+        self.run_dir = self.root / "warc-run"
+        self.probe = self.root / "core_probe"
+        self.probe.write_bytes(b"fake core_probe warc v1")
+        self.warc = self.root / "sample.warc.gz"
+        _, self.offsets = test_warc_ingest.build_warc(self.warc)
+        self.calls = []
+        self.drift = False
+
+    def tearDown(self):
+        self._folder.cleanup()
+
+    def page_runner(self, argv, payload, timeout):
+        req = json.loads(payload.decode("utf-8"))
+        self.calls.append((req["url"], req["html"][:24]))
+        text = req["html"] + (" DRIFT" if self.drift else "")
+        out = {
+            "schema": "athena-cloud-024-breakthrough/1",
+            "archetype": req["archetype"],
+            "boilerplate": req["boilerplate"],
+            "text": text,
+            "blocks": [{"kind": "Paragraph", "text": text}],
+            "chunks": [{"index": 0, "kind": "Paragraph", "text": text,
+                        "token_count": 3, "digest": 77}],
+            "highlight_indices": [0],
+            "contrastive_records": [{
+                "schema": "aae/2",
+                "query": req["query"],
+                "positive_chunk_index": 0,
+                "positive_text": text,
+                "hard_negative_indices": [],
+                "provenance": {"root_digest": 999},
+            }],
+        }
+        return 0, json.dumps(out).encode("utf-8"), b""
+
+    def warc_pump(self, **overrides):
+        options = dict(
+            warc_paths=[self.warc],
+            data_root=self.root,
+            shard_pages=2,
+            page_interval_s=0.0,
+            canary_every_shards=1,
+            page_runner=self.page_runner,
+            health_probe=lambda: {"status": "HEALTHY"},
+            stop_event=_InstantEvent(),
+        )
+        options.update(overrides)
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        return daemon, daemon.run_warc_pump(self.probe, **options)
+
+    def test_warc_pump_streams_resumes_at_member_offset_and_checks_canary(self):
+        # sample.warc.gz has 6 HTML-200 pages; pump 3 first, then resume for the remaining 3.
+        _, first = self.warc_pump(max_pages=3)
+        self.assertEqual((first["status"], first["exit_code"]), ("COMPLETED_MAX_PAGES", 0))
+        self.assertEqual(first["running_stats"]["html_ok_pages"], 3)
+        cursors1 = first["warc_cursors"]["sample.warc.gz"]
+        self.assertEqual(cursors1["html_ok"], 3)
+        self.assertFalse(cursors1["completed"])
+        self.assertGreater(cursors1["next_offset"], 0)
+
+        calls_before_resume = list(self.calls)
+        self.calls.clear()
+        _, second = self.warc_pump(max_pages=10, canary_every_shards=0)
+        self.assertEqual((second["status"], second["exit_code"]), ("COMPLETED_WARC_QUEUE", 0))
+        self.assertEqual(second["running_stats"]["html_ok_pages"], 6)
+        # Resume must not re-run the first 3 pages.
+        self.assertEqual(len(self.calls), 3)
+        self.assertTrue(set(self.calls).isdisjoint(set(calls_before_resume)))
+        cursors2 = second["warc_cursors"]["sample.warc.gz"]
+        self.assertTrue(cursors2["completed"])
+
+        store = lifecycle.SqliteWalCheckpointStore(self.run_dir, allow_tmp_for_tests=True)
+        try:
+            shard0 = store.read_compressed_shard("warc-00000000")
+            self.assertEqual(len(shard0), 2)
+            self.assertEqual(shard0[0]["schema"], "aae/2")
+            self.assertIn("commoncrawl-terms-of-use-2024-03-07", shard0[0]["license"]["license"])
+            self.assertTrue(shard0[0]["is_novel"])
+            self.assertGreaterEqual(store.summary()["unique_documents"], 1)
+            self.assertEqual(store.summary()["committed_shards"], 4)
+        finally:
+            store.close()
+
+        # Re-running after queue completion with no new WARCs finishes cleanly at 6 pages.
+        self.calls.clear()
+        _, third = self.warc_pump()
+        self.assertEqual((third["status"], third["exit_code"]), ("COMPLETED_WARC_QUEUE", 0))
+        self.assertEqual(self.calls, [])
+
+    def test_warc_pump_canary_drift_and_mode_isolation_hold(self):
+        self.warc_pump(max_pages=2, canary_every_shards=0)
+        self.drift = True
+        _, held = self.warc_pump(max_pages=1, shard_pages=1, canary_every_shards=1)
+        self.assertEqual((held["status"], held["exit_code"]), ("HOLD", lifecycle.EXIT_HOLD))
+        self.assertIn("WARC determinism canary failed", held["last_error"])
+
+        # Attempting to run synthetic campaign pump on a WARC run_dir must hold immediately.
+        daemon = lifecycle.MacAutonomousDaemon(self.run_dir, allow_tmp_for_tests=True)
+        wrong_mode = daemon.run_campaign_pump(
+            self.probe, max_blocks=1,
+            health_probe=lambda: {"status": "HEALTHY"},
+            stop_event=_InstantEvent(),
+        )
+        self.assertEqual(wrong_mode["exit_code"], lifecycle.EXIT_HOLD)
+        self.assertIn("Cannot run campaign pump on a WARC run directory", wrong_mode["last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

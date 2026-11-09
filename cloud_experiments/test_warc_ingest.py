@@ -3,6 +3,7 @@ import hashlib
 import io
 import tempfile
 import unittest
+import unittest.mock
 import zlib
 from pathlib import Path
 
@@ -172,6 +173,100 @@ class MeasureTests(unittest.TestCase):
             self.assertEqual(report["html_200_pages"], 6)
             self.assertEqual(report["charset"]["final_codec"], {"utf-8": 5, "cp1252": 1})
             self.assertEqual(report["warc_truncated"], {"length": 1, "html_200:length": 1})
+
+
+class Aae2AndQueueTests(unittest.TestCase):
+    def test_derive_page_query_and_dedup_signature(self):
+        query = warc_ingest.derive_page_query(
+            UTF8_PAGE, "https://example.org/docs/athena-parser.html"
+        )
+        self.assertTrue(query)
+        self.assertIn("café", query.lower())
+        self.assertIn("crème", query.lower())
+        fallback = warc_ingest.derive_page_query("<p></p>", "https://example.org/x")
+        self.assertTrue(fallback)
+
+        b1, mh1 = warc_ingest.document_dedup_signature("alpha beta gamma delta epsilon")
+        b2, mh2 = warc_ingest.document_dedup_signature("alpha beta gamma delta epsilon")
+        b3, mh3 = warc_ingest.document_dedup_signature("completely unrelated content here")
+        self.assertEqual((len(b1), len(mh1)), (32, 4))
+        self.assertEqual((b1, mh1), (b2, mh2))
+        self.assertNotEqual(b1, b3)
+
+    def test_extract_page_aae2_includes_license_and_charset_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "t.warc.gz"
+            build_warc(path)
+            pages = {page.target_uri: page for _, page in warc_ingest.iter_pages(path)}
+            legacy = pages["https://example.org/legacy"]
+
+            def fake_runner(argv, payload, timeout):
+                req = warc_ingest.json.loads(payload.decode("utf-8"))
+                self.assertEqual(req["archetype"], "multihop_ir_contrastive_aae2")
+                self.assertEqual(req["boilerplate"], "cetd_entropy_v1")
+                self.assertTrue(req["query"])
+                out = {
+                    "schema": "athena-cloud-024-breakthrough/1",
+                    "archetype": req["archetype"],
+                    "boilerplate": req["boilerplate"],
+                    "text": "naïve café",
+                    "blocks": [{"kind": "Paragraph", "text": "naïve café"}],
+                    "chunks": [{"index": 0, "kind": "Paragraph", "text": "naïve café",
+                                "token_count": 2, "digest": 42}],
+                    "highlight_indices": [0],
+                    "contrastive_records": [{
+                        "schema": "aae/2",
+                        "query": req["query"],
+                        "positive_chunk_index": 0,
+                        "positive_text": "naïve café",
+                        "hard_negative_indices": [],
+                        "provenance": {"root_digest": 123},
+                    }],
+                }
+                return 0, warc_ingest.json.dumps(out).encode("utf-8"), b""
+
+            rec = warc_ingest.extract_page_aae2(
+                legacy,
+                warc_relpath="cc/test.warc.gz",
+                core_probe_bin=Path(root) / "core_probe",
+                runner=fake_runner,
+            )
+            self.assertEqual(rec["schema"], "aae/2")
+            self.assertIn("commoncrawl-terms-of-use-2024-03-07", rec["license"]["license"])
+            self.assertIn("CORPUS_NOT_ADMITTED", rec["license"]["corpus_status"])
+            self.assertEqual(rec["source"]["charset"]["codec"], "cp1252")
+            self.assertEqual(rec["source"]["charset"]["source"], "meta")
+            self.assertEqual(rec["source"]["warc"], "cc/test.warc.gz")
+            self.assertEqual(rec["chunk_count"], 1)
+            self.assertEqual(rec["contrastive_record_count"], 1)
+            self.assertEqual(len(bytes.fromhex(rec["doc_blake3_128"])), 16)
+            self.assertEqual(len(rec["minhash_bands_4x32"]), 4)
+
+    def test_resolve_warc_queue_local_and_pinned(self):
+        import dataclasses
+        from cloud_experiments import data_fetch
+
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            warc_file = root_path / "sample.warc.gz"
+            build_warc(warc_file)
+            resolved = warc_ingest.resolve_warc_queue(
+                warc_paths=[warc_file], data_root=root_path
+            )
+            self.assertEqual(resolved, [("sample.warc.gz", warc_file.resolve())])
+
+            with unittest.mock.patch.dict(
+                data_fetch.SOURCES,
+                {"cc-2026-43-00106": dataclasses.replace(
+                    data_fetch.SOURCES["cc-2026-43-00106"], expected_bytes=4
+                )},
+            ):
+                pinned_src = data_fetch.SOURCES["cc-2026-43-00106"]
+                pinned_dest = root_path / pinned_src.relpath
+                pinned_dest.parent.mkdir(parents=True, exist_ok=True)
+                pinned_dest.write_bytes(b"stub")
+                pinned_queue = warc_ingest.resolve_warc_queue(data_root=root_path)
+                self.assertEqual(pinned_queue, [(pinned_src.relpath, pinned_dest.resolve())])
 
 
 if __name__ == "__main__":

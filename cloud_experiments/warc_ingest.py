@@ -566,6 +566,182 @@ def measure(path, *, expected_bytes: int | None = None, max_records: int | None 
     return report
 
 
+# ----------------------------------------------------------------------------- Step 4 aae/2 shard extraction
+
+_SCRIPT_STYLE = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1\s*>", re.I | re.S)
+_HTML_TAG = re.compile(r"<[^>]+>")
+_QUERY_WORD = re.compile(r"[^\W_]{3,}", re.UNICODE)
+_SANDBOX_DENY_NET = "(version 1)(allow default)(deny network*)"
+_MINHASH_SALTS = (0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9, 0x94D049BB133111EB, 0xD6E8FEB86659FD93)
+
+
+def derive_page_query(html_text: str, target_uri: str = "", *, max_terms: int = 12) -> str:
+    """Build a deterministic self-supervised query from page title + leading body/URL tokens."""
+    seen: list[str] = []
+    seen_lower: set[str] = set()
+
+    def add_words(source: str):
+        for word in _QUERY_WORD.findall(source):
+            low = word.lower()
+            if low not in seen_lower:
+                seen_lower.add(low)
+                seen.append(word[:40])
+                if len(seen) >= max_terms:
+                    return
+
+    title = page_title(html_text)
+    if title:
+        add_words(title)
+    if len(seen) < max_terms:
+        cleaned = _HTML_TAG.sub(" ", _SCRIPT_STYLE.sub(" ", html_text[:65536]))
+        add_words(html_lib.unescape(cleaned))
+    if len(seen) < max_terms and target_uri:
+        add_words(target_uri)
+    return " ".join(seen)[:240] or "document"
+
+
+def document_dedup_signature(text: str) -> tuple[str, tuple[int, int, int, int]]:
+    """Return ``(doc_blake3_128, minhash_bands_4x32)`` for 2-tier exact + MinHash LSH dedup."""
+    words = [w.lower() for w in _QUERY_WORD.findall(text or "")]
+    normalized = " ".join(words)
+    doc_id_128 = hashlib.blake2b(normalized.encode("utf-8"), digest_size=16).hexdigest()
+    if len(words) >= 3:
+        shingles = [" ".join(words[i:i + 3]) for i in range(min(len(words) - 2, 2048))]
+    elif words:
+        shingles = words
+    else:
+        shingles = [text[:128] or ""]
+    base_hashes = [
+        int.from_bytes(hashlib.blake2b(s.encode("utf-8", "replace"), digest_size=8).digest(), "little")
+        for s in shingles
+    ]
+    bands = []
+    for salt in _MINHASH_SALTS:
+        best = 0xFFFFFFFF
+        for h in base_hashes:
+            mixed = ((h ^ salt) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+            mixed = ((mixed ^ (mixed >> 30)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+            val = (mixed ^ (mixed >> 31)) & 0xFFFFFFFF
+            if val < best:
+                best = val
+        bands.append(int(best))
+    return doc_id_128, (bands[0], bands[1], bands[2], bands[3])
+
+
+def warc_probe_argv(binary: str | Path, *, qos_role: str = "background") -> list[str]:
+    from cloud_experiments import lifecycle
+    argv = [str(binary), "cloud-024", "-", "0"]
+    if sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        argv = ["/usr/bin/sandbox-exec", "-p", _SANDBOX_DENY_NET, *argv]
+    return lifecycle.mac_qos_command(argv, role=qos_role)
+
+
+def _default_probe_runner(argv: list[str], payload: bytes, timeout: float):
+    import subprocess
+    proc = subprocess.run(argv, input=payload, capture_output=True, timeout=timeout, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def extract_page_aae2(page: Page, *, warc_relpath: str, core_probe_bin: str | Path,
+                      boilerplate: str = "cetd_entropy_v1", qos_role: str = "background",
+                      timeout: float = 60.0, runner=None) -> dict:
+    """Run ``core_probe cloud-024`` on an HTML-200 ``Page`` and build a licensed ``aae/2`` record."""
+    from cloud_experiments import data_fetch
+    from kaggle_experiments import protocol
+
+    if page.status != "OK" or page.transcoded is None:
+        raise ValueError(f"extract_page_aae2 requires an OK transcoded page, got {page.status}")
+    runner = runner or _default_probe_runner
+    html = page.transcoded.text
+    title = page_title(html)
+    query = derive_page_query(html, page.target_uri)
+    url = (page.target_uri
+           if str(page.target_uri).startswith(("http://", "https://"))
+           else "https://cc.invalid/")
+    fixture = {
+        "html": html,
+        "url": url,
+        "archetype": "multihop_ir_contrastive_aae2",
+        "query": query,
+        "boilerplate": boilerplate,
+        "link_mode": "none",
+    }
+    payload = json.dumps(fixture, ensure_ascii=False).encode("utf-8")
+    argv = warc_probe_argv(core_probe_bin, qos_role=qos_role)
+    returncode, stdout, stderr = runner(argv, payload, timeout)
+    if returncode != 0:
+        tail = (stderr or b"")[-300:].decode("utf-8", "replace")
+        raise RuntimeError(f"core_probe cloud-024 exited {returncode}: {tail}")
+    probe_out = protocol.strict_json_loads(stdout)
+    if not isinstance(probe_out, dict) or probe_out.get("schema") != "athena-cloud-024-breakthrough/1":
+        raise RuntimeError("core_probe cloud-024 output failed breakthrough schema check")
+    chunks = [c for c in (probe_out.get("chunks") or []) if isinstance(c, dict)]
+    joined_text = "\n".join(c.get("text", "") for c in chunks if c.get("text"))
+    doc_id_128, minhash_bands = document_dedup_signature(joined_text or html)
+    cc_license = dict(
+        data_fetch.LICENSES["commoncrawl"],
+        corpus_status="CORPUS_NOT_ADMITTED (local internal research only; no cloud staging)",
+    )
+    contrastive_records = []
+    for rec in probe_out.get("contrastive_records") or []:
+        if isinstance(rec, dict):
+            if rec.get("schema") != "aae/2":
+                raise RuntimeError("Invalid contrastive record schema in core_probe output")
+            contrastive_records.append({**rec, "license": dict(data_fetch.LICENSES["commoncrawl"])})
+    return {
+        "schema": "aae/2",
+        "license": cc_license,
+        "source": page.source_metadata(warc_relpath),
+        "fetched_at_unix_ms": warc_date_unix_ms(page.warc_date),
+        "title": title,
+        "query": query,
+        "boilerplate_policy": boilerplate,
+        "parse_warnings": int(probe_out.get("parse_warnings", 0)),
+        "top_ranked_chunk_text": str(probe_out.get("top_ranked_chunk_text") or ""),
+        "chunk_count": len(chunks),
+        "chunks": chunks,
+        "contrastive_record_count": len(contrastive_records),
+        "contrastive_records": contrastive_records,
+        "doc_blake3_128": doc_id_128,
+        "minhash_bands_4x32": list(minhash_bands),
+    }
+
+
+def resolve_warc_queue(*, warc_paths=(), data_root: str | Path = "~/athena_data",
+                       fetch_missing: bool = False, rate_bytes_per_s: int | None = None,
+                       fetcher=None) -> list[tuple[str, Path]]:
+    """Resolve explicit ``--warc`` files or the pinned ``cc-pinned`` WARC segments under ``data_root``."""
+    from cloud_experiments import data_fetch
+
+    if warc_paths:
+        resolved = []
+        for item in warc_paths:
+            path = Path(item).expanduser().resolve()
+            if not path.is_file() or path.is_symlink():
+                raise FileNotFoundError(f"WARC file missing or linked: {path}")
+            resolved.append((path.name, path))
+        return resolved
+
+    root = Path(data_root).expanduser().resolve()
+    fetcher = fetcher or data_fetch.fetch
+    rate = rate_bytes_per_s or data_fetch.DEFAULT_RATE_BYTES_PER_S
+    queue: list[tuple[str, Path]] = []
+    for source_id in data_fetch.GROUPS["cc-pinned"]:
+        source = data_fetch.SOURCES[source_id]
+        dest = root / source.relpath
+        if not dest.is_file() and fetch_missing:
+            fetcher(source, root, rate_bytes_per_s=rate)
+        if dest.is_file() and not dest.is_symlink():
+            if source.expected_bytes is not None and dest.stat().st_size != source.expected_bytes:
+                raise WarcFormatError(
+                    f"{source_id}: size {dest.stat().st_size} != pinned {source.expected_bytes}"
+                )
+            queue.append((source.relpath, dest))
+    if not queue:
+        raise FileNotFoundError(f"No verified pinned WARC files found under {root}")
+    return queue
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -574,12 +750,35 @@ def main(argv=None) -> int:
     m.add_argument("--expected-bytes", type=int)
     m.add_argument("--max-records", type=int)
     m.add_argument("--out")
+    ing = sub.add_parser("ingest")
+    ing.add_argument("--run-dir", default="~/.athena_lab_runs/cc-2026-43-warc")
+    ing.add_argument("--data-root", default="~/athena_data")
+    ing.add_argument("--warc", action="append", default=[])
+    ing.add_argument("--fetch-missing", action="store_true")
+    ing.add_argument("--core-probe-bin",
+                     default=str(Path(__file__).resolve().parents[1] / "target" / "release" / "core_probe"))
+    ing.add_argument("--boilerplate", default="cetd_entropy_v1")
+    ing.add_argument("--shard-pages", type=int, default=64)
+    ing.add_argument("--max-pages", type=int, default=None)
+    ing.add_argument("--page-interval-s", type=float, default=0.05)
+    ing.add_argument("--qos", choices=["background", "worker"], default="background")
     args = parser.parse_args(argv)
     try:
         import os
         os.nice(10)
     except (AttributeError, OSError):
         pass
+    if args.command == "ingest":
+        from cloud_experiments import lifecycle
+        daemon = lifecycle.MacAutonomousDaemon(args.run_dir)
+        summary = daemon.run_warc_pump(
+            args.core_probe_bin, warc_paths=args.warc, data_root=args.data_root,
+            fetch_missing=args.fetch_missing, boilerplate=args.boilerplate,
+            shard_pages=args.shard_pages, max_pages=args.max_pages,
+            page_interval_s=args.page_interval_s, qos_role=args.qos,
+        )
+        print(json.dumps(summary))
+        return summary["exit_code"]
     report = measure(args.warc, expected_bytes=args.expected_bytes, max_records=args.max_records,
                      progress_every=20000)
     text = json.dumps(report, indent=2, sort_keys=True)
