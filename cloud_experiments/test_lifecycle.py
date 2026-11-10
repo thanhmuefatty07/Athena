@@ -1815,6 +1815,55 @@ class MacWarcPumpControls(unittest.TestCase):
             sum(stats2["status_counts"].values()),
         )
 
+    def test_warc_pump_dynamic_queue_refill_discovers_new_pinned_segment_mid_run(self):
+        import dataclasses
+        from cloud_experiments import data_fetch, test_warc_ingest
+
+        warc_bytes = self.warc.read_bytes()
+        size = len(warc_bytes)
+        src1 = dataclasses.replace(data_fetch.SOURCES["cc-2026-43-00106"], expected_bytes=size)
+        src2 = dataclasses.replace(data_fetch.SOURCES["cc-2026-43-00920"], expected_bytes=size)
+        dest1 = self.root / src1.relpath
+        dest2 = self.root / src2.relpath
+        dest1.parent.mkdir(parents=True, exist_ok=True)
+        dest2.parent.mkdir(parents=True, exist_ok=True)
+        dest1.write_bytes(warc_bytes)
+        dest1.with_name(dest1.name + ".receipt.json").write_text(
+            json.dumps({"source_id": src1.source_id, "bytes": size}), encoding="utf-8"
+        )
+
+        added_second = False
+
+        def refill_runner(argv, payload, timeout):
+            nonlocal added_second
+            if not added_second and len(self.calls) == 2:
+                added_second = True
+                test_warc_ingest.build_warc(dest2)
+                dest2.with_name(dest2.name + ".receipt.json").write_text(
+                    json.dumps({"source_id": src2.source_id, "bytes": dest2.stat().st_size}),
+                    encoding="utf-8",
+                )
+            return self.page_runner(argv, payload, timeout)
+
+        with patch.dict(
+            data_fetch.SOURCES,
+            {"cc-2026-43-00106": src1, "cc-2026-43-00920": src2},
+        ):
+            _, summary = self.warc_pump(
+                warc_paths=(),
+                data_root=self.root,
+                page_runner=refill_runner,
+                shard_pages=3,
+                canary_every_shards=1,
+            )
+
+        self.assertTrue(added_second)
+        self.assertEqual((summary["status"], summary["exit_code"]), ("COMPLETED_WARC_QUEUE", 0))
+        self.assertEqual(summary["running_stats"]["html_ok_pages"], 12)
+        self.assertEqual(summary["running_stats"]["warc_files_completed"], 2)
+        self.assertTrue(summary["warc_cursors"][src1.relpath]["completed"])
+        self.assertTrue(summary["warc_cursors"][src2.relpath]["completed"])
+
 
 if __name__ == "__main__":
     unittest.main()

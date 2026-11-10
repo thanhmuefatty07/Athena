@@ -806,10 +806,21 @@ def resolve_warc_queue(*, warc_paths=(), data_root: str | Path = "~/athena_data"
         if not dest.is_file() and fetch_missing:
             fetcher(source, root, rate_bytes_per_s=rate)
         if dest.is_file() and not dest.is_symlink():
-            if source.expected_bytes is not None and dest.stat().st_size != source.expected_bytes:
+            actual_bytes = dest.stat().st_size
+            if source.expected_bytes is not None and actual_bytes != source.expected_bytes:
                 raise WarcFormatError(
-                    f"{source_id}: size {dest.stat().st_size} != pinned {source.expected_bytes}"
+                    f"{source_id}: size {actual_bytes} != pinned {source.expected_bytes}"
                 )
+            receipt_path = dest.with_name(dest.name + ".receipt.json")
+            if receipt_path.is_file():
+                try:
+                    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                except Exception as error:
+                    raise WarcFormatError(f"{source_id}: malformed receipt {receipt_path}: {error}") from error
+                if receipt.get("bytes") != actual_bytes or receipt.get("source_id") != source_id:
+                    raise WarcFormatError(
+                        f"{source_id}: receipt mismatch in {receipt_path}"
+                    )
             queue.append((source.relpath, dest))
     if not queue:
         raise FileNotFoundError(f"No verified pinned WARC files found under {root}")

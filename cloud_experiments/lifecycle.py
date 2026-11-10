@@ -2395,140 +2395,89 @@ class MacAutonomousDaemon:
             failures = 0
             last_heartbeat = 0.0
             stopped_early = False
-            for warc_key, warc_path in queue:
-                if stop_event.is_set() or self.stop_path.exists():
-                    stopped_early = True
-                    break
-                if max_pages is not None and pages_this_session >= max_pages:
-                    final_status = "COMPLETED_MAX_PAGES"
-                    stopped_early = True
-                    break
-                file_bytes = warc_path.stat().st_size
-                base_cursor = pending_cursors.get(warc_key) or warc_cursors.get(warc_key) or {
-                    "next_offset": 0,
-                    "records_seen": 0,
-                    "html_ok": 0,
-                    "completed": False,
-                    "file_bytes": file_bytes,
-                }
-                cursor = dict(base_cursor)
-                if cursor.get("completed") and int(cursor.get("next_offset", 0)) == file_bytes:
-                    continue
-                start_offset = int(cursor.get("next_offset", 0))
-                non_ok_since_meta = 0
-                reached_eof = True
-                for member, page in warc_ingest.iter_pages(warc_path, start_offset=start_offset):
+            while not stopped_early:
+                made_progress_in_pass = False
+                for warc_key, warc_path in queue:
                     if stop_event.is_set() or self.stop_path.exists():
-                        reached_eof = False
                         stopped_early = True
                         break
                     if max_pages is not None and pages_this_session >= max_pages:
                         final_status = "COMPLETED_MAX_PAGES"
-                        reached_eof = False
                         stopped_early = True
                         break
-                    while True:
-                        health = health_probe()
-                        if health["status"] == "HEALTHY":
-                            break
-                        flush(force_meta=True)
-                        self._write_state(status=health["status"], hardware_health=health,
-                                          warc_cursors=warc_cursors, running_stats=stats)
-                        self._log("paused", health=health)
-                        stop_event.wait(health_backoff_s)
-                        if stop_event.is_set() or self.stop_path.exists():
-                            break
-                    if stop_event.is_set() or self.stop_path.exists():
-                        reached_eof = False
-                        stopped_early = True
-                        break
-                    next_offset = member.offset + member.length
-                    if page.status != "OK":
-                        if page.truncated:
-                            self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
-                                      reason=page.truncated, status=page.status,
-                                      target_uri=page.target_uri[:200])
-                        is_oversize = page.status in ("OVERSIZE", "READER_OVERSIZE")
-                        if is_oversize:
-                            utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
-                            self._log("warc_oversize", warc=warc_key, member_offset=member.offset,
-                                      status=page.status, payload_bytes=page.payload_bytes,
-                                      utf8_bytes=utf8_len, target_uri=page.target_uri[:200])
-                            pending_skips.append({
-                                "epoch_id": WARC_PUMP_EPOCH,
-                                "stage": "warc_skip",
-                                "variant": page.status,
-                                "case_id": warc_key,
-                                "block_id": member.offset,
-                                "step_id": 0,
-                                "prng_counter": next_offset,
-                                "payload_sha256": hashlib.sha256(
-                                    f"{warc_key}:{member.offset}:{page.status}".encode("utf-8")
-                                ).hexdigest(),
-                                "metrics": {
-                                    "status": page.status,
-                                    "payload_bytes": page.payload_bytes,
-                                    "utf8_bytes": utf8_len,
-                                },
-                            })
-                        pending_non_ok.append({
-                            "status": page.status,
-                            "truncated": bool(page.truncated),
-                            "oversize": is_oversize,
-                        })
-                        cursor["next_offset"] = next_offset
-                        cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
-                        pending_cursors[warc_key] = dict(cursor)
-                        non_ok_since_meta += 1
-                        if non_ok_since_meta >= 500 and not pending:
-                            non_ok_since_meta = 0
-                            flush(force_meta=True)
+                    file_bytes = warc_path.stat().st_size
+                    base_cursor = pending_cursors.get(warc_key) or warc_cursors.get(warc_key) or {
+                        "next_offset": 0,
+                        "records_seen": 0,
+                        "html_ok": 0,
+                        "completed": False,
+                        "file_bytes": file_bytes,
+                    }
+                    cursor = dict(base_cursor)
+                    if cursor.get("completed") and int(cursor.get("next_offset", 0)) == file_bytes:
                         continue
-                    admission_skipped = False
-                    while True:
-                        try:
-                            aae2_rec = warc_ingest.extract_page_aae2(
-                                page, warc_relpath=warc_key, core_probe_bin=probe_bin,
-                                boilerplate=boilerplate, qos_role=qos_role,
-                                timeout=page_timeout_s, runner=page_runner)
+                    made_progress_in_pass = True
+                    start_offset = int(cursor.get("next_offset", 0))
+                    non_ok_since_meta = 0
+                    reached_eof = True
+                    for member, page in warc_ingest.iter_pages(warc_path, start_offset=start_offset):
+                        if stop_event.is_set() or self.stop_path.exists():
+                            reached_eof = False
+                            stopped_early = True
                             break
-                        except warc_ingest.WarcAdmissionCapError as error:
-                            admission_skipped = True
-                            aae2_rec = None
-                            failures = 0
+                        if max_pages is not None and pages_this_session >= max_pages:
+                            final_status = "COMPLETED_MAX_PAGES"
+                            reached_eof = False
+                            stopped_early = True
+                            break
+                        while True:
+                            health = health_probe()
+                            if health["status"] == "HEALTHY":
+                                break
+                            flush(force_meta=True)
+                            self._write_state(status=health["status"], hardware_health=health,
+                                              warc_cursors=warc_cursors, running_stats=stats)
+                            self._log("paused", health=health)
+                            stop_event.wait(health_backoff_s)
+                            if stop_event.is_set() or self.stop_path.exists():
+                                break
+                        if stop_event.is_set() or self.stop_path.exists():
+                            reached_eof = False
+                            stopped_early = True
+                            break
+                        next_offset = member.offset + member.length
+                        if page.status != "OK":
                             if page.truncated:
-                                self._log("warc_truncated", warc=warc_key,
-                                          member_offset=member.offset,
-                                          reason=page.truncated, status="ADMISSION_CAP",
+                                self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
+                                          reason=page.truncated, status=page.status,
                                           target_uri=page.target_uri[:200])
-                            utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
-                            self._log("warc_oversize", warc=warc_key,
-                                      member_offset=member.offset,
-                                      status="ADMISSION_CAP", payload_bytes=page.payload_bytes,
-                                      utf8_bytes=utf8_len, reason=str(error)[:200],
-                                      target_uri=page.target_uri[:200])
-                            pending_skips.append({
-                                "epoch_id": WARC_PUMP_EPOCH,
-                                "stage": "warc_skip",
-                                "variant": "ADMISSION_CAP",
-                                "case_id": warc_key,
-                                "block_id": member.offset,
-                                "step_id": 0,
-                                "prng_counter": next_offset,
-                                "payload_sha256": hashlib.sha256(
-                                    f"{warc_key}:{member.offset}:ADMISSION_CAP".encode("utf-8")
-                                ).hexdigest(),
-                                "metrics": {
-                                    "status": "ADMISSION_CAP",
-                                    "payload_bytes": page.payload_bytes,
-                                    "utf8_bytes": utf8_len,
-                                    "error": str(error)[:200],
-                                },
-                            })
+                            is_oversize = page.status in ("OVERSIZE", "READER_OVERSIZE")
+                            if is_oversize:
+                                utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
+                                self._log("warc_oversize", warc=warc_key, member_offset=member.offset,
+                                          status=page.status, payload_bytes=page.payload_bytes,
+                                          utf8_bytes=utf8_len, target_uri=page.target_uri[:200])
+                                pending_skips.append({
+                                    "epoch_id": WARC_PUMP_EPOCH,
+                                    "stage": "warc_skip",
+                                    "variant": page.status,
+                                    "case_id": warc_key,
+                                    "block_id": member.offset,
+                                    "step_id": 0,
+                                    "prng_counter": next_offset,
+                                    "payload_sha256": hashlib.sha256(
+                                        f"{warc_key}:{member.offset}:{page.status}".encode("utf-8")
+                                    ).hexdigest(),
+                                    "metrics": {
+                                        "status": page.status,
+                                        "payload_bytes": page.payload_bytes,
+                                        "utf8_bytes": utf8_len,
+                                    },
+                                })
                             pending_non_ok.append({
-                                "status": "ADMISSION_CAP",
+                                "status": page.status,
                                 "truncated": bool(page.truncated),
-                                "oversize": True,
+                                "oversize": is_oversize,
                             })
                             cursor["next_offset"] = next_offset
                             cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
@@ -2537,83 +2486,154 @@ class MacAutonomousDaemon:
                             if non_ok_since_meta >= 500 and not pending:
                                 non_ok_since_meta = 0
                                 flush(force_meta=True)
-                            break
-                        except Exception as error:
-                            failures += 1
-                            last_error = f"{type(error).__name__}: {error}"[:500]
-                            self._log("page_failed", warc=warc_key,
-                                      member_offset=member.offset, failures=failures,
-                                      error=last_error)
-                            self._write_state(status="BACKOFF", last_error=last_error,
-                                              consecutive_failures=failures,
-                                              warc_cursors=warc_cursors)
-                            if failures >= max_consecutive_failures:
-                                flush(force_meta=True)
-                                raise IntegrityError(
-                                    f"{failures} consecutive page failures; last: {last_error}"
-                                )
-                            stop_event.wait(
-                                min(failure_backoff_max_s, 5.0 * 2 ** (failures - 1))
-                            )
-                            if stop_event.is_set() or self.stop_path.exists():
-                                aae2_rec = None
+                            continue
+                        admission_skipped = False
+                        while True:
+                            try:
+                                aae2_rec = warc_ingest.extract_page_aae2(
+                                    page, warc_relpath=warc_key, core_probe_bin=probe_bin,
+                                    boilerplate=boilerplate, qos_role=qos_role,
+                                    timeout=page_timeout_s, runner=page_runner)
                                 break
-                    if admission_skipped:
-                        continue
-                    if aae2_rec is None:
-                        reached_eof = False
-                        stopped_early = True
+                            except warc_ingest.WarcAdmissionCapError as error:
+                                admission_skipped = True
+                                aae2_rec = None
+                                failures = 0
+                                if page.truncated:
+                                    self._log("warc_truncated", warc=warc_key,
+                                              member_offset=member.offset,
+                                              reason=page.truncated, status="ADMISSION_CAP",
+                                              target_uri=page.target_uri[:200])
+                                utf8_len = page.transcoded.utf8_bytes if page.transcoded else None
+                                self._log("warc_oversize", warc=warc_key,
+                                          member_offset=member.offset,
+                                          status="ADMISSION_CAP", payload_bytes=page.payload_bytes,
+                                          utf8_bytes=utf8_len, reason=str(error)[:200],
+                                          target_uri=page.target_uri[:200])
+                                pending_skips.append({
+                                    "epoch_id": WARC_PUMP_EPOCH,
+                                    "stage": "warc_skip",
+                                    "variant": "ADMISSION_CAP",
+                                    "case_id": warc_key,
+                                    "block_id": member.offset,
+                                    "step_id": 0,
+                                    "prng_counter": next_offset,
+                                    "payload_sha256": hashlib.sha256(
+                                        f"{warc_key}:{member.offset}:ADMISSION_CAP".encode("utf-8")
+                                    ).hexdigest(),
+                                    "metrics": {
+                                        "status": "ADMISSION_CAP",
+                                        "payload_bytes": page.payload_bytes,
+                                        "utf8_bytes": utf8_len,
+                                        "error": str(error)[:200],
+                                    },
+                                })
+                                pending_non_ok.append({
+                                    "status": "ADMISSION_CAP",
+                                    "truncated": bool(page.truncated),
+                                    "oversize": True,
+                                })
+                                cursor["next_offset"] = next_offset
+                                cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
+                                pending_cursors[warc_key] = dict(cursor)
+                                non_ok_since_meta += 1
+                                if non_ok_since_meta >= 500 and not pending:
+                                    non_ok_since_meta = 0
+                                    flush(force_meta=True)
+                                break
+                            except Exception as error:
+                                failures += 1
+                                last_error = f"{type(error).__name__}: {error}"[:500]
+                                self._log("page_failed", warc=warc_key,
+                                          member_offset=member.offset, failures=failures,
+                                          error=last_error)
+                                self._write_state(status="BACKOFF", last_error=last_error,
+                                                  consecutive_failures=failures,
+                                                  warc_cursors=warc_cursors)
+                                if failures >= max_consecutive_failures:
+                                    flush(force_meta=True)
+                                    raise IntegrityError(
+                                        f"{failures} consecutive page failures; last: {last_error}"
+                                    )
+                                stop_event.wait(
+                                    min(failure_backoff_max_s, 5.0 * 2 ** (failures - 1))
+                                )
+                                if stop_event.is_set() or self.stop_path.exists():
+                                    aae2_rec = None
+                                    break
+                        if admission_skipped:
+                            continue
+                        if aae2_rec is None:
+                            reached_eof = False
+                            stopped_early = True
+                            break
+                        if page.truncated:
+                            self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
+                                      reason=page.truncated, status=page.status,
+                                      target_uri=page.target_uri[:200])
+                        failures = 0
+                        non_ok_since_meta = 0
+                        cursor["next_offset"] = next_offset
+                        cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
+                        cursor["html_ok"] = int(cursor.get("html_ok", 0)) + 1
+                        pending_cursors[warc_key] = dict(cursor)
+                        pending.append({
+                            "warc_key": warc_key,
+                            "member_offset": member.offset,
+                            "next_offset": next_offset,
+                            "page": page,
+                            "record": aae2_rec,
+                        })
+                        pages_this_session += 1
+                        if len(pending) >= shard_pages:
+                            flush()
+                        if max_pages is not None and pages_this_session >= max_pages and next_offset < file_bytes:
+                            final_status = "COMPLETED_MAX_PAGES"
+                            reached_eof = False
+                            stopped_early = True
+                            break
+                        now = time.monotonic()
+                        if now - last_heartbeat >= heartbeat_s:
+                            last_heartbeat = now
+                            self._write_state(
+                                status="RUNNING", pump_mode="warc",
+                                shard_seq=shard_seq, pending_pages=len(pending),
+                                pages_this_session=pages_this_session,
+                                warc_cursors=warc_cursors, running_stats=stats,
+                                last_error=last_error, consecutive_failures=0,
+                                hardware_health=health,
+                            )
+                        if page_interval_s > 0:
+                            stop_event.wait(page_interval_s)
+                    if reached_eof:
+                        cursor["next_offset"] = file_bytes
+                        cursor["completed"] = True
+                        pending_cursors[warc_key] = dict(cursor)
+                        flush(force_meta=True)
+                    if stopped_early:
                         break
-                    if page.truncated:
-                        self._log("warc_truncated", warc=warc_key, member_offset=member.offset,
-                                  reason=page.truncated, status=page.status,
-                                  target_uri=page.target_uri[:200])
-                    failures = 0
-                    non_ok_since_meta = 0
-                    cursor["next_offset"] = next_offset
-                    cursor["records_seen"] = int(cursor.get("records_seen", 0)) + 1
-                    cursor["html_ok"] = int(cursor.get("html_ok", 0)) + 1
-                    pending_cursors[warc_key] = dict(cursor)
-                    pending.append({
-                        "warc_key": warc_key,
-                        "member_offset": member.offset,
-                        "next_offset": next_offset,
-                        "page": page,
-                        "record": aae2_rec,
-                    })
-                    pages_this_session += 1
-                    if len(pending) >= shard_pages:
-                        flush()
-                    if max_pages is not None and pages_this_session >= max_pages and next_offset < file_bytes:
-                        final_status = "COMPLETED_MAX_PAGES"
-                        reached_eof = False
-                        stopped_early = True
-                        break
-                    now = time.monotonic()
-                    if now - last_heartbeat >= heartbeat_s:
-                        last_heartbeat = now
-                        self._write_state(
-                            status="RUNNING", pump_mode="warc",
-                            shard_seq=shard_seq, pending_pages=len(pending),
-                            pages_this_session=pages_this_session,
-                            warc_cursors=warc_cursors, running_stats=stats,
-                            last_error=last_error, consecutive_failures=0,
-                            hardware_health=health,
-                        )
-                    if page_interval_s > 0:
-                        stop_event.wait(page_interval_s)
-                if reached_eof:
-                    cursor["next_offset"] = file_bytes
-                    cursor["completed"] = True
-                    pending_cursors[warc_key] = dict(cursor)
-                    flush(force_meta=True)
                 if stopped_early:
                     break
+                flush(force_meta=True)
+                refreshed = warc_ingest.resolve_warc_queue(
+                    warc_paths=warc_paths, data_root=data_root,
+                    fetch_missing=fetch_missing, fetcher=fetcher)
+                new_keys = [rel for rel, _ in refreshed if rel not in warc_path_by_key]
+                queue = refreshed
+                warc_path_by_key.update({rel: path for rel, path in refreshed})
+                if new_keys:
+                    self._log("warc_queue_refreshed", new_warcs=new_keys,
+                              total_queue=len(queue))
+                if all(
+                    warc_cursors.get(rel, {}).get("completed")
+                    and int(warc_cursors.get(rel, {}).get("next_offset", 0)) == path.stat().st_size
+                    for rel, path in queue
+                ):
+                    final_status = "COMPLETED_WARC_QUEUE"
+                    break
+                if not made_progress_in_pass and not new_keys:
+                    break
             flush(force_meta=True)
-            if not stopped_early and all(
-                warc_cursors.get(rel, {}).get("completed") for rel, _ in queue
-            ):
-                final_status = "COMPLETED_WARC_QUEUE"
         except DaemonLockHeld:
             raise
         except IntegrityError as error:
