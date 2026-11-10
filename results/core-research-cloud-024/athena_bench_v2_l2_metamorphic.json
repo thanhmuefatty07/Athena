@@ -1,0 +1,60 @@
+{
+  "schema": "athena-bench-v2-l2-metamorphic/1",
+  "metamorphic_suites": {
+    "M1_aspnet_form_wrapper": {
+      "pages_tested": 30,
+      "original_total_chunks": 14454,
+      "perturbed_total_chunks": 689,
+      "chunk_survival_rate": 0.0477,
+      "complete_wipeout_page_rate": 0.6667
+    },
+    "M2_benign_substring_class_injection": {
+      "pages_tested": 30,
+      "original_total_chunks": 14454,
+      "perturbed_total_chunks": 14454,
+      "chunk_survival_rate": 1.0
+    },
+    "M3_math_representation_swap": {
+      "pairs_tested": 2,
+      "results": [
+        {
+          "gold_tex": "\\frac{-b \\pm \\sqrt{b^{2} - 4ac}}{2a}",
+          "out_with_annotation": "$\\frac{-b \\pm \\sqrt{b^{2} - 4ac}}{2a}$",
+          "out_without_annotation": "$\\frac{- b \\pm \\sqrt{b^{2} - 4 a c}}{2 a}$",
+          "out_katex_wrapped": "$\\frac{-b \\pm \\sqrt{b^{2} - 4ac}}{2a}$",
+          "ast_sim_annot_vs_no_annot": 1.0,
+          "ast_exact_annot_vs_no_annot": true,
+          "ast_sim_annot_vs_katex": 1.0,
+          "katex_html_duplicate_suppressed": true
+        },
+        {
+          "gold_tex": "\\sum_{i=1}^{n} x_{i}^{2}",
+          "out_with_annotation": "$\\sum_{i=1}^{n} x_{i}^{2}$",
+          "out_without_annotation": "$\\sum_{i = 1}^{n} x_{i}^{2}$",
+          "out_katex_wrapped": "$\\sum_{i=1}^{n} x_{i}^{2}$",
+          "ast_sim_annot_vs_no_annot": 1.0,
+          "ast_exact_annot_vs_no_annot": true,
+          "ast_sim_annot_vs_katex": 1.0,
+          "katex_html_duplicate_suppressed": true
+        }
+      ]
+    },
+    "M4_16kb_head_padding_with_benign_recaptcha_string": {
+      "pages_tested": 25,
+      "midstream_4k_false_abort_rate": 1.0,
+      "midstream_16k_false_abort_rate": 1.0,
+      "bandit_soft_block_false_positive_rate": 1.0,
+      "network_full_body_false_positive_rate": 0.0
+    },
+    "M5_heading_stack_subheadings_interleaving": {
+      "queries_tested": 30,
+      "original_hit_at_1": 0.8667,
+      "perturbed_hit_at_1": 0.7667
+    },
+    "M6_sibling_table_row_distractors": {
+      "queries_tested": 3,
+      "top3_hit_rate": 0.0
+    }
+  },
+  "elapsed_sec": 1.74
+}

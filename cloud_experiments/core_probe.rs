@@ -8,20 +8,28 @@ use athena_core_v2::{
     arena::Tag,
     bandit::{
         CusumDetector, EmpiricalBayesProxyPool, FetchOutcomeKind, ProxyEndpointConfig,
-        ProxyPoolRouter, RoutingAlgorithm, SoftBlockDetector, Tier,
+        ProxyNodeStats, ProxyPoolRouter, RoutingAlgorithm, SoftBlockDetector, Tier,
     },
-    network::{ContentEncodingMode, decode_content_encoding, detect_soft_block_with_headers},
+    network::{
+        ContentEncodingMode, decode_content_encoding, detect_soft_block,
+        detect_soft_block_with_headers,
+    },
+    orchestrator::{cached_source_estimated_bytes, projection_retained_bytes},
     projection::{
         BoilerplatePolicy, Chunk, CommentUnwrapPolicy, ParseLimits, Projection, ResearchNode,
-        ResearchNodeKind, extract_annas_archive_records, parse_html, parse_html_breakthrough,
+        ResearchNodeKind, convert_mathml_element_to_latex, extract_annas_archive_records,
+        normalize_unicode_nfc, parse_html, parse_html_breakthrough,
         parse_html_document_with_node_limit, parse_html_with_limits, project_research_nodes,
+        sanitize_and_split_code_block,
     },
     rank::{
-        PreparedRank as CorePreparedRank, bm25, bm25_plus, bm25f,
+        PreparedRank as CorePreparedRank, bm25, bm25_plus, bm25f, bm25f_fused_single_pass,
         bm25f_guarded_dual_channel_highlight_indices, bm25f_highlight_indices, bm25f_plus_mslp,
         bm25f_plus_mslp_simhash_highlight_indices, bm25f_simhash_highlight_indices, bm25l,
-        highlight_indices, hybrid_rrf_simhash_highlight_indices,
+        compute_hierarchical_heading_boosts, highlight_indices,
+        hybrid_rrf_simhash_highlight_indices, minhash_128_signature, minhash_128_similarity,
         multi_query_rrf_simhash_highlight_indices, ql_dirichlet, reciprocal_rank_fusion,
+        simhash_64_idf_numeric,
     },
     table::{
         Cell, Grid, GridError, Row, expand, expand_tolerant, expand_with_slot_limit,
@@ -29,6 +37,7 @@ use athena_core_v2::{
     },
 };
 use rand::{Rng, SeedableRng};
+use rand_distr::Distribution;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -6422,6 +6431,1304 @@ fn run_cloud_024_campaign(
     }))
 }
 
+fn dom_all_visible_text(dom: &athena_core_v2::arena::DomArena) -> String {
+    let mut out = String::new();
+    for (id, node) in dom.nodes().iter().enumerate() {
+        if node.tag == Tag::Text
+            && let Ok(seg) = dom.raw_text(id as u32)
+        {
+            let trimmed = seg.trim();
+            if !trimmed.is_empty() {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(trimmed);
+            }
+        }
+    }
+    out
+}
+
+fn join_chunks_text(chunks: &[Chunk]) -> String {
+    let mut out = String::new();
+    for c in chunks {
+        let t = c.text.trim();
+        if !t.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(t);
+        }
+    }
+    out
+}
+
+fn static_role(role_str: &str) -> &'static str {
+    match role_str {
+        "heading" => "heading",
+        "paragraph" => "paragraph",
+        "list_item" => "list_item",
+        "preformatted" => "preformatted",
+        "table_header" => "table_header",
+        "table_cell" => "table_cell",
+        _ => "paragraph",
+    }
+}
+
+fn evaluate_v2_nfc_probe(req: &Value) -> Result<Value, String> {
+    let cases = req["cases"].as_array().ok_or("nfc_probe requires cases array")?;
+    let mut results = Vec::with_capacity(cases.len());
+    for case in cases {
+        let id = case["id"].as_str().unwrap_or("");
+        let category = case["category"].as_str().unwrap_or("");
+        let nfd_input = case["input"].as_str().unwrap_or("");
+        let expected_nfc = case["expected_nfc"].as_str().unwrap_or("");
+        let actual_nfc = normalize_unicode_nfc(nfd_input).into_owned();
+        let exact_match = actual_nfc == expected_nfc;
+
+        // Also test ranker NFD query against NFC chunk and NFC query against NFD chunk
+        let chunks_nfc = vec![Chunk {
+            node: 1,
+            role: "paragraph",
+            text: format!("Context token {expected_nfc} in document."),
+            links: Vec::new(),
+        }];
+        let chunks_proj_nfd = vec![Chunk {
+            node: 1,
+            role: "paragraph",
+            text: format!("Context token {actual_nfc} in document."),
+            links: Vec::new(),
+        }];
+        let bm25_v1_nfd_query_hits = !highlight_indices(&chunks_nfc, nfd_input, 1).is_empty();
+        let bm25f_dual_nfd_query_hits =
+            !bm25f_guarded_dual_channel_highlight_indices(&chunks_nfc, nfd_input, 1, 0.5, 5)
+                .is_empty();
+        let bm25f_dual_after_proj_nfc_hits = !bm25f_guarded_dual_channel_highlight_indices(
+            &chunks_proj_nfd,
+            expected_nfc,
+            1,
+            0.5,
+            5,
+        )
+        .is_empty();
+
+        results.push(json!({
+            "id": id,
+            "category": category,
+            "input": nfd_input,
+            "expected_nfc": expected_nfc,
+            "actual_nfc": actual_nfc,
+            "exact_match": exact_match,
+            "bm25_v1_nfd_query_hits_nfc_doc": bm25_v1_nfd_query_hits,
+            "bm25f_dual_nfd_query_hits_nfc_doc": bm25f_dual_nfd_query_hits,
+            "bm25f_dual_nfc_query_hits_proj_doc": bm25f_dual_after_proj_nfc_hits,
+        }));
+    }
+    Ok(json!({
+        "status": "OK",
+        "op": "nfc_probe",
+        "results": results,
+    }))
+}
+
+fn evaluate_v2_rank_micro_probe(req: &Value) -> Result<Value, String> {
+    let chunks_arr = req["chunks"]
+        .as_array()
+        .ok_or("rank_micro_probe requires chunks array")?;
+    let mut chunks = Vec::with_capacity(chunks_arr.len());
+    for (idx, item) in chunks_arr.iter().enumerate() {
+        let role = static_role(item["role"].as_str().unwrap_or("paragraph"));
+        let text = item["text"].as_str().unwrap_or("").to_owned();
+        let links: Vec<u32> = item["links"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as u32))
+                    .collect()
+            })
+            .unwrap_or_default();
+        chunks.push(Chunk {
+            node: (idx + 1) as u32,
+            role,
+            text,
+            links,
+        });
+    }
+    let query = req["query"].as_str().unwrap_or("");
+    let limit = req["limit"].as_u64().unwrap_or(10) as usize;
+    let max_hamming = req["max_hamming"].as_u64().unwrap_or(5) as u32;
+
+    let bm25_scores = bm25(&chunks, query, 1.2, 0.75);
+    let bm25_top = highlight_indices(&chunks, query, limit);
+    let bm25f_scores = bm25f_fused_single_pass(&chunks, query, 1.2, 0.75, 0.5);
+    let bm25f_top =
+        bm25f_guarded_dual_channel_highlight_indices(&chunks, query, limit, 0.5, max_hamming);
+
+    let mut base_vec = vec![0.0f64; chunks.len()];
+    for &(i, s) in &bm25_scores {
+        if i < base_vec.len() {
+            base_vec[i] = s;
+        }
+    }
+    let heading_boosts = compute_hierarchical_heading_boosts(&chunks, &base_vec);
+    let simhashes: Vec<String> = chunks
+        .iter()
+        .map(|c| format!("{:016x}", simhash_64_idf_numeric(&c.text)))
+        .collect();
+    let minhashes: Vec<[u64; 2]> = chunks
+        .iter()
+        .map(|c| minhash_128_signature(&c.text))
+        .collect();
+    let mut pairwise_simhash_hamming = Vec::new();
+    let mut pairwise_minhash_jaccard = Vec::new();
+    if chunks.len() <= 16 {
+        for i in 0..chunks.len() {
+            for j in (i + 1)..chunks.len() {
+                let sh_i = simhash_64_idf_numeric(&chunks[i].text);
+                let sh_j = simhash_64_idf_numeric(&chunks[j].text);
+                let ham = (sh_i ^ sh_j).count_ones();
+                let jac = minhash_128_similarity(minhashes[i], minhashes[j]);
+                pairwise_simhash_hamming.push(json!({"i": i, "j": j, "hamming": ham}));
+                pairwise_minhash_jaccard.push(json!({"i": i, "j": j, "jaccard": jac}));
+            }
+        }
+    }
+
+    Ok(json!({
+        "status": "OK",
+        "op": "rank_micro_probe",
+        "bm25_scores": bm25_scores,
+        "bm25_top": bm25_top,
+        "bm25f_scores": bm25f_scores,
+        "bm25f_top": bm25f_top,
+        "heading_boosts": heading_boosts,
+        "simhashes": simhashes,
+        "pairwise_simhash_hamming": pairwise_simhash_hamming,
+        "pairwise_minhash_jaccard": pairwise_minhash_jaccard,
+    }))
+}
+
+fn evaluate_v2_aae_contract_probe(_req: &Value) -> Result<Value, String> {
+    let url = Url::parse("https://bench.invalid/aae-probe").map_err(|e| e.to_string())?;
+    let html_large_first = format!(
+        "<html><body><main><p>{}</p><p>Short second chunk about quantum computing.</p></main></body></html>",
+        "quantum ".repeat(180)
+    );
+    let page = parse_html_with_limits(&html_large_first, &url, ParseLimits::default())
+        .map_err(|e| e.to_string())?;
+    // Tight budget (512 bytes): Meta frame fits (~180 bytes), but chunk #1 (~1500 bytes) exceeds 512 bytes,
+    // causing export_jsonl_with_limit to fail with Err("AAE output byte budget exceeded") even though chunk #2 is tiny!
+    let tight_res = export_jsonl_with_limit(&page, &url, 1_700_000_000_000, Some("quantum"), 5, 512);
+    let tight_failed_entire_envelope = tight_res.is_err();
+    let tight_err_msg = tight_res.err().map(|e| e.to_string()).unwrap_or_default();
+
+    // Also test contrastive zero-score fallback when < 4 candidates fall in [0.35*s+, 0.95*s+]
+    let html_sparse_neg = concat!(
+        "<html><body><main>",
+        "<h1> Compiler Design </h1>",
+        "<p> Static single assignment form SSA optimizes register allocation in LLVM compilers. </p>",
+        "<p> Adjacent paragraph skipped by |i - i+| > 1 rule. </p>",
+        "<p> Unrelated culinary recipe for sourdough bread fermentation with water and flour. </p>",
+        "<p> Unrelated botanical guide to growing orchids in tropical greenhouses. </p>",
+        "<p> Unrelated astronomical observation of distant supernovae in spiral galaxies. </p>",
+        "</main></body></html>"
+    );
+    let bt_sparse = parse_html_breakthrough(html_sparse_neg, &url, ParseLimits::default())
+        .map_err(|e| e.to_string())?;
+    let contrastive_recs = export_contrastive_training_records(
+        &bt_sparse,
+        &url,
+        "SSA register allocation LLVM",
+        1,
+        4,
+    );
+    let mut zero_score_negs = 0usize;
+    let mut total_negs = 0usize;
+    for rec in &contrastive_recs {
+        for neg in &rec.hard_negatives {
+            total_negs += 1;
+            if neg.score <= 1e-12 {
+                zero_score_negs += 1;
+            }
+        }
+    }
+
+    Ok(json!({
+        "status": "OK",
+        "op": "aae_contract_probe",
+        "first_chunk_exceeds_budget_fails_entire_export": tight_failed_entire_envelope,
+        "first_chunk_exceeds_budget_error": tight_err_msg,
+        "sparse_page_contrastive_total_negatives": total_negs,
+        "sparse_page_contrastive_zero_score_negatives": zero_score_negs,
+    }))
+}
+
+fn simulate_network_midstream_abort(bytes: &[u8], first_chunk_len: usize) -> bool {
+    if bytes.len() < 4096 {
+        return false;
+    }
+    let wire_len = first_chunk_len.clamp(4096, bytes.len());
+    let prefix_end = wire_len.min(16_384);
+    let prefix_slice = &bytes[..prefix_end];
+    let has_semantic_prose = prefix_slice
+        .windows(5)
+        .any(|w| w.eq_ignore_ascii_case(b"<main"))
+        || prefix_slice
+            .windows(8)
+            .any(|w| w.eq_ignore_ascii_case(b"<article"));
+    !has_semantic_prose && detect_soft_block(prefix_slice).is_some()
+}
+
+fn evaluate_v2_waf_probe(req: &Value) -> Result<Value, String> {
+    let items = req["items"]
+        .as_array()
+        .ok_or("waf_probe requires items array")?;
+    let url = Url::parse("https://bench.invalid/").map_err(|e| e.to_string())?;
+    let mut results = Vec::with_capacity(items.len());
+
+    for item in items {
+        let id = item["id"].as_str().unwrap_or("");
+        let category = item["category"].as_str().unwrap_or("");
+        let status = item["status"].as_u64().unwrap_or(200) as u16;
+        let expected_blocked = item["expected_blocked"].as_bool().unwrap_or(false);
+        let html = item["html"].as_str().unwrap_or("");
+        let bytes = html.as_bytes();
+
+        let owned_headers: Vec<(String, String)> = item["headers"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|pair| {
+                        let p = pair.as_array()?;
+                        Some((
+                            p.first()?.as_str()?.to_owned(),
+                            p.get(1)?.as_str()?.to_owned(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let header_refs: Vec<(&str, &str)> = owned_headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let t0 = Instant::now();
+        let net_body_only = detect_soft_block(bytes);
+        let net_with_headers = detect_soft_block_with_headers(bytes, &header_refs);
+        let midstream_4k_abort = simulate_network_midstream_abort(bytes, 4096);
+        let midstream_16k_abort = simulate_network_midstream_abort(bytes, 16384);
+
+        let projected_chunks = parse_html_with_limits(html, &url, ParseLimits::default())
+            .map(|p| p.chunks.len())
+            .unwrap_or(0);
+        let bandit_outcome =
+            SoftBlockDetector::classify_response(status, bytes, projected_chunks, None);
+        let bandit_blocked = !bandit_outcome.is_usable();
+        let orchestrator_blocked = (status != 200)
+            || (bytes.len() <= 65_536 && net_body_only.is_some())
+            || projected_chunks == 0;
+        let elapsed_us = t0.elapsed().as_micros() as u64;
+
+        results.push(json!({
+            "id": id,
+            "category": category,
+            "status": status,
+            "body_bytes": bytes.len(),
+            "expected_blocked": expected_blocked,
+            "net_body_only_reason": net_body_only,
+            "net_with_headers_reason": net_with_headers,
+            "midstream_4k_abort": midstream_4k_abort,
+            "midstream_16k_abort": midstream_16k_abort,
+            "projected_chunks": projected_chunks,
+            "bandit_outcome": format!("{bandit_outcome:?}"),
+            "bandit_blocked": bandit_blocked,
+            "orchestrator_blocked": orchestrator_blocked,
+            "elapsed_us": elapsed_us,
+        }));
+    }
+    Ok(json!({
+        "status": "OK",
+        "op": "waf_probe",
+        "results": results,
+    }))
+}
+
+fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
+    let seeds = req["seeds"].as_u64().unwrap_or(16) as usize;
+    let steps_per_seed = req["steps_per_seed"].as_u64().unwrap_or(300) as usize;
+
+    let base_configs = vec![
+        ProxyEndpointConfig {
+            id: 0,
+            tier: Tier::Direct,
+            cost_usd_per_attempt: 0.0001,
+            egress_usd_per_mib: 0.01,
+            prior_latency_ms: 35.0,
+            eligible: true,
+        },
+        ProxyEndpointConfig {
+            id: 1,
+            tier: Tier::Direct,
+            cost_usd_per_attempt: 0.0001,
+            egress_usd_per_mib: 0.01,
+            prior_latency_ms: 38.0,
+            eligible: true,
+        },
+        ProxyEndpointConfig {
+            id: 2,
+            tier: Tier::ReusedConnection,
+            cost_usd_per_attempt: 0.0002,
+            egress_usd_per_mib: 0.02,
+            prior_latency_ms: 45.0,
+            eligible: true,
+        },
+        ProxyEndpointConfig {
+            id: 3,
+            tier: Tier::ConditionalGet,
+            cost_usd_per_attempt: 0.0003,
+            egress_usd_per_mib: 0.03,
+            prior_latency_ms: 55.0,
+            eligible: true,
+        },
+        ProxyEndpointConfig {
+            id: 4,
+            tier: Tier::AuthorizedBrowser,
+            cost_usd_per_attempt: 0.0012,
+            egress_usd_per_mib: 0.12,
+            prior_latency_ms: 110.0,
+            eligible: true,
+        },
+        ProxyEndpointConfig {
+            id: 5,
+            tier: Tier::ContractedProxy,
+            cost_usd_per_attempt: 0.0025,
+            egress_usd_per_mib: 0.25,
+            prior_latency_ms: 145.0,
+            eligible: true,
+        },
+    ];
+
+    // 1. Evaluate all 5 real RoutingAlgorithm variants in ProxyPoolRouter across 4 regimes
+    let regime_names = [
+        "benign_steady_state",
+        "abrupt_cloudflare_subnet_ban",
+        "gradual_rate_limit_creep",
+        "correlated_asn_blackout",
+    ];
+    let mut router_algo_cells = Vec::new();
+    for (r_idx, &r_name) in regime_names.iter().enumerate() {
+        for &algo in &RoutingAlgorithm::ALL {
+            let mut usable_total = 0usize;
+            let mut cost_total = 0.0f64;
+            let mut all_lats = Vec::with_capacity(seeds * steps_per_seed);
+            for seed_idx in 0..seeds {
+                let epoch = Instant::now();
+                let mut router =
+                    ProxyPoolRouter::new(epoch, base_configs.clone(), algo, 0.000005);
+                let mut rng = rand::rngs::StdRng::seed_from_u64(
+                    0xB4D1_0000_u64
+                        .wrapping_add((r_idx as u64) << 16)
+                        .wrapping_add(seed_idx as u64),
+                );
+                for step in 0..steps_per_seed {
+                    let now = epoch + Duration::from_millis((step as u64) * 250);
+                    let dec = router.select_route(&mut rng, now).unwrap();
+                    let arm = dec.primary_id;
+                    let seed_u64 = 0xC024_7777_u64
+                        .wrapping_add((r_idx as u64) << 20)
+                        .wrapping_add(seed_idx as u64);
+                    // Orthogonal CRN draw indexed by (step, arm) so arm i has identical environment draw across policies
+                    let env_u = philox_u01(seed_u64, step as u64, arm as u32, 0);
+                    let lat_u = philox_u01(seed_u64, step as u64, arm as u32, 1);
+
+                    let (outcome, lat_ms, wire_bytes) = match r_idx {
+                        0 => {
+                            if env_u < 0.97 {
+                                (
+                                    FetchOutcomeKind::Success,
+                                    base_configs[arm].prior_latency_ms * (0.85 + 0.3 * lat_u),
+                                    8192,
+                                )
+                            } else {
+                                (FetchOutcomeKind::TimeoutOrReset, 650.0, 256)
+                            }
+                        }
+                        1 => {
+                            // Abrupt subnet ban at step >= 80 on arms 0, 1, 2
+                            if step >= 80 && arm <= 2 && env_u < 0.92 {
+                                (FetchOutcomeKind::SoftBlockChallenge, 28.0, 1024)
+                            } else if env_u < 0.96 {
+                                (
+                                    FetchOutcomeKind::Success,
+                                    base_configs[arm].prior_latency_ms * (0.85 + 0.3 * lat_u),
+                                    8192,
+                                )
+                            } else {
+                                (FetchOutcomeKind::HardBlockWaf, 45.0, 512)
+                            }
+                        }
+                        2 => {
+                            // Gradual rate-limit creep on cheap arms 0..3
+                            let creep_prob = ((step as f64) / (steps_per_seed as f64)) * 0.85;
+                            if arm <= 3 && env_u < creep_prob {
+                                (
+                                    FetchOutcomeKind::RateLimited429 {
+                                        retry_after_secs: Some(10),
+                                    },
+                                    22.0,
+                                    256,
+                                )
+                            } else {
+                                (
+                                    FetchOutcomeKind::Success,
+                                    base_configs[arm].prior_latency_ms * (0.85 + 0.3 * lat_u),
+                                    8192,
+                                )
+                            }
+                        }
+                        _ => {
+                            // Correlated ASN blackout on arms 0,1 (ASN 0) and 2,3 (ASN 1) in alternating waves
+                            let wave = (step / 60) % 2;
+                            if (wave == 0 && arm <= 1 && env_u < 0.94)
+                                || (wave == 1 && (arm == 2 || arm == 3) && env_u < 0.94)
+                            {
+                                (FetchOutcomeKind::ProxyDead, 950.0, 128)
+                            } else {
+                                (
+                                    FetchOutcomeKind::Success,
+                                    base_configs[arm].prior_latency_ms * (0.85 + 0.3 * lat_u),
+                                    8192,
+                                )
+                            }
+                        }
+                    };
+                    router.observe(arm, now, outcome, lat_ms, wire_bytes);
+                    cost_total += base_configs[arm].cost_usd_per_attempt
+                        + (wire_bytes as f64 / (1024.0 * 1024.0))
+                            * base_configs[arm].egress_usd_per_mib;
+                    if outcome.is_usable() {
+                        usable_total += 1;
+                        all_lats.push(lat_ms);
+                    } else {
+                        all_lats.push(lat_ms + 450.0);
+                    }
+                }
+            }
+            all_lats.sort_by(|a, b| a.total_cmp(b));
+            let total_reqs = (seeds * steps_per_seed).max(1);
+            let p50 = all_lats[all_lats.len() / 2];
+            let p95 = all_lats[(all_lats.len() * 95) / 100];
+            let p99 = all_lats[(all_lats.len() * 99) / 100];
+            router_algo_cells.push(json!({
+                "regime": r_name,
+                "algorithm": algo.name(),
+                "usable_rate": (usable_total as f64) / (total_reqs as f64),
+                "cost_per_1k_usable_usd": (cost_total / (usable_total.max(1) as f64)) * 1000.0,
+                "latency_p50_ms": p50,
+                "latency_p95_ms": p95,
+                "latency_p99_ms": p99,
+            }));
+        }
+    }
+
+    // 2. Run 2^4 = 16 Factorial Ablation over the 4 components on ProxyNodeStats + EmpiricalBayesProxyPool + CusumDetector:
+    // bit 0: factored_net_waf (true = use alpha_net/beta_net * alpha_waf/beta_waf; false = joint alpha/beta only)
+    // bit 1: cusum_reset (true = reset posterior on CUSUM trigger; false = no CUSUM reset)
+    // bit 2: ebayes_shrinkage (true = propagate ASN/subnet WAF failures via EmpiricalBayesProxyPool/peer beta; false = independent arms)
+    // bit 3: quarantine_cooldown (true = quarantine failed arms & apply sticky bonus; false = no quarantine)
+    let mut factorial_16_cells = Vec::with_capacity(16);
+    for mask in 0..16usize {
+        let factored_net_waf = (mask & 1) != 0;
+        let cusum_reset = (mask & 2) != 0;
+        let ebayes_shrinkage = (mask & 4) != 0;
+        let quarantine_cooldown = (mask & 8) != 0;
+
+        let mut usable_total = 0usize;
+        let mut wasted_blocks = 0usize;
+        let mut cost_total = 0.0f64;
+        let mut all_lats = Vec::with_capacity(seeds * steps_per_seed);
+
+        for seed_idx in 0..seeds {
+            let epoch = Instant::now();
+            let mut nodes: Vec<ProxyNodeStats> = base_configs
+                .iter()
+                .cloned()
+                .map(|c| ProxyNodeStats::new(epoch, c))
+                .collect();
+            let mut ebayes = EmpiricalBayesProxyPool::new(4.0, 8.0);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(0xFAC7_0000_u64 + seed_idx as u64);
+
+            for step in 0..steps_per_seed {
+                let now = epoch + Duration::from_millis((step as u64) * 250);
+                let any_unquarantined = nodes
+                    .iter()
+                    .any(|n| n.config.eligible && (!quarantine_cooldown || !n.is_quarantined(now)));
+
+                let mut best_arm = 0usize;
+                let mut best_loss = f64::INFINITY;
+                for (idx, s) in nodes.iter().enumerate() {
+                    if quarantine_cooldown && any_unquarantined && s.is_quarantined(now) {
+                        continue;
+                    }
+                    let a = s.alpha.max(1e-3);
+                    let b = s.beta.max(1e-3);
+                    let sampled_joint = rand_distr::Beta::new(a, b)
+                        .ok()
+                        .map(|d| d.sample(&mut rng))
+                        .unwrap_or(0.5);
+                    let sampled_p = if factored_net_waf {
+                        let a_net = s.alpha_net.max(1e-3);
+                        let b_net = s.beta_net.max(1e-3);
+                        let a_waf = s.alpha_waf.max(1e-3);
+                        let b_waf = s.beta_waf.max(1e-3);
+                        let sf = rand_distr::Beta::new(a_net, b_net)
+                            .ok()
+                            .map(|d| d.sample(&mut rng))
+                            .unwrap_or(0.5)
+                            * rand_distr::Beta::new(a_waf, b_waf)
+                                .ok()
+                                .map(|d| d.sample(&mut rng))
+                                .unwrap_or(0.5);
+                        0.5 * sampled_joint + 0.5 * sf
+                    } else {
+                        sampled_joint
+                    };
+                    let eb_prior = if ebayes_shrinkage {
+                        let asn = format!("AS{}", s.asn_group);
+                        let sub = format!("10.0.{}.0/24", s.subnet_group);
+                        let ip = format!("10.0.{}.{}", s.subnet_group, idx + 1);
+                        ebayes.posterior_survival(&asn, &sub, &ip)
+                    } else {
+                        sampled_p
+                    };
+                    let sticky = if quarantine_cooldown {
+                        (f64::from(s.sticky_warm_streak) * 0.008).min(0.04)
+                    } else {
+                        0.0
+                    };
+                    let eff_p = (0.75 * sampled_p + 0.25 * eb_prior + sticky).clamp(0.005, 0.999);
+                    let loss = (s.config.cost_usd_per_attempt + 0.000005 * s.ewma_latency_ms) / eff_p;
+                    if loss < best_loss {
+                        best_loss = loss;
+                        best_arm = idx;
+                    }
+                }
+
+                let seed_u64 = 0xC024_9999_u64 + seed_idx as u64;
+                let env_u = philox_u01(seed_u64, step as u64, best_arm as u32, 0);
+                let lat_u = philox_u01(seed_u64, step as u64, best_arm as u32, 1);
+
+                // Mixed non-stationary regime:
+                // steps 0..80: arms 0,1 (subnet 0) clean;
+                // steps 80..180: subnet 0 (arms 0,1) hit by Cloudflare soft-block wave;
+                // steps 180..300: subnet 1 (arms 2,3) hit by transport stalls while subnet 0 recovers
+                let (outcome, lat_ms, wire_bytes) = if (80..180).contains(&step) && best_arm <= 1 {
+                    if env_u < 0.93 {
+                        (FetchOutcomeKind::SoftBlockChallenge, 25.0, 1024)
+                    } else {
+                        (FetchOutcomeKind::Success, 40.0, 8192)
+                    }
+                } else if step >= 180 && (best_arm == 2 || best_arm == 3) {
+                    if env_u < 0.90 {
+                        (FetchOutcomeKind::TimeoutOrReset, 850.0, 256)
+                    } else {
+                        (FetchOutcomeKind::Success, 55.0, 8192)
+                    }
+                } else if env_u < 0.96 {
+                    (
+                        FetchOutcomeKind::Success,
+                        base_configs[best_arm].prior_latency_ms * (0.85 + 0.3 * lat_u),
+                        8192,
+                    )
+                } else {
+                    (
+                        FetchOutcomeKind::RateLimited429 {
+                            retry_after_secs: Some(8),
+                        },
+                        22.0,
+                        256,
+                    )
+                };
+
+                let asn = format!("AS{}", nodes[best_arm].asn_group);
+                let sub = format!("10.0.{}.0/24", nodes[best_arm].subnet_group);
+                let ip = format!("10.0.{}.{}", nodes[best_arm].subnet_group, best_arm + 1);
+                ebayes.observe(&asn, &sub, &ip, outcome.is_usable());
+
+                let pre_alpha = nodes[best_arm].alpha;
+                let pre_alpha_waf = nodes[best_arm].alpha_waf;
+                let triggered_cusum = nodes[best_arm].observe(
+                    now,
+                    outcome,
+                    lat_ms,
+                    wire_bytes,
+                    Duration::from_secs(180),
+                    quarantine_cooldown,
+                );
+                if !cusum_reset && triggered_cusum {
+                    // Undo CUSUM alpha reset when factor B is off
+                    nodes[best_arm].alpha = pre_alpha;
+                    nodes[best_arm].alpha_waf = pre_alpha_waf;
+                } else if cusum_reset && !quarantine_cooldown && nodes[best_arm].cusum_pos >= 2.6 {
+                    nodes[best_arm].alpha = 1.0 + 0.25 * (nodes[best_arm].alpha - 1.0);
+                    nodes[best_arm].alpha_waf = 1.0 + 0.20 * (nodes[best_arm].alpha_waf - 1.0);
+                    nodes[best_arm].cusum_pos = 0.0;
+                }
+                if ebayes_shrinkage && outcome.is_block_or_ratelimit() {
+                    let sub_g = nodes[best_arm].subnet_group;
+                    let asn_g = nodes[best_arm].asn_group;
+                    for (idx, peer) in nodes.iter_mut().enumerate() {
+                        if idx == best_arm {
+                            continue;
+                        }
+                        if peer.subnet_group == sub_g {
+                            peer.beta_waf += 0.55;
+                            peer.beta += 0.40;
+                        } else if peer.asn_group == asn_g {
+                            peer.beta_waf += 0.25;
+                        }
+                    }
+                }
+
+                cost_total += base_configs[best_arm].cost_usd_per_attempt
+                    + (wire_bytes as f64 / (1024.0 * 1024.0))
+                        * base_configs[best_arm].egress_usd_per_mib;
+                if outcome.is_usable() {
+                    usable_total += 1;
+                    all_lats.push(lat_ms);
+                } else {
+                    wasted_blocks += 1;
+                    all_lats.push(lat_ms + 450.0);
+                }
+            }
+        }
+        all_lats.sort_by(|a, b| a.total_cmp(b));
+        let total_reqs = (seeds * steps_per_seed).max(1);
+        factorial_16_cells.push(json!({
+            "mask": mask,
+            "factored_net_waf": factored_net_waf,
+            "cusum_reset": cusum_reset,
+            "ebayes_shrinkage": ebayes_shrinkage,
+            "quarantine_cooldown": quarantine_cooldown,
+            "usable_rate": (usable_total as f64) / (total_reqs as f64),
+            "wasted_block_rate": (wasted_blocks as f64) / (total_reqs as f64),
+            "cost_per_1k_usable_usd": (cost_total / (usable_total.max(1) as f64)) * 1000.0,
+            "latency_p50_ms": all_lats[all_lats.len() / 2],
+            "latency_p95_ms": all_lats[(all_lats.len() * 95) / 100],
+            "latency_p99_ms": all_lats[(all_lats.len() * 99) / 100],
+        }));
+    }
+
+    // 3. 50,000-domain memory growth benchmark on EmpiricalBayesProxyPool + per-domain ProxyPoolRouter map
+    let mut ebayes_growth = EmpiricalBayesProxyPool::new(4.0, 8.0);
+    let mut domain_routers: BTreeMap<String, ProxyPoolRouter> = BTreeMap::new();
+    let mut growth_checkpoints = Vec::new();
+    let epoch = Instant::now();
+    for d_idx in 1..=50_000usize {
+        let asn = format!("AS{}", 1000 + (d_idx % 2000));
+        let subnet = format!(
+            "{}.{}.{}.0/24",
+            10 + (d_idx >> 16),
+            (d_idx >> 8) & 0xFF,
+            d_idx & 0xFF
+        );
+        let ip = format!(
+            "{}.{}.{}.{}",
+            10 + (d_idx >> 16),
+            (d_idx >> 8) & 0xFF,
+            d_idx & 0xFF,
+            (d_idx % 250) + 1
+        );
+        ebayes_growth.observe(&asn, &subnet, &ip, true);
+        let domain_key = format!("host-{d_idx}.example.org");
+        domain_routers.insert(
+            domain_key,
+            ProxyPoolRouter::new(
+                epoch,
+                base_configs.clone(),
+                RoutingAlgorithm::AthenaAdaptiveContextualV1,
+                0.000005,
+            ),
+        );
+        if matches!(d_idx, 100 | 1_000 | 10_000 | 50_000) {
+            let ebayes_entries = ebayes_growth.asn_counts.len()
+                + ebayes_growth.subnet_counts.len()
+                + ebayes_growth.ip_counts.len();
+            let ebayes_approx_bytes = ebayes_entries
+                * (std::mem::size_of::<String>() + 24 + std::mem::size_of::<(f64, f64)>() + 32);
+            let router_map_approx_bytes = domain_routers.len()
+                * (std::mem::size_of::<String>()
+                    + 28
+                    + std::mem::size_of::<ProxyPoolRouter>()
+                    + base_configs.len() * std::mem::size_of::<ProxyNodeStats>());
+            growth_checkpoints.push(json!({
+                "domains_observed": d_idx,
+                "ebayes_map_entries": ebayes_entries,
+                "ebayes_approx_bytes": ebayes_approx_bytes,
+                "domain_router_map_entries": domain_routers.len(),
+                "domain_router_map_approx_bytes": router_map_approx_bytes,
+                "evicted_entries": 0,
+            }));
+        }
+    }
+
+    Ok(json!({
+        "status": "OK",
+        "op": "bandit_factorial_probe",
+        "router_algorithm_comparison": router_algo_cells,
+        "factorial_16_ablation": factorial_16_cells,
+        "domain_50k_memory_growth": growth_checkpoints,
+    }))
+}
+
+fn evaluate_v2_cache_heap_probe(req: &Value) -> Result<Value, String> {
+    let docs = req["docs"]
+        .as_array()
+        .ok_or("cache_heap_probe requires docs array")?;
+    let url = Url::parse("https://bench.invalid/").map_err(|e| e.to_string())?;
+    let mut results = Vec::with_capacity(docs.len());
+
+    for doc in docs {
+        let id = doc["id"].as_str().unwrap_or("");
+        let html = doc["html"].as_str().unwrap_or("");
+        let bytes_downloaded = html.len();
+
+        let t0 = Instant::now();
+        let legacy_res = parse_html_with_limits(html, &url, ParseLimits::default());
+        let legacy_us = t0.elapsed().as_micros() as u64;
+
+        let t1 = Instant::now();
+        let bt_res = parse_html_breakthrough(html, &url, ParseLimits::default());
+        let bt_us = t1.elapsed().as_micros() as u64;
+
+        if let (Ok(legacy_page), Ok(bt_page)) = (legacy_res, bt_res) {
+            let proj_retained = projection_retained_bytes(&legacy_page);
+            // Exact formula in src/orchestrator.rs#L648-650:
+            // approx = bytes_downloaded.saturating_add(projection_retained_bytes(&page)).max(64)
+            let orchestrator_q1_reported = bytes_downloaded.saturating_add(proj_retained).max(64);
+            // On query #2 (eval_idx > 0 at src/orchestrator.rs#L764-767), OnceLock<PreparedRank> is initialized
+            // WITHOUT updating SourceCache::retained_bytes!
+            let orchestrator_q2_reported = orchestrator_q1_reported;
+            let prepared = CorePreparedRank::new(&legacy_page.chunks);
+            let lazy_prepared_rank_bytes = prepared.retained_payload_bytes();
+            let cached_source_est_fn = cached_source_estimated_bytes(&legacy_page);
+
+            // True in-memory bytes of SourceContent:
+            // Note: response.payload (bytes_downloaded) is dropped at the end of run_blocking (L652),
+            // so SourceContent in memory holds Arc<Projection> + OnceLock<PreparedRank>.
+            let true_q1_in_memory_bytes =
+                proj_retained + std::mem::size_of::<Projection>() + 128;
+            let true_q2_in_memory_bytes = true_q1_in_memory_bytes + lazy_prepared_rank_bytes;
+
+            // Untracked BreakthroughProjection heap allocations:
+            let mut untracked_bt_bytes = 0usize;
+            for rc in &bt_page.rich_chunks {
+                untracked_bt_bytes += std::mem::size_of::<
+                    athena_core_v2::projection::BreakthroughChunk,
+                >();
+                untracked_bt_bytes += rc.dom_path_slug.capacity();
+                for h in rc.heading_stack.iter().flatten() {
+                    untracked_bt_bytes += h.capacity();
+                }
+                if let Some(lead) = &rc.lead_in_text {
+                    untracked_bt_bytes += lead.capacity();
+                }
+                if let Some(code_lang) = &rc.code_language {
+                    untracked_bt_bytes += code_lang.capacity();
+                }
+                if let Some(tg) = &rc.table_grounding {
+                    untracked_bt_bytes += tg.text.capacity() + tg.grounded_context.capacity();
+                    for ch in &tg.col_headers {
+                        untracked_bt_bytes += ch.capacity();
+                    }
+                    for rh in &tg.row_headers {
+                        untracked_bt_bytes += rh.capacity();
+                    }
+                }
+            }
+            for grid in &bt_page.tables {
+                untracked_bt_bytes += std::mem::size_of::<Grid>();
+                for cell in &grid.cells {
+                    untracked_bt_bytes += cell.text.capacity();
+                }
+                for slot_row in &grid.slots {
+                    untracked_bt_bytes += slot_row.capacity() * std::mem::size_of::<Option<usize>>();
+                }
+            }
+
+            results.push(json!({
+                "id": id,
+                "bytes_downloaded": bytes_downloaded,
+                "chunk_count_legacy": legacy_page.chunks.len(),
+                "chunk_count_breakthrough": bt_page.rich_chunks.len(),
+                "projection_retained_bytes": proj_retained,
+                "lazy_prepared_rank_bytes": lazy_prepared_rank_bytes,
+                "orchestrator_q1_reported_bytes": orchestrator_q1_reported,
+                "orchestrator_q2_reported_bytes": orchestrator_q2_reported,
+                "cached_source_estimated_bytes_fn": cached_source_est_fn,
+                "true_q1_in_memory_bytes": true_q1_in_memory_bytes,
+                "true_q2_in_memory_bytes": true_q2_in_memory_bytes,
+                "untracked_q2_prepared_rank_delta_bytes": lazy_prepared_rank_bytes,
+                "untracked_breakthrough_rich_bytes": untracked_bt_bytes,
+                "legacy_parse_us": legacy_us,
+                "breakthrough_parse_us": bt_us,
+            }));
+        }
+    }
+    Ok(json!({
+        "status": "OK",
+        "op": "cache_heap_probe",
+        "results": results,
+    }))
+}
+
+fn evaluate_v2_math_code_probe(req: &Value) -> Result<Value, String> {
+    let html = req["html"].as_str().unwrap_or("");
+    let max_words = req["max_words_per_chunk"].as_u64().unwrap_or(512) as usize;
+    let parsed = Html::parse_document(html);
+    let mut math_outputs = Vec::new();
+    if let Ok(math_sel) = Selector::parse("math") {
+        for el in parsed.select(&math_sel) {
+            math_outputs.push(convert_mathml_element_to_latex(el));
+        }
+    }
+    let mut code_outputs = Vec::new();
+    if let Ok(pre_sel) = Selector::parse("pre") {
+        for el in parsed.select(&pre_sel) {
+            let (lang, parts) = sanitize_and_split_code_block(el, max_words);
+            code_outputs.push(json!({
+                "language": lang,
+                "parts": parts.into_iter().map(|(t, c)| json!({"text": t, "is_continuation": c})).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    Ok(json!({
+        "status": "OK",
+        "op": "math_code_probe",
+        "math_latex": math_outputs,
+        "code_blocks": code_outputs,
+    }))
+}
+
+fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
+    let op = req["op"].as_str().unwrap_or("evaluate");
+    match op {
+        "nfc_probe" => return evaluate_v2_nfc_probe(req),
+        "rank_micro_probe" => return evaluate_v2_rank_micro_probe(req),
+        "waf_probe" => return evaluate_v2_waf_probe(req),
+        "bandit_factorial_probe" => return evaluate_v2_bandit_factorial_probe(req),
+        "cache_heap_probe" => return evaluate_v2_cache_heap_probe(req),
+        "math_code_probe" => return evaluate_v2_math_code_probe(req),
+        "aae_contract_probe" => return evaluate_v2_aae_contract_probe(req),
+        _ => {}
+    }
+
+    let doc_id = req["doc_id"].as_str().unwrap_or("");
+    let html = req["html"].as_str().unwrap_or("");
+    let url_str = req["url"].as_str().unwrap_or("https://bench.invalid/");
+    let url = Url::parse(url_str)
+        .or_else(|_| Url::parse("https://bench.invalid/"))
+        .map_err(|e| e.to_string())?;
+    let parser_mode = req["parser_mode"].as_str().unwrap_or("both");
+    let bp_policy = match req["boilerplate_policy"].as_str() {
+        Some("full_dom") => BoilerplatePolicy::FullDom,
+        Some("cetd" | "main_content_v1") => BoilerplatePolicy::MainContentV1,
+        Some("cetd_entropy_v1") => BoilerplatePolicy::CetdEntropyV1,
+        _ => BoilerplatePolicy::MainContentV1,
+    };
+    let max_words = req["max_words_per_chunk"].as_u64().unwrap_or(1200) as usize;
+    let highlight_limit = req["highlight_limit"].as_u64().unwrap_or(20) as usize;
+    let emit_stage_trace = req["emit_stage_trace"].as_bool().unwrap_or(false);
+    let query_opt = req["query"].as_str().filter(|q| !q.is_empty());
+
+    let base_limits = ParseLimits {
+        max_words_per_chunk: max_words.max(1),
+        boilerplate: bp_policy,
+        ..ParseLimits::default()
+    };
+
+    let mut out = serde_json::Map::new();
+    out.insert("status".into(), json!("OK"));
+    out.insert("doc_id".into(), json!(doc_id));
+
+    if parser_mode == "legacy" || parser_mode == "both" {
+        let t0 = Instant::now();
+        match parse_html_with_limits(html, &url, base_limits) {
+            Ok(leg) => {
+                let leg_us = t0.elapsed().as_micros() as u64;
+                let extracted_table_cells = parse_projection_and_table_cells(
+                    html,
+                    &url,
+                    base_limits,
+                    &HtmlTableLimits {
+                        max_tables: 64,
+                        max_rows: 1000,
+                        max_cols: 1000,
+                        max_html_bytes: base_limits.max_html_bytes,
+                        max_nodes: base_limits.max_parser_nodes,
+                        max_text_bytes: base_limits.max_text_bytes,
+                    },
+                    true,
+                )
+                .ok()
+                .and_then(|(_, tc)| tc);
+                let mut leg_chunks_json: Vec<Value> = leg
+                    .chunks
+                    .iter()
+                    .enumerate()
+                    .map(|(cid, c)| {
+                        json!({
+                            "chunk_id": cid,
+                            "node": c.node,
+                            "role": c.role,
+                            "text": c.text,
+                            "links": c.links,
+                        })
+                    })
+                    .collect();
+                let mut combined_chunks = leg.chunks.clone();
+                if let Some(tcells) = &extracted_table_cells {
+                    for tc in tcells {
+                        if let Some(txt) = tc["text"].as_str() {
+                            let role = static_role(tc["role"].as_str().unwrap_or("table_cell"));
+                            let cid = leg_chunks_json.len();
+                            leg_chunks_json.push(json!({
+                                "chunk_id": cid,
+                                "node": 0,
+                                "role": role,
+                                "text": txt,
+                                "links": [],
+                            }));
+                            combined_chunks.push(Chunk {
+                                node: 0,
+                                role,
+                                text: txt.to_owned(),
+                                links: Vec::new(),
+                            });
+                        }
+                    }
+                }
+                let mut leg_rank = json!({});
+                if let Some(q) = query_opt {
+                    let tr0 = Instant::now();
+                    let bm25_v1_ranked = highlight_indices(&leg.chunks, q, highlight_limit);
+                    let mut bm25_v1_dom_order = bm25_v1_ranked.clone();
+                    bm25_v1_dom_order.sort_unstable();
+                    let bm25_v1_us = tr0.elapsed().as_micros() as u64;
+
+                    let tr1 = Instant::now();
+                    let bm25f_dual_ranked = bm25f_guarded_dual_channel_highlight_indices(
+                        &leg.chunks,
+                        q,
+                        highlight_limit,
+                        0.5,
+                        5,
+                    );
+                    let bm25f_dual_us = tr1.elapsed().as_micros() as u64;
+                    leg_rank = json!({
+                        "bm25_v1_ranked_indices": bm25_v1_ranked,
+                        "bm25_v1_dom_ordered_indices": bm25_v1_dom_order,
+                        "bm25_v1_us": bm25_v1_us,
+                        "bm25f_dual_ranked_indices": bm25f_dual_ranked,
+                        "bm25f_dual_us": bm25f_dual_us,
+                    });
+                }
+                out.insert(
+                    "legacy".into(),
+                    json!({
+                        "parse_us": leg_us,
+                        "parse_warnings": leg.parse_warnings,
+                        "dom_nodes": leg.dom.nodes().len(),
+                        "chunks": leg_chunks_json,
+                        "chunks_only": leg.chunks.iter().map(|c| json!({"role": c.role, "text": c.text, "links": c.links})).collect::<Vec<_>>(),
+                        "links": leg.links,
+                        "ranking": leg_rank,
+                    }),
+                );
+            }
+            Err(e) => {
+                out.insert("legacy".into(), json!({"error": e}));
+            }
+        }
+    }
+
+    if parser_mode == "breakthrough" || parser_mode == "both" {
+        let t0 = Instant::now();
+        match parse_html_breakthrough(html, &url, base_limits) {
+            Ok(bt) => {
+                let bt_us = t0.elapsed().as_micros() as u64;
+                let bt_chunks_json: Vec<Value> = bt
+                    .rich_chunks
+                    .iter()
+                    .enumerate()
+                    .map(|(cid, rc)| {
+                        json!({
+                            "chunk_id": cid,
+                            "node": rc.chunk.node,
+                            "dom_preorder_id": rc.pre_filter_dom_id,
+                            "dom_path_slug": rc.dom_path_slug,
+                            "role": rc.chunk.role,
+                            "text": rc.chunk.text,
+                            "links": rc.chunk.links,
+                            "heading_stack": rc.heading_stack,
+                            "lead_in_chunk_id": rc.lead_in_chunk_id,
+                            "lead_in_text": rc.lead_in_text,
+                            "code_language": rc.code_language,
+                            "is_continuation": rc.is_continuation,
+                            "exact_hash64": format!("{:016x}", rc.exact_hash64),
+                            "simhash64": format!("{:016x}", rc.simhash64),
+                            "table_grounding": rc.table_grounding.as_ref().map(|tg| json!({
+                                "cell_id": tg.cell_id,
+                                "row_idx": tg.row_idx,
+                                "col_idx": tg.col_idx,
+                                "rowspan": tg.rowspan,
+                                "colspan": tg.colspan,
+                                "is_header": tg.is_header,
+                                "text": tg.text,
+                                "col_headers": tg.col_headers,
+                                "row_headers": tg.row_headers,
+                                "grounded_context": tg.grounded_context,
+                            })),
+                        })
+                    })
+                    .collect();
+                let tables_json: Vec<Value> = bt
+                    .tables
+                    .iter()
+                    .map(|g| {
+                        let grounded = ground_grid_cells(g);
+                        json!({
+                            "width": g.width,
+                            "row_count": g.slots.len(),
+                            "cell_count": g.cells.len(),
+                            "slots": g.slots,
+                            "grounded_cells": grounded.iter().map(|tg| json!({
+                                "cell_id": tg.cell_id,
+                                "row_idx": tg.row_idx,
+                                "col_idx": tg.col_idx,
+                                "rowspan": tg.rowspan,
+                                "colspan": tg.colspan,
+                                "is_header": tg.is_header,
+                                "text": tg.text,
+                                "col_headers": tg.col_headers,
+                                "row_headers": tg.row_headers,
+                                "grounded_context": tg.grounded_context,
+                            })).collect::<Vec<_>>(),
+                        })
+                    })
+                    .collect();
+
+                let mut bt_rank = json!({});
+                let mut contrastive_json = Vec::new();
+                if let Some(q) = query_opt {
+                    let tr0 = Instant::now();
+                    let bm25_v1_ranked =
+                        highlight_indices(&bt.projection.chunks, q, highlight_limit);
+                    let mut bm25_v1_dom_order = bm25_v1_ranked.clone();
+                    bm25_v1_dom_order.sort_unstable();
+                    let bm25_v1_us = tr0.elapsed().as_micros() as u64;
+
+                    let tr1 = Instant::now();
+                    let bm25f_dual_ranked = bm25f_guarded_dual_channel_highlight_indices(
+                        &bt.projection.chunks,
+                        q,
+                        highlight_limit,
+                        0.5,
+                        5,
+                    );
+                    let mut bm25f_dual_dom_order = bm25f_dual_ranked.clone();
+                    bm25f_dual_dom_order.sort_unstable();
+                    let bm25f_dual_us = tr1.elapsed().as_micros() as u64;
+
+                    let records = export_contrastive_training_records(&bt, &url, q, 3, 4);
+                    for rec in records {
+                        if let Ok(v) = serde_json::to_value(rec) {
+                            contrastive_json.push(v);
+                        }
+                    }
+                    bt_rank = json!({
+                        "bm25_v1_ranked_indices": bm25_v1_ranked,
+                        "bm25_v1_dom_ordered_indices": bm25_v1_dom_order,
+                        "bm25_v1_us": bm25_v1_us,
+                        "bm25f_dual_ranked_indices": bm25f_dual_ranked,
+                        "bm25f_dual_dom_ordered_indices": bm25f_dual_dom_order,
+                        "bm25f_dual_us": bm25f_dual_us,
+                    });
+                }
+                out.insert(
+                    "breakthrough".into(),
+                    json!({
+                        "parse_us": bt_us,
+                        "parse_warnings": bt.projection.parse_warnings,
+                        "dom_nodes": bt.projection.dom.nodes().len(),
+                        "chunks": bt_chunks_json,
+                        "tables": tables_json,
+                        "links": bt.projection.links,
+                        "ranking": bt_rank,
+                        "contrastive_records": contrastive_json,
+                    }),
+                );
+            }
+            Err(e) => {
+                out.insert("breakthrough".into(), json!({"error": e}));
+            }
+        }
+    }
+
+    if emit_stage_trace {
+        let ts1 = Instant::now();
+        let nfc_html = normalize_unicode_nfc(html);
+        let s1_us = ts1.elapsed().as_micros() as u64;
+
+        let ts2 = Instant::now();
+        let full_unbounded_limits = ParseLimits {
+            max_words_per_chunk: 100_000,
+            boilerplate: BoilerplatePolicy::FullDom,
+            ..ParseLimits::default()
+        };
+        let s2_proj = parse_html_with_limits(html, &url, full_unbounded_limits).ok();
+        let s2_dom_text = s2_proj
+            .as_ref()
+            .map(|p| dom_all_visible_text(&p.dom))
+            .unwrap_or_default();
+        let s2_legacy_full_text = s2_proj
+            .as_ref()
+            .map(|p| join_chunks_text(&p.chunks))
+            .unwrap_or_default();
+        let s2_us = ts2.elapsed().as_micros() as u64;
+
+        // Also measure Pass 2 scraper::Html::parse_document standalone overhead
+        let tp2 = Instant::now();
+        let _parsed_pass2 = Html::parse_document(html);
+        let pass2_html_parse_us = tp2.elapsed().as_micros() as u64;
+
+        let ts3 = Instant::now();
+        let landmark_unbounded_limits = ParseLimits {
+            max_words_per_chunk: 100_000,
+            boilerplate: BoilerplatePolicy::MainContentV1,
+            ..ParseLimits::default()
+        };
+        let bt_full_unbounded = parse_html_breakthrough(html, &url, full_unbounded_limits).ok();
+        let bt_s3 = parse_html_breakthrough(html, &url, landmark_unbounded_limits).ok();
+        let leg_s3 = parse_html_with_limits(html, &url, landmark_unbounded_limits).ok();
+        let s3_us = ts3.elapsed().as_micros() as u64;
+
+        let ts4 = Instant::now();
+        let cap512_limits = ParseLimits {
+            max_words_per_chunk: 512,
+            boilerplate: BoilerplatePolicy::MainContentV1,
+            ..ParseLimits::default()
+        };
+        let bt_s4 = parse_html_breakthrough(html, &url, cap512_limits).ok();
+        let leg_s4 = parse_html_with_limits(html, &url, cap512_limits).ok();
+        let s4_us = ts4.elapsed().as_micros() as u64;
+
+        let ts5 = Instant::now();
+        let cetd_entropy_limits = ParseLimits {
+            max_words_per_chunk: 512,
+            boilerplate: BoilerplatePolicy::CetdEntropyV1,
+            ..ParseLimits::default()
+        };
+        let bt_s5 = parse_html_breakthrough(html, &url, cetd_entropy_limits).ok();
+        let leg_s5 = parse_html_with_limits(html, &url, cetd_entropy_limits).ok();
+        let s5_us = ts5.elapsed().as_micros() as u64;
+
+        let bt_s4_text = bt_s4
+            .as_ref()
+            .map(|p| join_chunks_text(&p.projection.chunks))
+            .unwrap_or_default();
+        let bt_s5_text = bt_s5
+            .as_ref()
+            .map(|p| join_chunks_text(&p.projection.chunks))
+            .unwrap_or_default();
+
+        out.insert(
+            "stage_trace".into(),
+            json!({
+                "s1_charset_nfc": {
+                    "raw_bytes": html.len(),
+                    "nfc_bytes": nfc_html.len(),
+                    "nfc_changed": nfc_html.as_ref() != html,
+                    "us": s1_us,
+                },
+                "s2_dom_shadow_foster": {
+                    "dom_all_text": s2_dom_text,
+                    "legacy_role_filtered_full_dom_text": s2_legacy_full_text,
+                    "bt_full_dom_text": bt_full_unbounded.as_ref().map(|p| join_chunks_text(&p.projection.chunks)).unwrap_or_default(),
+                    "us": s2_us,
+                    "pass2_duplicate_parse_us": pass2_html_parse_us,
+                },
+                "s3_landmark_attr_prune": {
+                    "legacy_text": leg_s3.as_ref().map(|p| join_chunks_text(&p.chunks)).unwrap_or_default(),
+                    "legacy_chunks": leg_s3.as_ref().map(|p| p.chunks.len()).unwrap_or(0),
+                    "bt_text": bt_s3.as_ref().map(|p| join_chunks_text(&p.projection.chunks)).unwrap_or_default(),
+                    "bt_chunks": bt_s3.as_ref().map(|p| p.projection.chunks.len()).unwrap_or(0),
+                    "us": s3_us,
+                },
+                "s4_block_segment_cap": {
+                    "legacy_text": leg_s4.as_ref().map(|p| join_chunks_text(&p.chunks)).unwrap_or_default(),
+                    "legacy_chunks": leg_s4.as_ref().map(|p| p.chunks.len()).unwrap_or(0),
+                    "bt_text": bt_s4_text,
+                    "bt_chunks": bt_s4.as_ref().map(|p| p.projection.chunks.len()).unwrap_or(0),
+                    "us": s4_us,
+                },
+                "s5_cetd_prune": {
+                    "legacy_text": leg_s5.as_ref().map(|p| join_chunks_text(&p.chunks)).unwrap_or_default(),
+                    "legacy_chunks": leg_s5.as_ref().map(|p| p.chunks.len()).unwrap_or(0),
+                    "bt_text": bt_s5_text,
+                    "bt_chunks": bt_s5.as_ref().map(|p| p.projection.chunks.len()).unwrap_or(0),
+                    "bt_cetd_entropy_identical_to_s4": bt_s4_text == bt_s5_text,
+                    "us": s5_us,
+                },
+            }),
+        );
+    }
+
+    Ok(Value::Object(out))
+}
+
+fn run_evaluate_v2_stream(input_arg: &str) -> Result<(), String> {
+    let reader: Box<dyn Read> = if input_arg == "-" {
+        Box::new(io::stdin())
+    } else {
+        Box::new(fs::File::open(input_arg).map_err(|e| e.to_string())?)
+    };
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    let stream = serde_json::Deserializer::from_reader(io::BufReader::new(reader)).into_iter::<Value>();
+    for item in stream {
+        let req = item.map_err(|e| format!("invalid evaluate-v2 JSON input: {e}"))?;
+        let catch_panic = req["catch_panic"].as_bool().unwrap_or(true);
+        let response = if catch_panic {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| evaluate_v2_record(&req)))
+            {
+                Ok(Ok(val)) => val,
+                Ok(Err(err)) => json!({"status": "ERROR", "error": err}),
+                Err(panic_payload) => {
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        (*s).to_owned()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_owned()
+                    };
+                    json!({"status": "PANIC", "panic_message": msg})
+                }
+            }
+        } else {
+            match evaluate_v2_record(&req) {
+                Ok(val) => val,
+                Err(err) => json!({"status": "ERROR", "error": err}),
+            }
+        };
+        let line = serde_json::to_string(&response).map_err(|e| e.to_string())?;
+        stdout.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        stdout.write_all(b"\n").map_err(|e| e.to_string())?;
+        stdout.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn run() -> Result<(), String> {
     let raw_args = env::args().collect::<Vec<_>>();
     let mut resume_step = 0usize;
@@ -6462,6 +7769,9 @@ fn run() -> Result<(), String> {
         "usage: core_probe <stage> <fixture.json|-> <iterations>",
     )?;
     let iterations = args[3].parse::<usize>().map_err(|e| e.to_string())?;
+    if args[1] == "evaluate-v2" {
+        return run_evaluate_v2_stream(&args[2]);
+    }
     if args[1] == "theory-matrix" {
         require(
             (1..=5000).contains(&iterations),

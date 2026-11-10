@@ -1,0 +1,2330 @@
+{
+  "schema": "athena-bench-v2-l3-tier-a/1",
+  "legacy_tier_a_report_preserved": {
+    "nq": {
+      "benchmark": "Natural Questions v1.0 dev (HF validation, 7,830)",
+      "k": 5,
+      "match_rule": "A block hits when it holds >=50% of a gold answer's tokens, or is >=8 tokens of\n    which >=80% belong to that gold answer (Athena may split one answer across chunks).",
+      "policies": {
+        "cetd_entropy_v1": {
+          "answer_extracted_any_block": {
+            "ci95": [
+              0.941803,
+              0.953553
+            ],
+            "value": 0.947991
+          },
+          "answerable": 5499,
+          "conditional_hit_at_1_given_extracted": 0.185114,
+          "examples": 7830,
+          "hit_at_1": {
+            "ci95": [
+              0.16566,
+              0.185766
+            ],
+            "value": 0.175486
+          },
+          "hit_at_5": {
+            "ci95": [
+              0.449663,
+              0.476011
+            ],
+            "value": 0.462811
+          },
+          "mrr_at_5": {
+            "ci95": [
+              0.267303,
+              0.287225
+            ],
+            "value": 0.277557
+          },
+          "no_long_answer": 2331,
+          "states": {
+            "SCORED": 7830
+          }
+        },
+        "full_dom": {
+          "answer_extracted_any_block": {
+            "ci95": [
+              0.952555,
+              0.963153
+            ],
+            "value": 0.958174
+          },
+          "answerable": 5499,
+          "conditional_hit_at_1_given_extracted": 0.124692,
+          "examples": 7830,
+          "hit_at_1": {
+            "ci95": [
+              0.111168,
+              0.128316
+            ],
+            "value": 0.119476
+          },
+          "hit_at_5": {
+            "ci95": [
+              0.36119,
+              0.386758
+            ],
+            "value": 0.373886
+          },
+          "mrr_at_5": {
+            "ci95": [
+              0.199167,
+              0.216924
+            ],
+            "value": 0.208368
+          },
+          "no_long_answer": 2331,
+          "states": {
+            "SCORED": 7830
+          }
+        },
+        "main_content_v1": {
+          "answer_extracted_any_block": {
+            "ci95": [
+              0.948322,
+              0.95939
+            ],
+            "value": 0.954173
+          },
+          "answerable": 5499,
+          "conditional_hit_at_1_given_extracted": 0.124833,
+          "examples": 7830,
+          "hit_at_1": {
+            "ci95": [
+              0.110816,
+              0.127941
+            ],
+            "value": 0.119113
+          },
+          "hit_at_5": {
+            "ci95": [
+              0.361371,
+              0.386941
+            ],
+            "value": 0.374068
+          },
+          "mrr_at_5": {
+            "ci95": [
+              0.198927,
+              0.216748
+            ],
+            "value": 0.208156
+          },
+          "no_long_answer": 2331,
+          "states": {
+            "SCORED": 7830
+          }
+        }
+      }
+    },
+    "wcxb": {
+      "benchmark": "WCXB v1.0",
+      "commit": "62ff86d12ea72c80c31fb810ff1a724fad687bea",
+      "leakage": {
+        "cross_split_file_id_collision_count": 139,
+        "cross_split_html_duplicate_count": 139,
+        "independent_secret_holdout": false,
+        "overlap_domain_count": 154,
+        "public_test_split": true
+      },
+      "metadata_sha256": "90d49461c7eea01483711350a19f819b86599b794db83cd919bb6e8ac6ed1006",
+      "policies": {
+        "cetd_entropy_v1": {
+          "dev": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.760536,
+                  0.794294
+                ],
+                "clusters": 1296,
+                "mean": 0.777727,
+                "n": 1495
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.888135,
+                    0.909639
+                  ],
+                  "clusters": 768,
+                  "mean": 0.898796,
+                  "n": 792
+                },
+                "collection": {
+                  "ci95": [
+                    0.537908,
+                    0.652214
+                  ],
+                  "clusters": 90,
+                  "mean": 0.597087,
+                  "n": 117
+                },
+                "documentation": {
+                  "ci95": [
+                    0.895292,
+                    0.946867
+                  ],
+                  "clusters": 56,
+                  "mean": 0.922582,
+                  "n": 91
+                },
+                "forum": {
+                  "ci95": [
+                    0.29034,
+                    0.434529
+                  ],
+                  "clusters": 102,
+                  "mean": 0.360152,
+                  "n": 112
+                },
+                "listing": {
+                  "ci95": [
+                    0.542774,
+                    0.680339
+                  ],
+                  "clusters": 92,
+                  "mean": 0.614847,
+                  "n": 99
+                },
+                "product": {
+                  "ci95": [
+                    0.485728,
+                    0.620284
+                  ],
+                  "clusters": 83,
+                  "mean": 0.554925,
+                  "n": 119
+                },
+                "service": {
+                  "ci95": [
+                    0.749599,
+                    0.820996
+                  ],
+                  "clusters": 159,
+                  "mean": 0.786652,
+                  "n": 165
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 2,
+            "pages": 1497,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.741715,
+                  0.775213
+                ],
+                "clusters": 1296,
+                "mean": 0.758861,
+                "n": 1495
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.853787,
+                  0.88551
+                ],
+                "clusters": 1296,
+                "mean": 0.870033,
+                "n": 1495
+              }
+            },
+            "states": {
+              "NOT_ADMITTED_HTML_CAP": 3,
+              "SCORED": 1494
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.740626,
+                  0.781039
+                ],
+                "clusters": 1297,
+                "mean": 0.760903,
+                "n": 1497
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.170401,
+                  0.200249
+                ],
+                "clusters": 1297,
+                "mean": 0.184144,
+                "n": 1497
+              }
+            }
+          },
+          "test": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.771249,
+                  0.81886
+                ],
+                "clusters": 469,
+                "mean": 0.795649,
+                "n": 507
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.886,
+                    0.922074
+                  ],
+                  "clusters": 245,
+                  "mean": 0.905003,
+                  "n": 256
+                },
+                "collection": {
+                  "ci95": [
+                    0.500473,
+                    0.713538
+                  ],
+                  "clusters": 33,
+                  "mean": 0.612612,
+                  "n": 33
+                },
+                "documentation": {
+                  "ci95": [
+                    0.888621,
+                    0.953456
+                  ],
+                  "clusters": 33,
+                  "mean": 0.92268,
+                  "n": 42
+                },
+                "forum": {
+                  "ci95": [
+                    0.349791,
+                    0.568317
+                  ],
+                  "clusters": 44,
+                  "mean": 0.459166,
+                  "n": 51
+                },
+                "listing": {
+                  "ci95": [
+                    0.52953,
+                    0.748364
+                  ],
+                  "clusters": 39,
+                  "mean": 0.644305,
+                  "n": 40
+                },
+                "product": {
+                  "ci95": [
+                    0.626239,
+                    0.803174
+                  ],
+                  "clusters": 23,
+                  "mean": 0.722179,
+                  "n": 27
+                },
+                "service": {
+                  "ci95": [
+                    0.698428,
+                    0.812291
+                  ],
+                  "clusters": 57,
+                  "mean": 0.759583,
+                  "n": 58
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 4,
+            "pages": 511,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.756828,
+                  0.802232
+                ],
+                "clusters": 469,
+                "mean": 0.779616,
+                "n": 507
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.858851,
+                  0.905623
+                ],
+                "clusters": 469,
+                "mean": 0.882997,
+                "n": 507
+              }
+            },
+            "seen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.731412,
+                    0.81459
+                  ],
+                  "clusters": 153,
+                  "mean": 0.774012,
+                  "n": 164
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.86364,
+                      0.92292
+                    ],
+                    "clusters": 83,
+                    "mean": 0.895263,
+                    "n": 85
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.454788,
+                      0.694822
+                    ],
+                    "clusters": 25,
+                    "mean": 0.574399,
+                    "n": 25
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.778337,
+                      0.979455
+                    ],
+                    "clusters": 8,
+                    "mean": 0.886651,
+                    "n": 9
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.099982,
+                      0.531247
+                    ],
+                    "clusters": 5,
+                    "mean": 0.273262,
+                    "n": 6
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.283753,
+                      0.793564
+                    ],
+                    "clusters": 8,
+                    "mean": 0.554544,
+                    "n": 9
+                  },
+                  "product": {
+                    "ci95": [
+                      0.619289,
+                      0.796667
+                    ],
+                    "clusters": 22,
+                    "mean": 0.712419,
+                    "n": 26
+                  },
+                  "service": {
+                    "ci95": [
+                      0.767458,
+                      0.882098
+                    ],
+                    "clusters": 4,
+                    "mean": 0.836841,
+                    "n": 4
+                  }
+                }
+              },
+              "pages": 165
+            },
+            "states": {
+              "SCORED": 511
+            },
+            "unseen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.776613,
+                    0.835806
+                  ],
+                  "clusters": 314,
+                  "mean": 0.806134,
+                  "n": 341
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.886855,
+                      0.930911
+                    ],
+                    "clusters": 161,
+                    "mean": 0.910801,
+                    "n": 170
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.523938,
+                      0.87387
+                    ],
+                    "clusters": 8,
+                    "mean": 0.732028,
+                    "n": 8
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.905913,
+                      0.959033
+                    ],
+                    "clusters": 25,
+                    "mean": 0.932506,
+                    "n": 33
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.367033,
+                      0.59543
+                    ],
+                    "clusters": 39,
+                    "mean": 0.483954,
+                    "n": 45
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.532899,
+                      0.79055
+                    ],
+                    "clusters": 31,
+                    "mean": 0.670365,
+                    "n": 31
+                  },
+                  "product": {
+                    "ci95": null,
+                    "clusters": 1,
+                    "mean": 0.975945,
+                    "n": 1
+                  },
+                  "service": {
+                    "ci95": [
+                      0.688614,
+                      0.814117
+                    ],
+                    "clusters": 52,
+                    "mean": 0.752668,
+                    "n": 53
+                  }
+                }
+              },
+              "pages": 344
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.796264,
+                  0.852659
+                ],
+                "clusters": 473,
+                "mean": 0.824625,
+                "n": 511
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.162427,
+                  0.211833
+                ],
+                "clusters": 473,
+                "mean": 0.187378,
+                "n": 511
+              }
+            }
+          }
+        },
+        "full_dom": {
+          "dev": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.683286,
+                  0.717711
+                ],
+                "clusters": 1296,
+                "mean": 0.70089,
+                "n": 1495
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.818076,
+                    0.842584
+                  ],
+                  "clusters": 768,
+                  "mean": 0.830299,
+                  "n": 792
+                },
+                "collection": {
+                  "ci95": [
+                    0.408893,
+                    0.521309
+                  ],
+                  "clusters": 90,
+                  "mean": 0.46303,
+                  "n": 117
+                },
+                "documentation": {
+                  "ci95": [
+                    0.778303,
+                    0.862953
+                  ],
+                  "clusters": 56,
+                  "mean": 0.820691,
+                  "n": 91
+                },
+                "forum": {
+                  "ci95": [
+                    0.292769,
+                    0.423936
+                  ],
+                  "clusters": 102,
+                  "mean": 0.356609,
+                  "n": 112
+                },
+                "listing": {
+                  "ci95": [
+                    0.496098,
+                    0.628554
+                  ],
+                  "clusters": 92,
+                  "mean": 0.563718,
+                  "n": 99
+                },
+                "product": {
+                  "ci95": [
+                    0.391334,
+                    0.514139
+                  ],
+                  "clusters": 83,
+                  "mean": 0.456001,
+                  "n": 119
+                },
+                "service": {
+                  "ci95": [
+                    0.638459,
+                    0.709157
+                  ],
+                  "clusters": 159,
+                  "mean": 0.674935,
+                  "n": 165
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 2,
+            "pages": 1497,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.614049,
+                  0.647757
+                ],
+                "clusters": 1296,
+                "mean": 0.630941,
+                "n": 1495
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.869859,
+                  0.901289
+                ],
+                "clusters": 1296,
+                "mean": 0.885964,
+                "n": 1495
+              }
+            },
+            "states": {
+              "NOT_ADMITTED_HTML_CAP": 3,
+              "SCORED": 1494
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.750455,
+                  0.790834
+                ],
+                "clusters": 1297,
+                "mean": 0.770394,
+                "n": 1497
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.573848,
+                  0.61682
+                ],
+                "clusters": 1297,
+                "mean": 0.595337,
+                "n": 1497
+              }
+            }
+          },
+          "test": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.699239,
+                  0.747283
+                ],
+                "clusters": 469,
+                "mean": 0.723918,
+                "n": 507
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.824591,
+                    0.863969
+                  ],
+                  "clusters": 245,
+                  "mean": 0.845042,
+                  "n": 256
+                },
+                "collection": {
+                  "ci95": [
+                    0.370036,
+                    0.557819
+                  ],
+                  "clusters": 33,
+                  "mean": 0.464489,
+                  "n": 33
+                },
+                "documentation": {
+                  "ci95": [
+                    0.727742,
+                    0.867766
+                  ],
+                  "clusters": 33,
+                  "mean": 0.7997,
+                  "n": 42
+                },
+                "forum": {
+                  "ci95": [
+                    0.335511,
+                    0.536753
+                  ],
+                  "clusters": 44,
+                  "mean": 0.434926,
+                  "n": 51
+                },
+                "listing": {
+                  "ci95": [
+                    0.506672,
+                    0.695992
+                  ],
+                  "clusters": 39,
+                  "mean": 0.607092,
+                  "n": 40
+                },
+                "product": {
+                  "ci95": [
+                    0.491899,
+                    0.68004
+                  ],
+                  "clusters": 23,
+                  "mean": 0.591538,
+                  "n": 27
+                },
+                "service": {
+                  "ci95": [
+                    0.631934,
+                    0.723536
+                  ],
+                  "clusters": 57,
+                  "mean": 0.678343,
+                  "n": 58
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 4,
+            "pages": 511,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.631338,
+                  0.680902
+                ],
+                "clusters": 469,
+                "mean": 0.656533,
+                "n": 507
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.877709,
+                  0.92002
+                ],
+                "clusters": 469,
+                "mean": 0.899489,
+                "n": 507
+              }
+            },
+            "seen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.633799,
+                    0.720402
+                  ],
+                  "clusters": 153,
+                  "mean": 0.677546,
+                  "n": 164
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.786197,
+                      0.855457
+                    ],
+                    "clusters": 83,
+                    "mean": 0.822055,
+                    "n": 85
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.306003,
+                      0.501766
+                    ],
+                    "clusters": 25,
+                    "mean": 0.403851,
+                    "n": 25
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.682902,
+                      0.896956
+                    ],
+                    "clusters": 8,
+                    "mean": 0.784022,
+                    "n": 9
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.111736,
+                      0.490438
+                    ],
+                    "clusters": 5,
+                    "mean": 0.257412,
+                    "n": 6
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.212022,
+                      0.719443
+                    ],
+                    "clusters": 8,
+                    "mean": 0.472055,
+                    "n": 9
+                  },
+                  "product": {
+                    "ci95": [
+                      0.479129,
+                      0.684355
+                    ],
+                    "clusters": 22,
+                    "mean": 0.59085,
+                    "n": 26
+                  },
+                  "service": {
+                    "ci95": [
+                      0.661417,
+                      0.80145
+                    ],
+                    "clusters": 4,
+                    "mean": 0.733812,
+                    "n": 4
+                  }
+                }
+              },
+              "pages": 165
+            },
+            "states": {
+              "SCORED": 511
+            },
+            "unseen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.719605,
+                    0.775297
+                  ],
+                  "clusters": 314,
+                  "mean": 0.746932,
+                  "n": 341
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.83271,
+                      0.879039
+                    ],
+                    "clusters": 161,
+                    "mean": 0.857393,
+                    "n": 170
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.434865,
+                      0.81305
+                    ],
+                    "clusters": 8,
+                    "mean": 0.653982,
+                    "n": 8
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.715925,
+                      0.887316
+                    ],
+                    "clusters": 25,
+                    "mean": 0.803976,
+                    "n": 33
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.35082,
+                      0.562123
+                    ],
+                    "clusters": 39,
+                    "mean": 0.458595,
+                    "n": 45
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.541025,
+                      0.741261
+                    ],
+                    "clusters": 31,
+                    "mean": 0.646296,
+                    "n": 31
+                  },
+                  "product": {
+                    "ci95": null,
+                    "clusters": 1,
+                    "mean": 0.609442,
+                    "n": 1
+                  },
+                  "service": {
+                    "ci95": [
+                      0.62748,
+                      0.725878
+                    ],
+                    "clusters": 52,
+                    "mean": 0.677408,
+                    "n": 53
+                  }
+                }
+              },
+              "pages": 344
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.804075,
+                  0.858366
+                ],
+                "clusters": 473,
+                "mean": 0.831311,
+                "n": 511
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.686226,
+                  0.745127
+                ],
+                "clusters": 473,
+                "mean": 0.716732,
+                "n": 511
+              }
+            }
+          }
+        },
+        "main_content_v1": {
+          "dev": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.754478,
+                  0.788015
+                ],
+                "clusters": 1296,
+                "mean": 0.771597,
+                "n": 1495
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.88328,
+                    0.904732
+                  ],
+                  "clusters": 768,
+                  "mean": 0.893856,
+                  "n": 792
+                },
+                "collection": {
+                  "ci95": [
+                    0.527153,
+                    0.640191
+                  ],
+                  "clusters": 90,
+                  "mean": 0.584053,
+                  "n": 117
+                },
+                "documentation": {
+                  "ci95": [
+                    0.89104,
+                    0.942752
+                  ],
+                  "clusters": 56,
+                  "mean": 0.917989,
+                  "n": 91
+                },
+                "forum": {
+                  "ci95": [
+                    0.291045,
+                    0.434444
+                  ],
+                  "clusters": 102,
+                  "mean": 0.360787,
+                  "n": 112
+                },
+                "listing": {
+                  "ci95": [
+                    0.531754,
+                    0.667618
+                  ],
+                  "clusters": 92,
+                  "mean": 0.602547,
+                  "n": 99
+                },
+                "product": {
+                  "ci95": [
+                    0.483787,
+                    0.61775
+                  ],
+                  "clusters": 83,
+                  "mean": 0.553271,
+                  "n": 119
+                },
+                "service": {
+                  "ci95": [
+                    0.73724,
+                    0.809273
+                  ],
+                  "clusters": 159,
+                  "mean": 0.774739,
+                  "n": 165
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 2,
+            "pages": 1497,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.727737,
+                  0.761662
+                ],
+                "clusters": 1296,
+                "mean": 0.745375,
+                "n": 1495
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.856407,
+                  0.887807
+                ],
+                "clusters": 1296,
+                "mean": 0.87255,
+                "n": 1495
+              }
+            },
+            "states": {
+              "NOT_ADMITTED_HTML_CAP": 3,
+              "SCORED": 1494
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.741971,
+                  0.782494
+                ],
+                "clusters": 1297,
+                "mean": 0.762362,
+                "n": 1497
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.211151,
+                  0.244053
+                ],
+                "clusters": 1297,
+                "mean": 0.227141,
+                "n": 1497
+              }
+            }
+          },
+          "test": {
+            "f1": {
+              "all": {
+                "ci95": [
+                  0.765938,
+                  0.813155
+                ],
+                "clusters": 469,
+                "mean": 0.790571,
+                "n": 507
+              },
+              "by_page_type": {
+                "article": {
+                  "ci95": [
+                    0.877672,
+                    0.914976
+                  ],
+                  "clusters": 245,
+                  "mean": 0.897369,
+                  "n": 256
+                },
+                "collection": {
+                  "ci95": [
+                    0.488662,
+                    0.694186
+                  ],
+                  "clusters": 33,
+                  "mean": 0.595932,
+                  "n": 33
+                },
+                "documentation": {
+                  "ci95": [
+                    0.883541,
+                    0.951078
+                  ],
+                  "clusters": 33,
+                  "mean": 0.919191,
+                  "n": 42
+                },
+                "forum": {
+                  "ci95": [
+                    0.355015,
+                    0.568205
+                  ],
+                  "clusters": 44,
+                  "mean": 0.461495,
+                  "n": 51
+                },
+                "listing": {
+                  "ci95": [
+                    0.541836,
+                    0.753257
+                  ],
+                  "clusters": 39,
+                  "mean": 0.652408,
+                  "n": 40
+                },
+                "product": {
+                  "ci95": [
+                    0.628167,
+                    0.801712
+                  ],
+                  "clusters": 23,
+                  "mean": 0.721599,
+                  "n": 27
+                },
+                "service": {
+                  "ci95": [
+                    0.694189,
+                    0.805125
+                  ],
+                  "clusters": 57,
+                  "mean": 0.753542,
+                  "n": 58
+                }
+              }
+            },
+            "null_or_missing_reference_excluded": 4,
+            "pages": 511,
+            "precision": {
+              "all": {
+                "ci95": [
+                  0.742419,
+                  0.788795
+                ],
+                "clusters": 469,
+                "mean": 0.765937,
+                "n": 507
+              }
+            },
+            "recall": {
+              "all": {
+                "ci95": [
+                  0.862979,
+                  0.9082
+                ],
+                "clusters": 469,
+                "mean": 0.886395,
+                "n": 507
+              }
+            },
+            "seen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.72467,
+                    0.807171
+                  ],
+                  "clusters": 153,
+                  "mean": 0.766265,
+                  "n": 164
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.851087,
+                      0.914953
+                    ],
+                    "clusters": 83,
+                    "mean": 0.885052,
+                    "n": 85
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.446371,
+                      0.67485
+                    ],
+                    "clusters": 25,
+                    "mean": 0.558829,
+                    "n": 25
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.780589,
+                      0.979841
+                    ],
+                    "clusters": 8,
+                    "mean": 0.89019,
+                    "n": 9
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.104918,
+                      0.527984
+                    ],
+                    "clusters": 5,
+                    "mean": 0.276182,
+                    "n": 6
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.283753,
+                      0.793564
+                    ],
+                    "clusters": 8,
+                    "mean": 0.554544,
+                    "n": 9
+                  },
+                  "product": {
+                    "ci95": [
+                      0.617281,
+                      0.79635
+                    ],
+                    "clusters": 22,
+                    "mean": 0.711816,
+                    "n": 26
+                  },
+                  "service": {
+                    "ci95": [
+                      0.762035,
+                      0.865487
+                    ],
+                    "clusters": 4,
+                    "mean": 0.825089,
+                    "n": 4
+                  }
+                }
+              },
+              "pages": 165
+            },
+            "states": {
+              "SCORED": 511
+            },
+            "unseen_domain_subset": {
+              "f1": {
+                "all": {
+                  "ci95": [
+                    0.772656,
+                    0.831742
+                  ],
+                  "clusters": 314,
+                  "mean": 0.802591,
+                  "n": 341
+                },
+                "by_page_type": {
+                  "article": {
+                    "ci95": [
+                      0.880211,
+                      0.925337
+                    ],
+                    "clusters": 161,
+                    "mean": 0.904579,
+                    "n": 170
+                  },
+                  "collection": {
+                    "ci95": [
+                      0.508953,
+                      0.866032
+                    ],
+                    "clusters": 8,
+                    "mean": 0.71188,
+                    "n": 8
+                  },
+                  "documentation": {
+                    "ci95": [
+                      0.898208,
+                      0.954624
+                    ],
+                    "clusters": 25,
+                    "mean": 0.9271,
+                    "n": 33
+                  },
+                  "forum": {
+                    "ci95": [
+                      0.372245,
+                      0.592521
+                    ],
+                    "clusters": 39,
+                    "mean": 0.486204,
+                    "n": 45
+                  },
+                  "listing": {
+                    "ci95": [
+                      0.551021,
+                      0.795648
+                    ],
+                    "clusters": 31,
+                    "mean": 0.68082,
+                    "n": 31
+                  },
+                  "product": {
+                    "ci95": null,
+                    "clusters": 1,
+                    "mean": 0.975945,
+                    "n": 1
+                  },
+                  "service": {
+                    "ci95": [
+                      0.685025,
+                      0.80929
+                    ],
+                    "clusters": 52,
+                    "mean": 0.748209,
+                    "n": 53
+                  }
+                }
+              },
+              "pages": 344
+            },
+            "with_rate": {
+              "all": {
+                "ci95": [
+                  0.797011,
+                  0.853024
+                ],
+                "clusters": 473,
+                "mean": 0.825114,
+                "n": 511
+              }
+            },
+            "without_rate": {
+              "all": {
+                "ci95": [
+                  0.212927,
+                  0.270671
+                ],
+                "clusters": 473,
+                "mean": 0.242009,
+                "n": 511
+              }
+            }
+          }
+        }
+      }
+    },
+    "webmainbench": {
+      "benchmark": "WebMainBench_545",
+      "input_sanitizer": "leakage.strip_cc_select (cc-select attributes + mark-selected class)",
+      "policies": {
+        "cetd_entropy_v1": {
+          "code_f1": {
+            "all": {
+              "ci95": [
+                0.686704,
+                0.84439
+              ],
+              "clusters": null,
+              "mean": 0.769368,
+              "n": 88
+            }
+          },
+          "formula_hit_at_0_9": {
+            "all": {
+              "ci95": [
+                0.537959,
+                0.649145
+              ],
+              "clusters": null,
+              "mean": 0.594342,
+              "n": 256
+            }
+          },
+          "formula_similarity": {
+            "all": {
+              "ci95": [
+                0.58079,
+                0.685407
+              ],
+              "clusters": null,
+              "mean": 0.633429,
+              "n": 256
+            }
+          },
+          "labels_after_strip_total": 0,
+          "labels_removed_total": 207350,
+          "precision": {
+            "all": {
+              "ci95": [
+                0.740984,
+                0.822463
+              ],
+              "clusters": 395,
+              "mean": 0.782714,
+              "n": 545
+            }
+          },
+          "recall": {
+            "all": {
+              "ci95": [
+                0.766651,
+                0.851175
+              ],
+              "clusters": 395,
+              "mean": 0.811168,
+              "n": 545
+            }
+          },
+          "states": {
+            "OK": 545
+          },
+          "table_teds": "NOT_MEASURED (needs a table-structure renderer; text F1 by type only)",
+          "text_f1": {
+            "all": {
+              "ci95": [
+                0.698011,
+                0.789853
+              ],
+              "clusters": 395,
+              "mean": 0.74625,
+              "n": 545
+            },
+            "by_types": {
+              "code": {
+                "ci95": [
+                  0.739215,
+                  0.846186
+                ],
+                "clusters": 108,
+                "mean": 0.794571,
+                "n": 127
+              },
+              "code:inline": {
+                "ci95": [
+                  0.853043,
+                  0.938825
+                ],
+                "clusters": 42,
+                "mean": 0.901812,
+                "n": 54
+              },
+              "code:interline": {
+                "ci95": [
+                  0.706058,
+                  0.836859
+                ],
+                "clusters": 83,
+                "mean": 0.773973,
+                "n": 97
+              },
+              "equation": {
+                "ci95": [
+                  0.642482,
+                  0.821376
+                ],
+                "clusters": 151,
+                "mean": 0.740304,
+                "n": 257
+              },
+              "equation:inline": {
+                "ci95": [
+                  0.640391,
+                  0.825825
+                ],
+                "clusters": 148,
+                "mean": 0.738793,
+                "n": 248
+              },
+              "equation:interline": {
+                "ci95": [
+                  0.705834,
+                  0.972616
+                ],
+                "clusters": 17,
+                "mean": 0.914957,
+                "n": 59
+              },
+              "plain": {
+                "ci95": [
+                  0.707457,
+                  0.810198
+                ],
+                "clusters": 118,
+                "mean": 0.761018,
+                "n": 131
+              },
+              "table": {
+                "ci95": [
+                  0.60881,
+                  0.728959
+                ],
+                "clusters": 133,
+                "mean": 0.671731,
+                "n": 179
+              },
+              "table:data": {
+                "ci95": [
+                  0.59762,
+                  0.722203
+                ],
+                "clusters": 127,
+                "mean": 0.663242,
+                "n": 173
+              },
+              "table:layout": {
+                "ci95": [
+                  0.768685,
+                  0.88643
+                ],
+                "clusters": 25,
+                "mean": 0.831353,
+                "n": 28
+              }
+            }
+          },
+          "text_f1_by_language": {
+            "de": {
+              "ci95": [
+                0.781828,
+                0.946914
+              ],
+              "clusters": null,
+              "mean": 0.864371,
+              "n": 2
+            },
+            "en": {
+              "ci95": [
+                0.72686,
+                0.781571
+              ],
+              "clusters": null,
+              "mean": 0.755812,
+              "n": 416
+            },
+            "fr": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.914245,
+              "n": 1
+            },
+            "pl": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 1.0,
+              "n": 1
+            },
+            "pt": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.760962,
+              "n": 1
+            },
+            "ru": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.600877,
+              "n": 1
+            },
+            "sw": {
+              "ci95": [
+                0.967486,
+                0.970621
+              ],
+              "clusters": null,
+              "mean": 0.969054,
+              "n": 2
+            },
+            "unknown": {
+              "ci95": [
+                0.659365,
+                0.767731
+              ],
+              "clusters": null,
+              "mean": 0.714074,
+              "n": 94
+            },
+            "zh": {
+              "ci95": [
+                0.525646,
+                0.811131
+              ],
+              "clusters": null,
+              "mean": 0.67491,
+              "n": 27
+            }
+          },
+          "text_f1_by_level": {
+            "hard": {
+              "ci95": [
+                0.593637,
+                0.691255
+              ],
+              "clusters": null,
+              "mean": 0.643094,
+              "n": 164
+            },
+            "mid": {
+              "ci95": [
+                0.725057,
+                0.800939
+              ],
+              "clusters": null,
+              "mean": 0.766012,
+              "n": 218
+            },
+            "simple": {
+              "ci95": [
+                0.778127,
+                0.865384
+              ],
+              "clusters": null,
+              "mean": 0.82361,
+              "n": 163
+            }
+          }
+        },
+        "full_dom": {
+          "code_f1": {
+            "all": {
+              "ci95": [
+                0.699665,
+                0.855954
+              ],
+              "clusters": null,
+              "mean": 0.781481,
+              "n": 88
+            }
+          },
+          "formula_hit_at_0_9": {
+            "all": {
+              "ci95": [
+                0.559322,
+                0.66646
+              ],
+              "clusters": null,
+              "mean": 0.612931,
+              "n": 256
+            }
+          },
+          "formula_similarity": {
+            "all": {
+              "ci95": [
+                0.624058,
+                0.724027
+              ],
+              "clusters": null,
+              "mean": 0.673132,
+              "n": 256
+            }
+          },
+          "labels_after_strip_total": 0,
+          "labels_removed_total": 207350,
+          "precision": {
+            "all": {
+              "ci95": [
+                0.641425,
+                0.736463
+              ],
+              "clusters": 395,
+              "mean": 0.688517,
+              "n": 545
+            }
+          },
+          "recall": {
+            "all": {
+              "ci95": [
+                0.822683,
+                0.885826
+              ],
+              "clusters": 395,
+              "mean": 0.856828,
+              "n": 545
+            }
+          },
+          "states": {
+            "OK": 545
+          },
+          "table_teds": "NOT_MEASURED (needs a table-structure renderer; text F1 by type only)",
+          "text_f1": {
+            "all": {
+              "ci95": [
+                0.662087,
+                0.752561
+              ],
+              "clusters": 395,
+              "mean": 0.706935,
+              "n": 545
+            },
+            "by_types": {
+              "code": {
+                "ci95": [
+                  0.705648,
+                  0.811305
+                ],
+                "clusters": 108,
+                "mean": 0.760771,
+                "n": 127
+              },
+              "code:inline": {
+                "ci95": [
+                  0.809132,
+                  0.913322
+                ],
+                "clusters": 42,
+                "mean": 0.865448,
+                "n": 54
+              },
+              "code:interline": {
+                "ci95": [
+                  0.678593,
+                  0.805298
+                ],
+                "clusters": 83,
+                "mean": 0.743744,
+                "n": 97
+              },
+              "equation": {
+                "ci95": [
+                  0.650136,
+                  0.810761
+                ],
+                "clusters": 151,
+                "mean": 0.733159,
+                "n": 257
+              },
+              "equation:inline": {
+                "ci95": [
+                  0.653449,
+                  0.81624
+                ],
+                "clusters": 148,
+                "mean": 0.73484,
+                "n": 248
+              },
+              "equation:interline": {
+                "ci95": [
+                  0.64317,
+                  0.959539
+                ],
+                "clusters": 17,
+                "mean": 0.887913,
+                "n": 59
+              },
+              "plain": {
+                "ci95": [
+                  0.61732,
+                  0.72164
+                ],
+                "clusters": 118,
+                "mean": 0.669466,
+                "n": 131
+              },
+              "table": {
+                "ci95": [
+                  0.612498,
+                  0.708692
+                ],
+                "clusters": 133,
+                "mean": 0.661456,
+                "n": 179
+              },
+              "table:data": {
+                "ci95": [
+                  0.600998,
+                  0.703887
+                ],
+                "clusters": 127,
+                "mean": 0.652924,
+                "n": 173
+              },
+              "table:layout": {
+                "ci95": [
+                  0.751926,
+                  0.870623
+                ],
+                "clusters": 25,
+                "mean": 0.813939,
+                "n": 28
+              }
+            }
+          },
+          "text_f1_by_language": {
+            "de": {
+              "ci95": [
+                0.781828,
+                0.825874
+              ],
+              "clusters": null,
+              "mean": 0.803851,
+              "n": 2
+            },
+            "en": {
+              "ci95": [
+                0.703996,
+                0.756495
+              ],
+              "clusters": null,
+              "mean": 0.730524,
+              "n": 416
+            },
+            "fr": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.902266,
+              "n": 1
+            },
+            "pl": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.978129,
+              "n": 1
+            },
+            "pt": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.690629,
+              "n": 1
+            },
+            "ru": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.515038,
+              "n": 1
+            },
+            "sw": {
+              "ci95": [
+                0.833559,
+                0.933161
+              ],
+              "clusters": null,
+              "mean": 0.88336,
+              "n": 2
+            },
+            "unknown": {
+              "ci95": [
+                0.538675,
+                0.646701
+              ],
+              "clusters": null,
+              "mean": 0.592191,
+              "n": 94
+            },
+            "zh": {
+              "ci95": [
+                0.592066,
+                0.82145
+              ],
+              "clusters": null,
+              "mean": 0.713156,
+              "n": 27
+            }
+          },
+          "text_f1_by_level": {
+            "hard": {
+              "ci95": [
+                0.575023,
+                0.662241
+              ],
+              "clusters": null,
+              "mean": 0.618622,
+              "n": 164
+            },
+            "mid": {
+              "ci95": [
+                0.671972,
+                0.74513
+              ],
+              "clusters": null,
+              "mean": 0.710784,
+              "n": 218
+            },
+            "simple": {
+              "ci95": [
+                0.74673,
+                0.831867
+              ],
+              "clusters": null,
+              "mean": 0.790642,
+              "n": 163
+            }
+          }
+        },
+        "main_content_v1": {
+          "code_f1": {
+            "all": {
+              "ci95": [
+                0.686704,
+                0.84439
+              ],
+              "clusters": null,
+              "mean": 0.769368,
+              "n": 88
+            }
+          },
+          "formula_hit_at_0_9": {
+            "all": {
+              "ci95": [
+                0.537959,
+                0.649145
+              ],
+              "clusters": null,
+              "mean": 0.594342,
+              "n": 256
+            }
+          },
+          "formula_similarity": {
+            "all": {
+              "ci95": [
+                0.58079,
+                0.685407
+              ],
+              "clusters": null,
+              "mean": 0.633429,
+              "n": 256
+            }
+          },
+          "labels_after_strip_total": 0,
+          "labels_removed_total": 207350,
+          "precision": {
+            "all": {
+              "ci95": [
+                0.695489,
+                0.785679
+              ],
+              "clusters": 395,
+              "mean": 0.741832,
+              "n": 545
+            }
+          },
+          "recall": {
+            "all": {
+              "ci95": [
+                0.772869,
+                0.856031
+              ],
+              "clusters": 395,
+              "mean": 0.817298,
+              "n": 545
+            }
+          },
+          "states": {
+            "OK": 545
+          },
+          "table_teds": "NOT_MEASURED (needs a table-structure renderer; text F1 by type only)",
+          "text_f1": {
+            "all": {
+              "ci95": [
+                0.673907,
+                0.768929
+              ],
+              "clusters": 395,
+              "mean": 0.723358,
+              "n": 545
+            },
+            "by_types": {
+              "code": {
+                "ci95": [
+                  0.724083,
+                  0.831196
+                ],
+                "clusters": 108,
+                "mean": 0.779601,
+                "n": 127
+              },
+              "code:inline": {
+                "ci95": [
+                  0.83123,
+                  0.927404
+                ],
+                "clusters": 42,
+                "mean": 0.883495,
+                "n": 54
+              },
+              "code:interline": {
+                "ci95": [
+                  0.692207,
+                  0.823321
+                ],
+                "clusters": 83,
+                "mean": 0.75996,
+                "n": 97
+              },
+              "equation": {
+                "ci95": [
+                  0.624184,
+                  0.810569
+                ],
+                "clusters": 151,
+                "mean": 0.726895,
+                "n": 257
+              },
+              "equation:inline": {
+                "ci95": [
+                  0.626636,
+                  0.816052
+                ],
+                "clusters": 148,
+                "mean": 0.726915,
+                "n": 248
+              },
+              "equation:interline": {
+                "ci95": [
+                  0.670363,
+                  0.969503
+                ],
+                "clusters": 17,
+                "mean": 0.902846,
+                "n": 59
+              },
+              "plain": {
+                "ci95": [
+                  0.661855,
+                  0.765106
+                ],
+                "clusters": 118,
+                "mean": 0.715715,
+                "n": 131
+              },
+              "table": {
+                "ci95": [
+                  0.592197,
+                  0.711944
+                ],
+                "clusters": 133,
+                "mean": 0.654624,
+                "n": 179
+              },
+              "table:data": {
+                "ci95": [
+                  0.579102,
+                  0.704871
+                ],
+                "clusters": 127,
+                "mean": 0.645831,
+                "n": 173
+              },
+              "table:layout": {
+                "ci95": [
+                  0.771525,
+                  0.887989
+                ],
+                "clusters": 25,
+                "mean": 0.834524,
+                "n": 28
+              }
+            }
+          },
+          "text_f1_by_language": {
+            "de": {
+              "ci95": [
+                0.781828,
+                0.942845
+              ],
+              "clusters": null,
+              "mean": 0.862337,
+              "n": 2
+            },
+            "en": {
+              "ci95": [
+                0.713337,
+                0.769012
+              ],
+              "clusters": null,
+              "mean": 0.742702,
+              "n": 416
+            },
+            "fr": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.914245,
+              "n": 1
+            },
+            "pl": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.978129,
+              "n": 1
+            },
+            "pt": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.760962,
+              "n": 1
+            },
+            "ru": {
+              "ci95": null,
+              "clusters": null,
+              "mean": 0.600877,
+              "n": 1
+            },
+            "sw": {
+              "ci95": [
+                0.967486,
+                0.970621
+              ],
+              "clusters": null,
+              "mean": 0.969054,
+              "n": 2
+            },
+            "unknown": {
+              "ci95": [
+                0.58479,
+                0.695146
+              ],
+              "clusters": null,
+              "mean": 0.640474,
+              "n": 94
+            },
+            "zh": {
+              "ci95": [
+                0.53531,
+                0.797538
+              ],
+              "clusters": null,
+              "mean": 0.672008,
+              "n": 27
+            }
+          },
+          "text_f1_by_level": {
+            "hard": {
+              "ci95": [
+                0.571268,
+                0.668959
+              ],
+              "clusters": null,
+              "mean": 0.620452,
+              "n": 164
+            },
+            "mid": {
+              "ci95": [
+                0.705307,
+                0.779552
+              ],
+              "clusters": null,
+              "mean": 0.745221,
+              "n": 218
+            },
+            "simple": {
+              "ci95": [
+                0.751954,
+                0.838733
+              ],
+              "clusters": null,
+              "mean": 0.797654,
+              "n": 163
+            }
+          }
+        }
+      },
+      "records": 545
+    }
+  },
+  "v2_webmainbench_545": {
+    "pages_evaluated": 545,
+    "stage_survival_waterfall": {
+      "docs": 545,
+      "s1_raw_bytes": 80610075,
+      "s1_nfc_bytes": 80610071,
+      "s1_nfc_changed_docs": 1,
+      "s2_dom_all_chars": 10460749,
+      "s2_bt_full_dom_chars": 9670177,
+      "s3_landmark_bt_chars": 8892799,
+      "s3_landmark_bt_chunks": 65932,
+      "s4_cap512_bt_chars": 8892404,
+      "s4_cap512_bt_chunks": 66264,
+      "s4_chars_lost_to_512_word_cap": 395,
+      "s4_docs_truncated_by_512_word_cap": 14,
+      "s5_cetd_legacy_chars": 5610964,
+      "s5_cetd_bt_chars": 8892404,
+      "s5_bt_cetd_entropy_identical_to_s4_docs": 545,
+      "s6_structured_table_count": 338,
+      "r1_html_gold_recall_sum": 543.0081474690454,
+      "r2_dom_all_gold_recall_sum": 540.6845114826167,
+      "r3_landmark_bt_gold_recall_sum": 486.3540638884666,
+      "r4_cap512_bt_gold_recall_sum": 486.3540638884666,
+      "r5_cetd_legacy_gold_recall_sum": 442.0708270000002,
+      "r5_cetd_breakthrough_gold_recall_sum": 477.8133510000001,
+      "R1_decoded_html_gold_recall": 0.9963,
+      "R2_dom_all_text_gold_recall": 0.9921,
+      "R3_landmark_attr_prune_gold_recall": 0.8924,
+      "R4_post_512_word_cap_gold_recall": 0.8924,
+      "R5_cetd_legacy_gold_recall": 0.8111,
+      "R5_cetd_breakthrough_gold_recall": 0.8767
+    },
+    "legacy_parse_html_with_limits_cetd_entropy_v1": {
+      "bag_of_words_f1": 0.7462,
+      "rouge_l_token_lcs_f1": 0.7675,
+      "line_break_f1": 0.5066
+    },
+    "breakthrough_parse_html_breakthrough": {
+      "bag_of_words_f1": 0.7107,
+      "rouge_l_token_lcs_f1": 0.7037,
+      "line_break_f1": 0.4362
+    },
+    "math_scorer_currency_leak_audit": {
+      "total_pages": 545,
+      "true_equation_pages_in_meta": 257,
+      "non_equation_pages_corrupted_by_currency_dollar_regex": 21,
+      "dom_grounded_math_ast_similarity_on_true_equation_pages": 0.5659,
+      "char_sequence_similarity_on_true_equation_pages": 0.5762,
+      "equation_pages_unstripped_rouge_l_f1": 0.7152,
+      "equation_pages_strip_math_leakage_rouge_l_f1": 0.7149
+    },
+    "table_teds_v2_on_table_stratum": {
+      "table_pages_scored": 151,
+      "breakthrough_table_teds_mean": 0.6413,
+      "breakthrough_coord_exact_sim_mean": 0.5621,
+      "legacy_flat_text_table_teds_mean": 0.3724
+    }
+  },
+  "v2_wcxb_order_and_domain_generalization": {
+    "legacy_cetd_entropy_v1": {
+      "count": 505,
+      "all_bag_of_words_f1": 0.7968,
+      "all_rouge_l_token_lcs_f1": 0.7911,
+      "all_line_break_f1": 0.5746,
+      "seen_domain_rouge_l_f1": 0.766,
+      "unseen_domain_rouge_l_f1": 0.8032
+    },
+    "breakthrough_cetd_entropy_v1": {
+      "count": 505,
+      "all_bag_of_words_f1": 0.7892,
+      "all_rouge_l_token_lcs_f1": 0.7785,
+      "all_line_break_f1": 0.5353,
+      "seen_domain_rouge_l_f1": 0.7332,
+      "unseen_domain_rouge_l_f1": 0.8001
+    }
+  },
+  "v2_natural_questions_3_tier_granularity_and_waterfall": {
+    "counts_and_stage_survival": {
+      "evaluated": 600,
+      "with_long_answer": 600,
+      "with_short_answer": 460,
+      "with_multi_sub_block_container": 273,
+      "r1_in_raw_html": 600,
+      "r2_in_full_dom": 599,
+      "r3_in_landmark_prune": 599,
+      "r4_in_post_512_word_cap": 495,
+      "r4_gold_exceeding_512_words": 55,
+      "r5_in_legacy_cetd_any_block": 592,
+      "r5_in_breakthrough_any_block": 599,
+      "R1_raw_html_survival_rate": 1.0,
+      "R2_dom_visible_survival_rate": 0.9983,
+      "R3_landmark_prune_survival_rate": 0.9983,
+      "R4_strict_single_chunk_survival_rate": 0.825,
+      "R5_legacy_cetd_answer_survival_rate": 0.9867,
+      "R5_breakthrough_answer_survival_rate": 0.9983,
+      "R4_gold_exceeding_512_words_rate": 0.0917
+    },
+    "ranking_granularity_tiers": {
+      "legacy_dom_order_slice": {
+        "tier1_strict_single_chunk_long_answer": {
+          "hit@1": 0.1133,
+          "hit@5": 0.4883,
+          "hit@20": 0.6433
+        },
+        "tier2_container_aligned_sub_block": {
+          "hit@1": 0.22,
+          "hit@5": 0.6767,
+          "hit@20": 0.8467
+        },
+        "tier3_short_answer_span": {
+          "hit@1": 0.1696,
+          "hit@5": 0.5804,
+          "hit@20": 0.7587
+        }
+      },
+      "legacy_bm25_v1_rank_order": {
+        "tier1_strict_single_chunk_long_answer": {
+          "hit@1": 0.125,
+          "hit@5": 0.3533,
+          "hit@20": 0.6433
+        },
+        "tier2_container_aligned_sub_block": {
+          "hit@1": 0.2633,
+          "hit@5": 0.5683,
+          "hit@20": 0.8467
+        },
+        "tier3_short_answer_span": {
+          "hit@1": 0.1826,
+          "hit@5": 0.4565,
+          "hit@20": 0.7587
+        }
+      },
+      "breakthrough_bm25f_dual_rank_order": {
+        "tier1_strict_single_chunk_long_answer": {
+          "hit@1": 0.1283,
+          "hit@5": 0.37,
+          "hit@20": 0.6267
+        },
+        "tier2_container_aligned_sub_block": {
+          "hit@1": 0.275,
+          "hit@5": 0.5917,
+          "hit@20": 0.8383
+        },
+        "tier3_short_answer_span": {
+          "hit@1": 0.2087,
+          "hit@5": 0.513,
+          "hit@20": 0.7978
+        }
+      }
+    }
+  },
+  "elapsed_sec": 289.14
+}

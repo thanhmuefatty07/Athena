@@ -1,0 +1,1448 @@
+{
+  "schema": "athena-bench-v2-l3-tier-b/1",
+  "legacy_tier_b_report_preserved": {
+    "math_d2": {
+      "leak_verified_clean_pages": 91,
+      "pages_evaluated": 91,
+      "stripped_tier2_tree_walk": {
+        "by_construct": {
+          "atomic_or_other": {
+            "exact_match_rate": {
+              "ci95": [
+                0.744741,
+                0.799888
+              ],
+              "hits": 683,
+              "n": 883,
+              "rate": 0.773499
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.795599,
+                0.846004
+              ],
+              "hits": 726,
+              "n": 883,
+              "rate": 0.822197
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.755337,
+                0.809589
+              ],
+              "hits": 692,
+              "n": 883,
+              "rate": 0.783692
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.8634,
+                0.900523
+              ],
+              "mean": 0.881706,
+              "n": 883
+            },
+            "n": 883
+          },
+          "frac": {
+            "exact_match_rate": {
+              "ci95": [
+                0.038712,
+                0.072845
+              ],
+              "hits": 36,
+              "n": 676,
+              "rate": 0.053254
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.576659,
+                0.649864
+              ],
+              "hits": 415,
+              "n": 676,
+              "rate": 0.613905
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.102842,
+                0.152867
+              ],
+              "hits": 85,
+              "n": 676,
+              "rate": 0.12574
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.777581,
+                0.799758
+              ],
+              "mean": 0.789149,
+              "n": 676
+            },
+            "n": 676
+          },
+          "matrix": {
+            "exact_match_rate": {
+              "ci95": [
+                -0.0,
+                0.044235
+              ],
+              "hits": 0,
+              "n": 83,
+              "rate": 0.0
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.580586,
+                0.776386
+              ],
+              "hits": 57,
+              "n": 83,
+              "rate": 0.686747
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.049653,
+                0.178826
+              ],
+              "hits": 8,
+              "n": 83,
+              "rate": 0.096386
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.699792,
+                0.802986
+              ],
+              "mean": 0.75441,
+              "n": 83
+            },
+            "n": 83
+          },
+          "operators_greek": {
+            "exact_match_rate": {
+              "ci95": [
+                0.287335,
+                0.341488
+              ],
+              "hits": 353,
+              "n": 1125,
+              "rate": 0.313778
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.631365,
+                0.686661
+              ],
+              "hits": 742,
+              "n": 1125,
+              "rate": 0.659556
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.37789,
+                0.435193
+              ],
+              "hits": 457,
+              "n": 1125,
+              "rate": 0.406222
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.804882,
+                0.82846
+              ],
+              "mean": 0.817157,
+              "n": 1125
+            },
+            "n": 1125
+          },
+          "scripts": {
+            "exact_match_rate": {
+              "ci95": [
+                0.318939,
+                0.372019
+              ],
+              "hits": 424,
+              "n": 1229,
+              "rate": 0.344996
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.729435,
+                0.777524
+              ],
+              "hits": 927,
+              "n": 1229,
+              "rate": 0.754272
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.441724,
+                0.497441
+              ],
+              "hits": 577,
+              "n": 1229,
+              "rate": 0.469487
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.843468,
+                0.863417
+              ],
+              "mean": 0.853499,
+              "n": 1229
+            },
+            "n": 1229
+          },
+          "sqrt": {
+            "exact_match_rate": {
+              "ci95": [
+                0.002238,
+                0.068276
+              ],
+              "hits": 1,
+              "n": 79,
+              "rate": 0.012658
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.522769,
+                0.730727
+              ],
+              "hits": 50,
+              "n": 79,
+              "rate": 0.632911
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.079565,
+                0.232373
+              ],
+              "hits": 11,
+              "n": 79,
+              "rate": 0.139241
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.766185,
+                0.821546
+              ],
+              "mean": 0.795943,
+              "n": 79
+            },
+            "n": 79
+          }
+        },
+        "overall": {
+          "exact_match_rate": {
+            "ci95": [
+              0.46168,
+              0.498573
+            ],
+            "hits": 1351,
+            "n": 2814,
+            "rate": 0.4801
+          },
+          "formula_hit_at_0_8": {
+            "ci95": [
+              0.725154,
+              0.757485
+            ],
+            "hits": 2087,
+            "n": 2814,
+            "rate": 0.741649
+          },
+          "formula_hit_at_0_9": {
+            "ci95": [
+              0.527396,
+              0.564163
+            ],
+            "hits": 1536,
+            "n": 2814,
+            "rate": 0.545842
+          },
+          "formula_similarity": {
+            "ci95": [
+              0.841944,
+              0.858366
+            ],
+            "mean": 0.850057,
+            "n": 2814
+          },
+          "n": 2814
+        }
+      },
+      "total_formulas_evaluated": 2814,
+      "unstripped_raw_parsoid": {
+        "by_construct": {
+          "atomic_or_other": {
+            "exact_match_rate": {
+              "ci95": [
+                0.976397,
+                0.992209
+              ],
+              "hits": 871,
+              "n": 883,
+              "rate": 0.98641
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.977831,
+                0.99303
+              ],
+              "hits": 872,
+              "n": 883,
+              "rate": 0.987542
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.977831,
+                0.99303
+              ],
+              "hits": 872,
+              "n": 883,
+              "rate": 0.987542
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.992984,
+                0.998139
+              ],
+              "mean": 0.995853,
+              "n": 883
+            },
+            "n": 883
+          },
+          "frac": {
+            "exact_match_rate": {
+              "ci95": [
+                0.96923,
+                0.989817
+              ],
+              "hits": 664,
+              "n": 676,
+              "rate": 0.982249
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.974893,
+                0.99298
+              ],
+              "hits": 667,
+              "n": 676,
+              "rate": 0.986686
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.974893,
+                0.99298
+              ],
+              "hits": 667,
+              "n": 676,
+              "rate": 0.986686
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.978867,
+                0.994636
+              ],
+              "mean": 0.987452,
+              "n": 676
+            },
+            "n": 676
+          },
+          "matrix": {
+            "exact_match_rate": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.886764,
+                0.980188
+              ],
+              "mean": 0.9385,
+              "n": 83
+            },
+            "n": 83
+          },
+          "operators_greek": {
+            "exact_match_rate": {
+              "ci95": [
+                0.977022,
+                0.991227
+              ],
+              "hits": 1109,
+              "n": 1125,
+              "rate": 0.985778
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.97922,
+                0.992573
+              ],
+              "hits": 1111,
+              "n": 1125,
+              "rate": 0.987556
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.97922,
+                0.992573
+              ],
+              "hits": 1111,
+              "n": 1125,
+              "rate": 0.987556
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.982799,
+                0.994054
+              ],
+              "mean": 0.988727,
+              "n": 1125
+            },
+            "n": 1125
+          },
+          "scripts": {
+            "exact_match_rate": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.981938,
+                0.993275
+              ],
+              "mean": 0.987966,
+              "n": 1229
+            },
+            "n": 1229
+          },
+          "sqrt": {
+            "exact_match_rate": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.966719,
+                1.0
+              ],
+              "mean": 0.988906,
+              "n": 79
+            },
+            "n": 79
+          }
+        },
+        "overall": {
+          "exact_match_rate": {
+            "ci95": [
+              0.983164,
+              0.991341
+            ],
+            "hits": 2780,
+            "n": 2814,
+            "rate": 0.987918
+          },
+          "formula_hit_at_0_8": {
+            "ci95": [
+              0.984822,
+              0.992522
+            ],
+            "hits": 2784,
+            "n": 2814,
+            "rate": 0.989339
+          },
+          "formula_hit_at_0_9": {
+            "ci95": [
+              0.984822,
+              0.992522
+            ],
+            "hits": 2784,
+            "n": 2814,
+            "rate": 0.989339
+          },
+          "formula_similarity": {
+            "ci95": [
+              0.989458,
+              0.995211
+            ],
+            "mean": 0.992478,
+            "n": 2814
+          },
+          "n": 2814
+        }
+      },
+      "unstripped_tier1_annotated": {
+        "by_construct": {
+          "atomic_or_other": {
+            "exact_match_rate": {
+              "ci95": [
+                0.995668,
+                1.0
+              ],
+              "hits": 883,
+              "n": 883,
+              "rate": 1.0
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.995668,
+                1.0
+              ],
+              "hits": 883,
+              "n": 883,
+              "rate": 1.0
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.995668,
+                1.0
+              ],
+              "hits": 883,
+              "n": 883,
+              "rate": 1.0
+            },
+            "formula_similarity": {
+              "ci95": [
+                1.0,
+                1.0
+              ],
+              "mean": 1.0,
+              "n": 883
+            },
+            "n": 883
+          },
+          "frac": {
+            "exact_match_rate": {
+              "ci95": [
+                0.974893,
+                0.99298
+              ],
+              "hits": 667,
+              "n": 676,
+              "rate": 0.986686
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.974893,
+                0.99298
+              ],
+              "hits": 667,
+              "n": 676,
+              "rate": 0.986686
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.974893,
+                0.99298
+              ],
+              "hits": 667,
+              "n": 676,
+              "rate": 0.986686
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.979176,
+                0.994785
+              ],
+              "mean": 0.987686,
+              "n": 676
+            },
+            "n": 676
+          },
+          "matrix": {
+            "exact_match_rate": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.851132,
+                0.96645
+              ],
+              "hits": 77,
+              "n": 83,
+              "rate": 0.927711
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.886764,
+                0.980188
+              ],
+              "mean": 0.9385,
+              "n": 83
+            },
+            "n": 83
+          },
+          "operators_greek": {
+            "exact_match_rate": {
+              "ci95": [
+                0.97922,
+                0.992573
+              ],
+              "hits": 1111,
+              "n": 1125,
+              "rate": 0.987556
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.97922,
+                0.992573
+              ],
+              "hits": 1111,
+              "n": 1125,
+              "rate": 0.987556
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.97922,
+                0.992573
+              ],
+              "hits": 1111,
+              "n": 1125,
+              "rate": 0.987556
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.982837,
+                0.99414
+              ],
+              "mean": 0.988787,
+              "n": 1125
+            },
+            "n": 1125
+          },
+          "scripts": {
+            "exact_match_rate": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.978957,
+                0.991971
+              ],
+              "hits": 1213,
+              "n": 1229,
+              "rate": 0.986981
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.981938,
+                0.993275
+              ],
+              "mean": 0.987966,
+              "n": 1229
+            },
+            "n": 1229
+          },
+          "sqrt": {
+            "exact_match_rate": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_hit_at_0_8": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_hit_at_0_9": {
+              "ci95": [
+                0.931724,
+                0.997762
+              ],
+              "hits": 78,
+              "n": 79,
+              "rate": 0.987342
+            },
+            "formula_similarity": {
+              "ci95": [
+                0.966719,
+                1.0
+              ],
+              "mean": 0.988906,
+              "n": 79
+            },
+            "n": 79
+          }
+        },
+        "overall": {
+          "exact_match_rate": {
+            "ci95": [
+              0.989478,
+              0.995673
+            ],
+            "hits": 2795,
+            "n": 2814,
+            "rate": 0.993248
+          },
+          "formula_hit_at_0_8": {
+            "ci95": [
+              0.989478,
+              0.995673
+            ],
+            "hits": 2795,
+            "n": 2814,
+            "rate": 0.993248
+          },
+          "formula_hit_at_0_9": {
+            "ci95": [
+              0.989478,
+              0.995673
+            ],
+            "hits": 2795,
+            "n": 2814,
+            "rate": 0.993248
+          },
+          "formula_similarity": {
+            "ci95": [
+              0.990821,
+              0.996433
+            ],
+            "mean": 0.993835,
+            "n": 2814
+          },
+          "n": 2814
+        }
+      }
+    },
+    "tables_d4_d11": {
+      "pages_evaluated": 87,
+      "simple_tables_evaluated": 87,
+      "spanned_tables_evaluated": 86,
+      "summary": {
+        "all_data_tables": {
+          "cell_micro_header_binding_recall": {
+            "ci95": [
+              0.868129,
+              0.87476
+            ],
+            "hits": 34115,
+            "n": 39146,
+            "rate": 0.871481
+          },
+          "cell_micro_recall": {
+            "ci95": [
+              0.867097,
+              0.873746
+            ],
+            "hits": 34115,
+            "n": 39192,
+            "rate": 0.870458
+          },
+          "grid_slot_fidelity": {
+            "ci95": [
+              1.0,
+              1.0
+            ],
+            "mean": 1.0,
+            "n": 163
+          },
+          "grounded_discourse_f1": {
+            "ci95": [
+              0.962633,
+              0.983874
+            ],
+            "mean": 0.973722,
+            "n": 173
+          },
+          "n_tables": 173,
+          "table_macro_cell_recall": {
+            "ci95": [
+              0.857602,
+              0.912179
+            ],
+            "mean": 0.885856,
+            "n": 173
+          },
+          "table_macro_header_binding_recall": {
+            "ci95": [
+              0.878319,
+              0.933975
+            ],
+            "mean": 0.906597,
+            "n": 173
+          },
+          "total_data_cells": 39192,
+          "total_header_bound_cells": 39146
+        },
+        "simple_tables": {
+          "cell_micro_header_binding_recall": {
+            "ci95": [
+              0.864534,
+              0.871424
+            ],
+            "hits": 32180,
+            "n": 37073,
+            "rate": 0.868017
+          },
+          "cell_micro_recall": {
+            "ci95": [
+              0.864206,
+              0.871104
+            ],
+            "hits": 32168,
+            "n": 37073,
+            "rate": 0.867693
+          },
+          "grid_slot_fidelity": {
+            "ci95": [
+              1.0,
+              1.0
+            ],
+            "mean": 1.0,
+            "n": 81
+          },
+          "grounded_discourse_f1": {
+            "ci95": [
+              0.947817,
+              0.982556
+            ],
+            "mean": 0.966675,
+            "n": 87
+          },
+          "n_tables": 87,
+          "table_macro_cell_recall": {
+            "ci95": [
+              0.830302,
+              0.908211
+            ],
+            "mean": 0.872568,
+            "n": 87
+          },
+          "table_macro_header_binding_recall": {
+            "ci95": [
+              0.833227,
+              0.910958
+            ],
+            "mean": 0.875446,
+            "n": 87
+          },
+          "total_data_cells": 37073,
+          "total_header_bound_cells": 37073
+        },
+        "spanned_tables": {
+          "cell_micro_header_binding_recall": {
+            "ci95": [
+              0.921877,
+              0.943379
+            ],
+            "hits": 1935,
+            "n": 2073,
+            "rate": 0.93343
+          },
+          "cell_micro_recall": {
+            "ci95": [
+              0.90643,
+              0.929714
+            ],
+            "hits": 1947,
+            "n": 2119,
+            "rate": 0.91883
+          },
+          "grid_slot_fidelity": {
+            "ci95": [
+              1.0,
+              1.0
+            ],
+            "mean": 1.0,
+            "n": 82
+          },
+          "grounded_discourse_f1": {
+            "ci95": [
+              0.965677,
+              0.992913
+            ],
+            "mean": 0.980851,
+            "n": 86
+          },
+          "n_tables": 86,
+          "table_macro_cell_recall": {
+            "ci95": [
+              0.858817,
+              0.936903
+            ],
+            "mean": 0.899298,
+            "n": 86
+          },
+          "table_macro_header_binding_recall": {
+            "ci95": [
+              0.891473,
+              0.975969
+            ],
+            "mean": 0.938111,
+            "n": 86
+          },
+          "total_data_cells": 2119,
+          "total_header_bound_cells": 2073
+        }
+      },
+      "total_tables_evaluated": 173
+    }
+  },
+  "v2_math_d2_stratified_10_category_ast_oracle": {
+    "wikimedia_formulas_evaluated": 592,
+    "total_formulas_with_10cat_probes": 600,
+    "tier1_with_annotation_overall": {
+      "legacy_char_seq_similarity": 0.9967,
+      "math_ast_similarity": 0.9953,
+      "math_ast_exact_match_rate": 0.995
+    },
+    "tier2_presentation_mathml_tree_only_overall": {
+      "legacy_char_seq_similarity": 0.4049,
+      "math_ast_similarity": 0.659,
+      "math_ast_exact_match_rate": 0.39
+    },
+    "by_category_10_strata": {
+      "accents_hats_bars_vectors": {
+        "count": 50,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.3207,
+          "math_ast_similarity": 0.3282,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "font_variants_mathvariant": {
+        "count": 112,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.1506,
+          "math_ast_similarity": 0.1622,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "fractions_binomials": {
+        "count": 3,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.7828,
+          "math_ast_similarity": 0.6926,
+          "math_ast_exact_match_rate": 0.3333
+        }
+      },
+      "katex_html_trees": {
+        "count": 1,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.0,
+          "math_ast_similarity": 0.0,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "matrices_cases_arrays": {
+        "count": 21,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.982,
+          "math_ast_similarity": 0.9606,
+          "math_ast_exact_match_rate": 0.9524
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.6289,
+          "math_ast_similarity": 0.687,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "menclose_enclosures": {
+        "count": 2,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.4381,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "named_functions_unicode_ops": {
+        "count": 110,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.9931,
+          "math_ast_similarity": 0.9909,
+          "math_ast_exact_match_rate": 0.9909
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.4903,
+          "math_ast_similarity": 0.8815,
+          "math_ast_exact_match_rate": 0.7909
+        }
+      },
+      "radicals_roots": {
+        "count": 1,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        }
+      },
+      "simple_inline": {
+        "count": 110,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.1902,
+          "math_ast_similarity": 0.8843,
+          "math_ast_exact_match_rate": 0.7727
+        }
+      },
+      "summations_integrals_limits": {
+        "count": 79,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.9895,
+          "math_ast_similarity": 0.9873,
+          "math_ast_exact_match_rate": 0.9873
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.7368,
+          "math_ast_similarity": 0.8582,
+          "math_ast_exact_match_rate": 0.2152
+        }
+      },
+      "superscripts_subscripts": {
+        "count": 111,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.5365,
+          "math_ast_similarity": 0.7231,
+          "math_ast_exact_match_rate": 0.3874
+        }
+      }
+    },
+    "semantic_inversion_traps": {
+      "total_traps": 7,
+      "bag_of_tokens_false_accept_rate": 1.0,
+      "math_ast_inversion_detection_rate": 1.0,
+      "traps": [
+        {
+          "desc": "swapped_fraction_numerator_denominator",
+          "gold_tex": "\\frac{a}{b}",
+          "inverted_tex": "\\frac{b}{a}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.3333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "swapped_subscript_superscript",
+          "gold_tex": "x_{i}^{2}",
+          "inverted_tex": "x_{2}^{i}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "swapped_root_index_radicand",
+          "gold_tex": "\\sqrt[3]{x}",
+          "inverted_tex": "\\sqrt[x]{3}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.3333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "non_commutative_subtraction",
+          "gold_tex": "a - b",
+          "inverted_tex": "b - a",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "inverted_integral_limits",
+          "gold_tex": "\\int_{0}^{\\infty} f(x) dx",
+          "inverted_tex": "\\int_{\\infty}^{0} f(x) dx",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.8333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "inverted_subset_relation",
+          "gold_tex": "A \\subset B",
+          "inverted_tex": "B \\subset A",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "transposed_reversed_matrix",
+          "gold_tex": "\\begin{matrix} a & b \\\\ c & d \\end{matrix}",
+          "inverted_tex": "\\begin{matrix} d & c \\\\ b & a \\end{matrix}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.4,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        }
+      ]
+    },
+    "algebraic_equivalence_invariance": {
+      "total_pairs": 5,
+      "math_ast_exact_match_rate": 1.0,
+      "pairs": [
+        {
+          "desc": "tfrac_to_frac",
+          "tex_a": "\\tfrac{1}{2}",
+          "tex_b": "\\frac{1}{2}",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "dfrac_to_frac",
+          "tex_a": "\\dfrac{\\alpha}{\\beta}",
+          "tex_b": "\\frac{\\alpha}{\\beta}",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "left_right_delimiters",
+          "tex_a": "\\left( x + y \\right)",
+          "tex_b": "( x + y )",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "single_token_brace_elision",
+          "tex_a": "x^{2}",
+          "tex_b": "x^2",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "operatorname_to_cmd",
+          "tex_a": "\\operatorname{sin}(x)",
+          "tex_b": "\\sin(x)",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        }
+      ]
+    }
+  },
+  "v2_tables_d4_d11_uncapped_whatwg_oracle": {
+    "synthetic_whatwg_torture_cases": [
+      {
+        "id": "multi_row_thead_subheaders",
+        "desc": "2-row <thead> with colspan=2 parent header and r=1 sub-headers",
+        "oracle_table_count": 1,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 7,
+        "uncapped_cell_recall": 1.0,
+        "whatwg_coord_exact_match_rate": 1.0
+      },
+      {
+        "id": "table_over_512_rows",
+        "desc": "530-row data table exceeding hardcoded 512-row expand_tolerant cap",
+        "oracle_table_count": 1,
+        "athena_table_count": 0,
+        "oracle_cell_count": 1062,
+        "athena_cell_count": 0,
+        "uncapped_cell_recall": 0.0,
+        "whatwg_coord_exact_match_rate": 0.0
+      },
+      {
+        "id": "nested_table_inside_td",
+        "desc": "Outer table containing an inner nested <table> inside a <td>",
+        "oracle_table_count": 2,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 4,
+        "uncapped_cell_recall": 0.5714,
+        "whatwg_coord_exact_match_rate": 0.4286
+      },
+      {
+        "id": "rowspan_zero_and_tfoot_before_tbody",
+        "desc": "Out-of-order <tfoot> before <tbody> with rowspan=0",
+        "oracle_table_count": 1,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 7,
+        "uncapped_cell_recall": 1.0,
+        "whatwg_coord_exact_match_rate": 1.0
+      }
+    ],
+    "wikimedia_173_tables_oracle": {
+      "pages_evaluated": 88,
+      "tables_evaluated": 219,
+      "tables_exceeding_512_rows_dropped": 0,
+      "total_oracle_cells_capped_512_outer_only": 50317,
+      "total_oracle_cells_uncapped_outer": 50317,
+      "total_nested_table_data_cells_dropped": 246,
+      "total_oracle_cells_uncapped_with_nested": 50563,
+      "total_athena_recovered_data_cells": 43932,
+      "total_athena_grounded_data_cells": 50327,
+      "legacy_capped_cell_recall": 0.8731,
+      "true_uncapped_outer_cell_recall": 0.8731,
+      "true_uncapped_all_cell_recall_including_nested": 0.8689,
+      "whatwg_coordinate_exact_match_rate": 0.8733,
+      "multi_row_subheader_r1plus_cells": 754,
+      "multi_row_subheader_r1plus_recall": 0.9788,
+      "row_stub_cells": 42853,
+      "row_stub_recall": 0.9992
+    }
+  },
+  "v2_code_d1_gutter_and_negative_controls_oracle": {
+    "gutter_styles_oracle": {
+      "total_styles": 8,
+      "exact_match_rate": 0.375,
+      "python_ast_valid_rate": 0.375,
+      "mean_line_sequence_f1": 0.375,
+      "styles": [
+        {
+          "id": "gutter_pipe_space",
+          "style": "1 | code",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_tab",
+          "style": "1\\tcode",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_colon_space",
+          "style": "1: code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "1: def quicksort(arr):"
+        },
+        {
+          "id": "gutter_dot_space",
+          "style": "1. code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "1. def quicksort(arr):"
+        },
+        {
+          "id": "gutter_padded_spaces",
+          "style": "   1  code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "   1  def quicksort(arr):"
+        },
+        {
+          "id": "gutter_dom_span_line_number",
+          "style": "<span class='line-number'>1</span>",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_repl_prompts",
+          "style": ">>> / ... REPL prompts",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": ">>> def quicksort(arr):"
+        },
+        {
+          "id": "gutter_git_diff_numbered",
+          "style": "  1 + code (git diff)",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "  1 + def quicksort(arr):"
+        }
+      ]
+    },
+    "negative_controls_oracle": {
+      "total_controls": 5,
+      "corruption_rate": 0.6,
+      "controls": [
+        {
+          "id": "neg_tsv_numeric_table",
+          "desc": "TSV data block starting with '100\\t200\\t300'",
+          "corrupted": true,
+          "expected": "100\t200\t300\n400\t500\t600",
+          "extracted": "200\t300\n500\t600"
+        },
+        {
+          "id": "neg_pipe_markdown_table",
+          "desc": "Markdown/ASCII pipe row starting with '1 | Alice | 95'",
+          "corrupted": true,
+          "expected": "1 | Alice | 95\n2 | Bob   | 88",
+          "extracted": "Alice | 95\nBob   | 88"
+        },
+        {
+          "id": "neg_clipboard_class_code_span",
+          "desc": "Code syntax span with class='token clipboard-api' stripped by class_attr.contains('clipboard')",
+          "corrupted": true,
+          "expected": "def copy_data(text):\n    return clipboard_write(text)",
+          "extracted": "def copy_data(text):\n    return "
+        },
+        {
+          "id": "neg_js_spread_operator",
+          "desc": "JavaScript spread operator '...args' inside function",
+          "corrupted": false,
+          "expected": "function merge(...args) {\n  return [...args];\n}",
+          "extracted": "function merge(...args) {\n  return [...args];\n}"
+        },
+        {
+          "id": "neg_unbalanced_brace_in_string",
+          "desc": "Code containing '{' inside string literal",
+          "corrupted": false,
+          "expected": "def fmt():\n    s = \"open brace { in string\"\n    return s",
+          "extracted": "def fmt():\n    s = \"open brace { in string\"\n    return s"
+        }
+      ]
+    },
+    "real_webmainbench_code_stratum_50_pages": {
+      "pages_evaluated": 50,
+      "legacy_rouge_l_f1": 0.8454,
+      "breakthrough_rouge_l_f1": 0.7711,
+      "legacy_line_break_f1": 0.6041,
+      "breakthrough_line_break_f1": 0.5498
+    }
+  }
+}

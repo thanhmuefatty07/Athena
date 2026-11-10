@@ -1,0 +1,1085 @@
+{
+  "schema": "athena-bench-v2-l1-micro/1",
+  "L1_1_charset_and_nfc_oracle": {
+    "warc_regression_16_records": {
+      "total_records": 16,
+      "unsanitized_panics": 1,
+      "unsanitized_timeouts": 1,
+      "sanitized_panics": 0,
+      "sanitized_timeouts": 1,
+      "records": [
+        {
+          "label": "real_warc_html5ever_meta_charset_panic",
+          "warc_file": "CC-MAIN-20261012021225-20261012051225-00920.warc.gz",
+          "member_offset": 11253578,
+          "url": "http://kirklarelikoop.trakyabirlik.com.tr/kvkk.aspx",
+          "raw_bytes": 8573,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": true,
+          "unsanitized_status": "PANIC",
+          "unsanitized_panic_message": "index out of bounds: the len is 17 but the index is 17",
+          "unsanitized_elapsed_ms": 7.32,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 6.19
+        },
+        {
+          "label": "real_warc_61527_td_quadratic_table_hang",
+          "warc_file": "CC-MAIN-20261014154306-20261014184306-00432.warc.gz",
+          "member_offset": 544318512,
+          "url": "https://wellwiki.org/wiki/Eddy_County,_New_Mexico",
+          "raw_bytes": 3055515,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "TIMEOUT",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 3518.43,
+          "sanitized_status": "TIMEOUT",
+          "sanitized_elapsed_ms": 3519.16
+        },
+        {
+          "label": "warc_00106_88479_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 88479,
+          "url": "http://1acreoftrees.com/product-tag/clonal-patch-forming/",
+          "raw_bytes": 411402,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 15.53,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 14.4
+        },
+        {
+          "label": "warc_00106_135103_big5hkscs",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 135103,
+          "url": "http://221669.ys27h.com/?PUT=a_show&AID=309778&FID=221669&R2=&CHANNEL=",
+          "raw_bytes": 91120,
+          "encoding": "big5hkscs",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 10.91,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 10.74
+        },
+        {
+          "label": "warc_00106_178712_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 178712,
+          "url": "http://311nm.ru/author/viktoriya/",
+          "raw_bytes": 300556,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 14.99,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 15.08
+        },
+        {
+          "label": "warc_00106_247079_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 247079,
+          "url": "http://34efemotor.com/arama/kategori/931",
+          "raw_bytes": 326880,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 18.34,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 18.43
+        },
+        {
+          "label": "warc_00106_264040_big5hkscs",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 264040,
+          "url": "http://352325.umop58.com/?PUT=a_show&AID=300672&FID=352325",
+          "raw_bytes": 61917,
+          "encoding": "big5hkscs",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 9.65,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 9.39
+        },
+        {
+          "label": "warc_00106_321320_gbk",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 321320,
+          "url": "http://417579.com/read.php?tid=116512&fpage=1&page=4",
+          "raw_bytes": 26247,
+          "encoding": "gbk",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 6.67,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 6.53
+        },
+        {
+          "label": "warc_00106_473879_gbk",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 473879,
+          "url": "http://ac.hipole.com:8892/hisleaderboard?raceid=93",
+          "raw_bytes": 10136,
+          "encoding": "gbk",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 9.46,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 9.72
+        },
+        {
+          "label": "warc_00106_511482_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 511482,
+          "url": "http://aesculape.eu/annuaire-de-naturopathes/",
+          "raw_bytes": 309022,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 16.24,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 16.28
+        },
+        {
+          "label": "warc_00106_677152_cp1252",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 677152,
+          "url": "http://alt1.toolbarqueries.google.co.vi/url?q=http://hdorg2.ru/article?today-89456433",
+          "raw_bytes": 1537,
+          "encoding": "cp1252",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 6.07,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 5.36
+        },
+        {
+          "label": "warc_00106_758497_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 758497,
+          "url": "http://ancientcauldron.com/index-126.html",
+          "raw_bytes": 435972,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 14.49,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 14.71
+        },
+        {
+          "label": "warc_00106_850765_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 850765,
+          "url": "http://ancientcauldron.com/index15d7.html?s=&filter%5Bevent.summary.title.keyword%5D%5B%5D=Delftware",
+          "raw_bytes": 377702,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 12.82,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 12.51
+        },
+        {
+          "label": "warc_00106_1150873_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 1150873,
+          "url": "http://autoradio-megaxxltv.eu/vilnius-penktadienis/",
+          "raw_bytes": 267452,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 12.51,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 12.25
+        },
+        {
+          "label": "warc_00106_1188526_cp1251",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 1188526,
+          "url": "http://autta.org.ua/ua/materials/theme/Profilaktyka-vzhyvannia-PAV-i-sotsialno-nebezpechnykh-yavyshch/?&sort=rating:desc&start=12",
+          "raw_bytes": 22688,
+          "encoding": "cp1251",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 7.21,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 7.11
+        },
+        {
+          "label": "warc_00106_1297868_utf-8",
+          "warc_file": "CC-MAIN-20261015222031-20261016012031-00106.warc.gz",
+          "member_offset": 1297868,
+          "url": "http://barbhoganphoto.com/the-lacey-family-christmas-cincinnati-portrait-photographer/?reply-to=153174",
+          "raw_bytes": 583102,
+          "encoding": "utf-8",
+          "meta_was_rewritten_by_sanitizer": false,
+          "unsanitized_status": "OK",
+          "unsanitized_panic_message": null,
+          "unsanitized_elapsed_ms": 37.33,
+          "sanitized_status": "OK",
+          "sanitized_elapsed_ms": 37.7
+        }
+      ]
+    },
+    "whatwg_meta_prescan_vectors": {
+      "total_vectors": 8,
+      "encoding_exact_match_rate": 0.875,
+      "text_preserved_rate": 0.875,
+      "vectors": [
+        {
+          "id": "commented_meta_trap",
+          "desc": "<!-- <meta charset='shift_jis'> --> before <meta charset='utf-8'>",
+          "expected_encoding": "utf-8",
+          "expected_python_codec": "utf-8",
+          "detected_encoding": "cp932",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": false,
+          "text_preserved": false,
+          "rust_orchestrator_raw_utf8_preserves_text": true
+        },
+        {
+          "id": "reversed_http_equiv_attrs",
+          "desc": "<meta content='text/html; charset=windows-1252' http-equiv='Content-Type'>",
+          "expected_encoding": "windows-1252",
+          "expected_python_codec": "cp1252",
+          "detected_encoding": "cp1252",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "utf16le_bom",
+          "desc": "UTF-16LE with BOM",
+          "expected_encoding": "utf-16-le",
+          "expected_python_codec": "utf-16-le",
+          "detected_encoding": "utf-16-le",
+          "encoding_source": "bom",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "utf16be_bom",
+          "desc": "UTF-16BE with BOM",
+          "expected_encoding": "utf-16-be",
+          "expected_python_codec": "utf-16-be",
+          "detected_encoding": "utf-16-be",
+          "encoding_source": "bom",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "shift_jis_meta",
+          "desc": "Shift_JIS via <meta charset='shift_jis'>",
+          "expected_encoding": "shift_jis",
+          "expected_python_codec": "cp932",
+          "detected_encoding": "cp932",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "gb18030_meta",
+          "desc": "GB18030 via <meta charset='gb18030'>",
+          "expected_encoding": "gb18030",
+          "expected_python_codec": "gb18030",
+          "detected_encoding": "gb18030",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "euc_kr_meta",
+          "desc": "EUC-KR via <meta charset='euc-kr'>",
+          "expected_encoding": "euc-kr",
+          "expected_python_codec": "cp949",
+          "detected_encoding": "cp949",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        },
+        {
+          "id": "meta_beyond_1024_bytes",
+          "desc": "<meta charset='windows-1252'> at byte offset 1800 (within WHATWG 1024 vs 4096 prescan)",
+          "expected_encoding": "windows-1252",
+          "expected_python_codec": "cp1252",
+          "detected_encoding": "cp1252",
+          "encoding_source": "meta",
+          "replacement_chars": 0,
+          "encoding_exact_match": true,
+          "text_preserved": true,
+          "rust_orchestrator_raw_utf8_preserves_text": false
+        }
+      ]
+    },
+    "unicode_nfc_oracle": {
+      "total_cases": 44,
+      "overall_projection_nfc_exact_match_rate": 0.8409,
+      "overall_bm25_v1_nfd_query_recall_against_nfc_doc": 0.0,
+      "overall_bm25f_dual_nfd_query_recall_against_nfc_doc": 0.0,
+      "by_category": {
+        "vietnamese_multi_diacritic_nfd": {
+          "count": 30,
+          "projection_nfc_exact_matches": 30,
+          "bm25_v1_nfd_query_hits": 0,
+          "bm25f_dual_nfd_query_hits": 0,
+          "bm25f_dual_nfc_query_hits_proj_doc": 30,
+          "projection_nfc_exact_match_rate": 1.0,
+          "bm25_v1_nfd_query_recall": 0.0,
+          "bm25f_dual_nfd_query_recall": 0.0,
+          "bm25f_dual_nfc_query_recall_on_projected_doc": 1.0
+        },
+        "vietnamese_reversed_ccc": {
+          "count": 4,
+          "projection_nfc_exact_matches": 4,
+          "bm25_v1_nfd_query_hits": 0,
+          "bm25f_dual_nfd_query_hits": 0,
+          "bm25f_dual_nfc_query_hits_proj_doc": 4,
+          "projection_nfc_exact_match_rate": 1.0,
+          "bm25_v1_nfd_query_recall": 0.0,
+          "bm25f_dual_nfd_query_recall": 0.0,
+          "bm25f_dual_nfc_query_recall_on_projected_doc": 1.0
+        },
+        "hangul_jamo_nfd": {
+          "count": 4,
+          "projection_nfc_exact_matches": 0,
+          "bm25_v1_nfd_query_hits": 0,
+          "bm25f_dual_nfd_query_hits": 0,
+          "bm25f_dual_nfc_query_hits_proj_doc": 0,
+          "projection_nfc_exact_match_rate": 0.0,
+          "bm25_v1_nfd_query_recall": 0.0,
+          "bm25f_dual_nfd_query_recall": 0.0,
+          "bm25f_dual_nfc_query_recall_on_projected_doc": 0.0
+        },
+        "latin_greek_combining": {
+          "count": 6,
+          "projection_nfc_exact_matches": 3,
+          "bm25_v1_nfd_query_hits": 0,
+          "bm25f_dual_nfd_query_hits": 0,
+          "bm25f_dual_nfc_query_hits_proj_doc": 3,
+          "projection_nfc_exact_match_rate": 0.5,
+          "bm25_v1_nfd_query_recall": 0.0,
+          "bm25f_dual_nfd_query_recall": 0.0,
+          "bm25f_dual_nfc_query_recall_on_projected_doc": 0.5
+        }
+      }
+    }
+  },
+  "L1_2_dom_shadow_foster_landmark_oracle": {
+    "micro_cases": [
+      {
+        "id": "foster_parented_div_in_table",
+        "category": "foster_parenting",
+        "gold_items": 3,
+        "legacy_recall": 0.6667,
+        "breakthrough_recall": 1.0,
+        "bt_chunk_count": 3,
+        "bt_unique_dom_path_slugs": 3,
+        "bt_slug_collision_rate": 0.0
+      },
+      {
+        "id": "declarative_shadow_dom_open",
+        "category": "declarative_shadow_dom",
+        "gold_items": 2,
+        "legacy_recall": 0.5,
+        "breakthrough_recall": 0.5,
+        "bt_chunk_count": 1,
+        "bt_unique_dom_path_slugs": 1,
+        "bt_slug_collision_rate": 0.0
+      },
+      {
+        "id": "legacy_tag_blindness_div_blockquote_dl_fig_h5_h6",
+        "category": "legacy_tag_blindness",
+        "gold_items": 7,
+        "legacy_recall": 0.0,
+        "breakthrough_recall": 1.0,
+        "bt_chunk_count": 7,
+        "bt_unique_dom_path_slugs": 7,
+        "bt_slug_collision_rate": 0.0
+      },
+      {
+        "id": "aspnet_form_full_page_wrapper",
+        "category": "aspnet_form_wrapper",
+        "gold_items": 1,
+        "legacy_recall": 1.0,
+        "breakthrough_recall": 0.0,
+        "bt_chunk_count": 0,
+        "bt_unique_dom_path_slugs": 0,
+        "bt_slug_collision_rate": 1.0
+      },
+      {
+        "id": "aspnet_form_with_heading_wipes_body",
+        "category": "aspnet_form_wrapper_with_heading",
+        "gold_items": 1,
+        "legacy_recall": 0.0,
+        "breakthrough_recall": 0.0,
+        "bt_chunk_count": 0,
+        "bt_unique_dom_path_slugs": 0,
+        "bt_slug_collision_rate": 1.0
+      },
+      {
+        "id": "aside_callout_inside_main_article",
+        "category": "aside_landmark_inside_main",
+        "gold_items": 2,
+        "legacy_recall": 0.5,
+        "breakthrough_recall": 0.5,
+        "bt_chunk_count": 2,
+        "bt_unique_dom_path_slugs": 2,
+        "bt_slug_collision_rate": 0.0
+      },
+      {
+        "id": "benign_substring_classes",
+        "category": "benign_substring_classes",
+        "gold_items": 4,
+        "legacy_recall": 1.0,
+        "breakthrough_recall": 1.0,
+        "bt_chunk_count": 4,
+        "bt_unique_dom_path_slugs": 2,
+        "bt_slug_collision_rate": 0.5
+      },
+      {
+        "id": "sibling_dom_path_slug_uniqueness",
+        "category": "dom_path_slug_uniqueness",
+        "gold_items": 4,
+        "legacy_recall": 1.0,
+        "breakthrough_recall": 1.0,
+        "bt_chunk_count": 4,
+        "bt_unique_dom_path_slugs": 1,
+        "bt_slug_collision_rate": 0.75
+      }
+    ],
+    "real_50_page_double_parse_and_cetd_audit": {
+      "pages_evaluated": 50,
+      "mean_legacy_parse_us": 2668.1,
+      "mean_breakthrough_parse_us": 5404.4,
+      "mean_pass2_duplicate_html_parse_us": 1978.2,
+      "breakthrough_vs_legacy_latency_ratio": 2.026,
+      "bt_cetd_entropy_v1_zero_effect_rate": 1.0
+    }
+  },
+  "L1_3_math_ast_oracle": {
+    "wikimedia_formulas_evaluated": 592,
+    "total_formulas_with_10cat_probes": 600,
+    "tier1_with_annotation_overall": {
+      "legacy_char_seq_similarity": 0.9967,
+      "math_ast_similarity": 0.9953,
+      "math_ast_exact_match_rate": 0.995
+    },
+    "tier2_presentation_mathml_tree_only_overall": {
+      "legacy_char_seq_similarity": 0.4049,
+      "math_ast_similarity": 0.659,
+      "math_ast_exact_match_rate": 0.39
+    },
+    "by_category_10_strata": {
+      "accents_hats_bars_vectors": {
+        "count": 50,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.3207,
+          "math_ast_similarity": 0.3282,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "font_variants_mathvariant": {
+        "count": 112,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.1506,
+          "math_ast_similarity": 0.1622,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "fractions_binomials": {
+        "count": 3,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.7828,
+          "math_ast_similarity": 0.6926,
+          "math_ast_exact_match_rate": 0.3333
+        }
+      },
+      "katex_html_trees": {
+        "count": 1,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.0,
+          "math_ast_similarity": 0.0,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "matrices_cases_arrays": {
+        "count": 21,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.982,
+          "math_ast_similarity": 0.9606,
+          "math_ast_exact_match_rate": 0.9524
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.6289,
+          "math_ast_similarity": 0.687,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "menclose_enclosures": {
+        "count": 2,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.4381,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match_rate": 0.0
+        }
+      },
+      "named_functions_unicode_ops": {
+        "count": 110,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.9931,
+          "math_ast_similarity": 0.9909,
+          "math_ast_exact_match_rate": 0.9909
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.4903,
+          "math_ast_similarity": 0.8815,
+          "math_ast_exact_match_rate": 0.7909
+        }
+      },
+      "radicals_roots": {
+        "count": 1,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        }
+      },
+      "simple_inline": {
+        "count": 110,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.1902,
+          "math_ast_similarity": 0.8843,
+          "math_ast_exact_match_rate": 0.7727
+        }
+      },
+      "summations_integrals_limits": {
+        "count": 79,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 0.9895,
+          "math_ast_similarity": 0.9873,
+          "math_ast_exact_match_rate": 0.9873
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.7368,
+          "math_ast_similarity": 0.8582,
+          "math_ast_exact_match_rate": 0.2152
+        }
+      },
+      "superscripts_subscripts": {
+        "count": 111,
+        "tier1_with_annotation": {
+          "legacy_char_seq_similarity": 1.0,
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match_rate": 1.0
+        },
+        "tier2_presentation_mathml_tree_only": {
+          "legacy_char_seq_similarity": 0.5365,
+          "math_ast_similarity": 0.7231,
+          "math_ast_exact_match_rate": 0.3874
+        }
+      }
+    },
+    "semantic_inversion_traps": {
+      "total_traps": 7,
+      "bag_of_tokens_false_accept_rate": 1.0,
+      "math_ast_inversion_detection_rate": 1.0,
+      "traps": [
+        {
+          "desc": "swapped_fraction_numerator_denominator",
+          "gold_tex": "\\frac{a}{b}",
+          "inverted_tex": "\\frac{b}{a}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.3333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "swapped_subscript_superscript",
+          "gold_tex": "x_{i}^{2}",
+          "inverted_tex": "x_{2}^{i}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "swapped_root_index_radicand",
+          "gold_tex": "\\sqrt[3]{x}",
+          "inverted_tex": "\\sqrt[x]{3}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.3333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "non_commutative_subtraction",
+          "gold_tex": "a - b",
+          "inverted_tex": "b - a",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "inverted_integral_limits",
+          "gold_tex": "\\int_{0}^{\\infty} f(x) dx",
+          "inverted_tex": "\\int_{\\infty}^{0} f(x) dx",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.8333,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "inverted_subset_relation",
+          "gold_tex": "A \\subset B",
+          "inverted_tex": "B \\subset A",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.5,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        },
+        {
+          "desc": "transposed_reversed_matrix",
+          "gold_tex": "\\begin{matrix} a & b \\\\ c & d \\end{matrix}",
+          "inverted_tex": "\\begin{matrix} d & c \\\\ b & a \\end{matrix}",
+          "bag_of_tokens_f1": 1.0,
+          "math_ast_similarity": 0.4,
+          "math_ast_exact_match": false,
+          "ast_rejected_inversion": true
+        }
+      ]
+    },
+    "algebraic_equivalence_invariance": {
+      "total_pairs": 5,
+      "math_ast_exact_match_rate": 1.0,
+      "pairs": [
+        {
+          "desc": "tfrac_to_frac",
+          "tex_a": "\\tfrac{1}{2}",
+          "tex_b": "\\frac{1}{2}",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "dfrac_to_frac",
+          "tex_a": "\\dfrac{\\alpha}{\\beta}",
+          "tex_b": "\\frac{\\alpha}{\\beta}",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "left_right_delimiters",
+          "tex_a": "\\left( x + y \\right)",
+          "tex_b": "( x + y )",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "single_token_brace_elision",
+          "tex_a": "x^{2}",
+          "tex_b": "x^2",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        },
+        {
+          "desc": "operatorname_to_cmd",
+          "tex_a": "\\operatorname{sin}(x)",
+          "tex_b": "\\sin(x)",
+          "math_ast_similarity": 1.0,
+          "math_ast_exact_match": true
+        }
+      ]
+    }
+  },
+  "L1_4_whatwg_table_oracle": {
+    "synthetic_whatwg_torture_cases": [
+      {
+        "id": "multi_row_thead_subheaders",
+        "desc": "2-row <thead> with colspan=2 parent header and r=1 sub-headers",
+        "oracle_table_count": 1,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 7,
+        "uncapped_cell_recall": 1.0,
+        "whatwg_coord_exact_match_rate": 1.0
+      },
+      {
+        "id": "table_over_512_rows",
+        "desc": "530-row data table exceeding hardcoded 512-row expand_tolerant cap",
+        "oracle_table_count": 1,
+        "athena_table_count": 0,
+        "oracle_cell_count": 1062,
+        "athena_cell_count": 0,
+        "uncapped_cell_recall": 0.0,
+        "whatwg_coord_exact_match_rate": 0.0
+      },
+      {
+        "id": "nested_table_inside_td",
+        "desc": "Outer table containing an inner nested <table> inside a <td>",
+        "oracle_table_count": 2,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 4,
+        "uncapped_cell_recall": 0.5714,
+        "whatwg_coord_exact_match_rate": 0.4286
+      },
+      {
+        "id": "rowspan_zero_and_tfoot_before_tbody",
+        "desc": "Out-of-order <tfoot> before <tbody> with rowspan=0",
+        "oracle_table_count": 1,
+        "athena_table_count": 1,
+        "oracle_cell_count": 7,
+        "athena_cell_count": 7,
+        "uncapped_cell_recall": 1.0,
+        "whatwg_coord_exact_match_rate": 1.0
+      }
+    ],
+    "wikimedia_173_tables_oracle": {
+      "pages_evaluated": 88,
+      "tables_evaluated": 219,
+      "tables_exceeding_512_rows_dropped": 0,
+      "total_oracle_cells_capped_512_outer_only": 50317,
+      "total_oracle_cells_uncapped_outer": 50317,
+      "total_nested_table_data_cells_dropped": 246,
+      "total_oracle_cells_uncapped_with_nested": 50563,
+      "total_athena_recovered_data_cells": 43932,
+      "total_athena_grounded_data_cells": 50327,
+      "legacy_capped_cell_recall": 0.8731,
+      "true_uncapped_outer_cell_recall": 0.8731,
+      "true_uncapped_all_cell_recall_including_nested": 0.8689,
+      "whatwg_coordinate_exact_match_rate": 0.8733,
+      "multi_row_subheader_r1plus_cells": 754,
+      "multi_row_subheader_r1plus_recall": 0.9788,
+      "row_stub_cells": 42853,
+      "row_stub_recall": 0.9992
+    }
+  },
+  "L1_5_code_sanitization_and_syntax_oracle": {
+    "gutter_styles_oracle": {
+      "total_styles": 8,
+      "exact_match_rate": 0.375,
+      "python_ast_valid_rate": 0.375,
+      "mean_line_sequence_f1": 0.375,
+      "styles": [
+        {
+          "id": "gutter_pipe_space",
+          "style": "1 | code",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_tab",
+          "style": "1\\tcode",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_colon_space",
+          "style": "1: code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "1: def quicksort(arr):"
+        },
+        {
+          "id": "gutter_dot_space",
+          "style": "1. code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "1. def quicksort(arr):"
+        },
+        {
+          "id": "gutter_padded_spaces",
+          "style": "   1  code",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "   1  def quicksort(arr):"
+        },
+        {
+          "id": "gutter_dom_span_line_number",
+          "style": "<span class='line-number'>1</span>",
+          "exact_match": true,
+          "line_sequence_f1": 1.0,
+          "python_ast_valid": true,
+          "extracted_preview": "def quicksort(arr):"
+        },
+        {
+          "id": "gutter_repl_prompts",
+          "style": ">>> / ... REPL prompts",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": ">>> def quicksort(arr):"
+        },
+        {
+          "id": "gutter_git_diff_numbered",
+          "style": "  1 + code (git diff)",
+          "exact_match": false,
+          "line_sequence_f1": 0.0,
+          "python_ast_valid": false,
+          "extracted_preview": "  1 + def quicksort(arr):"
+        }
+      ]
+    },
+    "negative_controls_oracle": {
+      "total_controls": 5,
+      "corruption_rate": 0.6,
+      "controls": [
+        {
+          "id": "neg_tsv_numeric_table",
+          "desc": "TSV data block starting with '100\\t200\\t300'",
+          "corrupted": true,
+          "expected": "100\t200\t300\n400\t500\t600",
+          "extracted": "200\t300\n500\t600"
+        },
+        {
+          "id": "neg_pipe_markdown_table",
+          "desc": "Markdown/ASCII pipe row starting with '1 | Alice | 95'",
+          "corrupted": true,
+          "expected": "1 | Alice | 95\n2 | Bob   | 88",
+          "extracted": "Alice | 95\nBob   | 88"
+        },
+        {
+          "id": "neg_clipboard_class_code_span",
+          "desc": "Code syntax span with class='token clipboard-api' stripped by class_attr.contains('clipboard')",
+          "corrupted": true,
+          "expected": "def copy_data(text):\n    return clipboard_write(text)",
+          "extracted": "def copy_data(text):\n    return "
+        },
+        {
+          "id": "neg_js_spread_operator",
+          "desc": "JavaScript spread operator '...args' inside function",
+          "corrupted": false,
+          "expected": "function merge(...args) {\n  return [...args];\n}",
+          "extracted": "function merge(...args) {\n  return [...args];\n}"
+        },
+        {
+          "id": "neg_unbalanced_brace_in_string",
+          "desc": "Code containing '{' inside string literal",
+          "corrupted": false,
+          "expected": "def fmt():\n    s = \"open brace { in string\"\n    return s",
+          "extracted": "def fmt():\n    s = \"open brace { in string\"\n    return s"
+        }
+      ]
+    },
+    "real_webmainbench_code_stratum_50_pages": {
+      "pages_evaluated": 50,
+      "legacy_rouge_l_f1": 0.8454,
+      "breakthrough_rouge_l_f1": 0.7711,
+      "legacy_line_break_f1": 0.6041,
+      "breakthrough_line_break_f1": 0.5498
+    }
+  },
+  "L1_6_ranker_and_contrastive_oracle": {
+    "single_char_vitamin_d_rank1_correct": true,
+    "single_char_c_lang_rank1_correct": true,
+    "heading_inheritance_fifo_3slot_audit": {
+      "shallow_h1_to_p_boost": 0.3743,
+      "deep_h1_h2_h3_h4_to_p_boost": 0.0,
+      "h1_boost_lost_after_3_subheadings": true
+    },
+    "link_heavy_nav_penalty_audit": {
+      "score_when_links_empty": 4.2963,
+      "score_when_links_populated": 2.7926,
+      "legacy_chunk_links_count_on_5_anchor_p": 5,
+      "breakthrough_chunk_links_count_on_5_anchor_p": 0,
+      "breakthrough_drops_chunk_links_disabling_penalty": true
+    },
+    "sibling_table_rows_simhash_audit": {
+      "total_sibling_rows": 5,
+      "short_rows_bm25_v1_selected_count": 5,
+      "short_rows_bm25f_dual_selected_count": 5,
+      "grounded_schema_rows_bm25_v1_selected_count": 5,
+      "grounded_schema_rows_bm25f_dual_selected_count": 5,
+      "grounded_schema_rows_suppressed_by_dedup": 0,
+      "grounded_pairwise_simhash_hamming": [
+        {
+          "hamming": 10,
+          "i": 0,
+          "j": 1
+        },
+        {
+          "hamming": 14,
+          "i": 0,
+          "j": 2
+        },
+        {
+          "hamming": 12,
+          "i": 0,
+          "j": 3
+        },
+        {
+          "hamming": 12,
+          "i": 0,
+          "j": 4
+        },
+        {
+          "hamming": 14,
+          "i": 1,
+          "j": 2
+        },
+        {
+          "hamming": 10,
+          "i": 1,
+          "j": 3
+        },
+        {
+          "hamming": 10,
+          "i": 1,
+          "j": 4
+        },
+        {
+          "hamming": 10,
+          "i": 2,
+          "j": 3
+        },
+        {
+          "hamming": 8,
+          "i": 2,
+          "j": 4
+        },
+        {
+          "hamming": 8,
+          "i": 3,
+          "j": 4
+        }
+      ],
+      "grounded_pairwise_minhash_jaccard": [
+        {
+          "i": 0,
+          "j": 1,
+          "jaccard": 1.0
+        },
+        {
+          "i": 0,
+          "j": 2,
+          "jaccard": 1.0
+        },
+        {
+          "i": 0,
+          "j": 3,
+          "jaccard": 1.0
+        },
+        {
+          "i": 0,
+          "j": 4,
+          "jaccard": 1.0
+        },
+        {
+          "i": 1,
+          "j": 2,
+          "jaccard": 1.0
+        },
+        {
+          "i": 1,
+          "j": 3,
+          "jaccard": 1.0
+        },
+        {
+          "i": 1,
+          "j": 4,
+          "jaccard": 1.0
+        },
+        {
+          "i": 2,
+          "j": 3,
+          "jaccard": 1.0
+        },
+        {
+          "i": 2,
+          "j": 4,
+          "jaccard": 1.0
+        },
+        {
+          "i": 3,
+          "j": 4,
+          "jaccard": 1.0
+        }
+      ]
+    },
+    "aae_contract_and_sparse_contrastive_probe": {
+      "first_chunk_exceeds_budget_fails_entire_export": true,
+      "first_chunk_exceeds_budget_error": "AAE output byte budget exceeded",
+      "sparse_page_contrastive_total_negatives": 3,
+      "sparse_page_contrastive_zero_score_negatives": 3
+    },
+    "contrastive_mining_60_nq_pages_audit": {
+      "total_contrastive_records": 180,
+      "total_hard_negatives_mined": 720,
+      "zero_score_unrelated_fallback_count": 0,
+      "zero_score_unrelated_fallback_rate": 0.0,
+      "same_heading_section_false_negative_count": 112,
+      "same_heading_section_false_negative_rate": 0.1556,
+      "gold_answer_overlap_false_negative_count": 11,
+      "gold_answer_overlap_false_negative_rate": 0.0153
+    }
+  },
+  "elapsed_sec": 147.89
+}

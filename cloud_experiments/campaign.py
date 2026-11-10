@@ -70,6 +70,7 @@ CLOUD_EXPERIMENT_BUNDLE_FILES = (
     "cloud_experiments/mcp_sdk/typescript/package-lock.json",
     "cloud_experiments/mcp_sdk/typescript/package.json",
     "cloud_experiments/mcp_sdk/typescript/server.mjs",
+    "cloud_experiments/micro_bench.py",
     "cloud_experiments/nim.py",
     "cloud_experiments/parser_study.py",
     "cloud_experiments/process_isolation.py",
