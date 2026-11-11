@@ -1787,7 +1787,8 @@ class MacAutonomousDaemon:
         campaign.write_json(self.state_path, current)
         return current
 
-    def status(self, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES) -> dict:
+    def status(self, *, min_free_bytes=MAC_MIN_DISK_FREE_BYTES,
+               max_swap_bytes=MAC_MAX_SWAP_USED_BYTES) -> dict:
         store = SqliteWalCheckpointStore(
             self.run_dir, allow_tmp_for_tests=self.allow_tmp_for_tests
         )
@@ -1795,7 +1796,9 @@ class MacAutonomousDaemon:
             db_summary = store.summary()
         finally:
             store.close()
-        health = probe_mac_hardware_health(self.run_dir, min_free_bytes=min_free_bytes)
+        health = probe_mac_hardware_health(
+            self.run_dir, min_free_bytes=min_free_bytes, max_swap_bytes=max_swap_bytes
+        )
         daemon_state = {}
         if self.state_path.is_file():
             try:
@@ -2765,6 +2768,8 @@ def main():
     mac_cmd.add_argument("--max-pages", type=int, default=None)
     mac_cmd.add_argument("--page-interval-s", type=float, default=0.05)
     mac_cmd.add_argument("--qos", choices=["background", "worker"], default="background")
+    mac_cmd.add_argument("--min-free-bytes", type=int, default=MAC_MIN_DISK_FREE_BYTES)
+    mac_cmd.add_argument("--max-swap-bytes", type=int, default=MAC_MAX_SWAP_USED_BYTES)
     mac_cmd.add_argument("--honor-stop", action="store_true",
                          help="supervise: respect an existing STOP marker (launchd/boot starts)")
     mac_cmd.add_argument("--caffeinate", action="store_true",
@@ -2786,8 +2791,13 @@ def main():
             return 78
     if args.command == "mac-daemon":
         daemon = MacAutonomousDaemon(args.run_dir)
+        if args.min_free_bytes < 0 or args.max_swap_bytes < 0:
+            print(json.dumps({"status": "CONFIG_INVALID",
+                              "error": "min_free_bytes and max_swap_bytes must be non-negative integers"}))
+            return EXIT_HOLD
         if args.action == "status":
-            print(json.dumps(daemon.status()))
+            print(json.dumps(daemon.status(
+                min_free_bytes=args.min_free_bytes, max_swap_bytes=args.max_swap_bytes)))
             return 0
         if args.action == "pause-and-sleep":
             print(json.dumps(daemon.pause_and_sleep(trigger_sleep=args.trigger_sleep)))
@@ -2825,6 +2835,8 @@ def main():
                 "--shard-pages", str(args.shard_pages),
                 "--page-interval-s", str(args.page_interval_s),
                 "--qos", args.qos,
+                "--min-free-bytes", str(args.min_free_bytes),
+                "--max-swap-bytes", str(args.max_swap_bytes),
             ]
             if args.fetch_missing:
                 pump_args.append("--fetch-missing")
@@ -2836,7 +2848,9 @@ def main():
             pump_args = ["--run-dir", str(daemon.run_dir), "--core-probe-bin", args.core_probe_bin,
                          "--seeds-per-block", str(args.seeds_per_block),
                          "--block-interval-s", str(args.block_interval_s),
-                         "--shard-blocks", str(args.shard_blocks), "--qos", args.qos]
+                         "--shard-blocks", str(args.shard_blocks), "--qos", args.qos,
+                         "--min-free-bytes", str(args.min_free_bytes),
+                         "--max-swap-bytes", str(args.max_swap_bytes)]
             if args.max_blocks is not None:
                 pump_args += ["--max-blocks", str(args.max_blocks)]
         root = Path(__file__).resolve().parents[1]
@@ -2872,12 +2886,16 @@ def main():
                     args.core_probe_bin, warc_paths=args.warc, data_root=args.data_root,
                     fetch_missing=args.fetch_missing, boilerplate=args.boilerplate,
                     shard_pages=args.shard_pages, max_pages=args.max_pages,
-                    page_interval_s=args.page_interval_s, qos_role=args.qos, stop_event=stop)
+                    page_interval_s=args.page_interval_s, qos_role=args.qos,
+                    min_free_bytes=args.min_free_bytes, max_swap_bytes=args.max_swap_bytes,
+                    stop_event=stop)
             else:
                 summary = daemon.run_campaign_pump(
                     args.core_probe_bin, seeds_per_block=args.seeds_per_block,
                     block_interval_s=args.block_interval_s, shard_blocks=args.shard_blocks,
-                    max_blocks=args.max_blocks, qos_role=args.qos, stop_event=stop)
+                    max_blocks=args.max_blocks, qos_role=args.qos,
+                    min_free_bytes=args.min_free_bytes, max_swap_bytes=args.max_swap_bytes,
+                    stop_event=stop)
         except DaemonLockHeld as error:
             print(json.dumps({"status": "LOCK_HELD", "error": str(error)}))
             return EXIT_RETRY

@@ -1202,6 +1202,7 @@ def run_l1_1_charset_and_nfc_oracle(
         },
         "unicode_nfc_oracle": {
             "total_cases": len(nfc_rows),
+            "stratum_counts": nfc_resp.get("stratum_counts", {}),
             "overall_projection_nfc_exact_match_rate": round(
                 sum(1 for r in nfc_rows if r["exact_match"]) / max(1, len(nfc_rows)), 4
             ),
@@ -1349,9 +1350,13 @@ def run_l1_2_dom_shadow_foster_landmark_oracle(
                 bt_us_list.append(resp["breakthrough"]["parse_us"])
                 st = resp.get("stage_trace", {})
                 pass2_us_list.append(st.get("s2_dom_shadow_foster", {}).get("pass2_duplicate_parse_us", 0))
-                if st.get("s5_cetd_prune", {}).get("bt_cetd_entropy_identical_to_s4", False):
+                s5_prune = st.get("s5_cetd_prune", {})
+                if s5_prune.get("bt_cetd_entropy_identical_to_s4", False):
                     cetd_noop_count += 1
+                if not s5_prune.get("leg_cetd_entropy_identical_to_s4", True):
+                    locals().setdefault("_leg_cetd_active", [0])[0] += 1
 
+    leg_cetd_active_count = locals().get("_leg_cetd_active", [0])[0]
     return {
         "micro_cases": case_results,
         "real_50_page_double_parse_and_cetd_audit": {
@@ -1362,6 +1367,7 @@ def run_l1_2_dom_shadow_foster_landmark_oracle(
             "breakthrough_vs_legacy_latency_ratio": round(
                 sum(bt_us_list) / max(1, sum(legacy_us_list)), 3
             ),
+            "leg_cetd_entropy_v1_active_rate": round(leg_cetd_active_count / max(1, total_real), 4),
             "bt_cetd_entropy_v1_zero_effect_rate": round(cetd_noop_count / max(1, total_real), 4),
         },
     }
@@ -2865,32 +2871,29 @@ def run_layer4_systems_suite(
 def _fast_token_lcs_len(a: list[str], b: list[str]) -> int:
     if not a or not b:
         return 0
-    # Bound sequence length for O(N*M) DP speed while preserving exact order-sensitive recall on long docs
-    if len(a) > 1200:
-        a = a[:1200]
-    if len(b) > 1200:
-        b = b[:1200]
-    # Filter to shared vocabulary first (exact property: LCS only uses tokens in set(a) & set(b))
     common = set(a) & set(b)
     if not common:
         return 0
     fa = [x for x in a if x in common]
     fb = [x for x in b if x in common]
-    if len(fa) < len(fb):
+    if len(fa) <= len(fb):
         short, long_seq = fa, fb
     else:
         short, long_seq = fb, fa
-    dp = [0] * (len(short) + 1)
+    m = len(short)
+    if m == 0:
+        return 0
+    pmask: dict[str, int] = {}
+    for idx, tok in enumerate(short):
+        pmask[tok] = pmask.get(tok, 0) | (1 << idx)
+    mask_all = (1 << m) - 1
+    v = mask_all
     for tok in long_seq:
-        prev = 0
-        for j, s_tok in enumerate(short, 1):
-            cur = dp[j]
-            if tok == s_tok:
-                dp[j] = prev + 1
-            elif dp[j - 1] > cur:
-                dp[j] = dp[j - 1]
-            prev = cur
-    return dp[-1]
+        p = pmask.get(tok, 0)
+        if p:
+            u = v & p
+            v = ((v + u) | (v ^ u)) & mask_all
+    return m - v.bit_count()
 
 
 def compute_order_and_linebreak_metrics(pred_text: str, gold_text: str) -> dict[str, float]:
@@ -2912,10 +2915,8 @@ def compute_order_and_linebreak_metrics(pred_text: str, gold_text: str) -> dict[
     bow_f1 = (2 * bow_prec * bow_rec) / max(1e-9, bow_prec + bow_rec)
 
     lcs = _fast_token_lcs_len(p_toks, g_toks)
-    denom_p = min(len(p_toks), 1200)
-    denom_g = min(len(g_toks), 1200)
-    lcs_prec = lcs / max(1, denom_p)
-    lcs_rec = lcs / max(1, denom_g)
+    lcs_prec = lcs / max(1, len(p_toks))
+    lcs_rec = lcs / max(1, len(g_toks))
     rouge_l_f1 = (2 * lcs_prec * lcs_rec) / max(1e-9, lcs_prec + lcs_rec)
 
     # Line-break / block-boundary preservation F1:
@@ -3369,8 +3370,10 @@ def run_layer3_tier_a_v2(
         }
 
     ranker_hits = {
-        "legacy_dom_order_slice": init_tier_hits(),
+        "legacy_blind_dom_prefix_0_k": init_tier_hits(),
+        "legacy_bm25_top20_dom_rerank": init_tier_hits(),
         "legacy_bm25_v1_rank_order": init_tier_hits(),
+        "breakthrough_blind_dom_prefix_0_k": init_tier_hits(),
         "breakthrough_bm25f_dual_rank_order": init_tier_hits(),
     }
 
@@ -3463,13 +3466,19 @@ def run_layer3_tier_a_v2(
                 if bt_any:
                     nq_counts["r5_in_breakthrough_any_block"] += 1
 
-                leg_dom_idx = resp.get("legacy", {}).get("ranking", {}).get("bm25_v1_dom_ordered_indices", [])
-                leg_rank_idx = resp.get("legacy", {}).get("ranking", {}).get("bm25_v1_ranked_indices", [])
-                bt_rank_idx = resp.get("breakthrough", {}).get("ranking", {}).get("bm25f_dual_ranked_indices", [])
+                leg_ranking = resp.get("legacy", {}).get("ranking", {})
+                bt_ranking = resp.get("breakthrough", {}).get("ranking", {})
+                leg_blind_idx = leg_ranking.get("blind_dom_prefix_0_k", list(range(min(20, len(leg_chunks)))))
+                leg_rerank_idx = leg_ranking.get("bm25_top20_dom_rerank", [])
+                leg_rank_idx = leg_ranking.get("bm25_v1_ranked_indices", [])
+                bt_blind_idx = bt_ranking.get("blind_dom_prefix_0_k", list(range(min(20, len(bt_chunks)))))
+                bt_rank_idx = bt_ranking.get("bm25f_dual_ranked_indices", [])
 
                 for mode_name, chunks_arr, idx_arr in (
-                    ("legacy_dom_order_slice", leg_chunks, leg_dom_idx),
+                    ("legacy_blind_dom_prefix_0_k", leg_chunks, leg_blind_idx),
+                    ("legacy_bm25_top20_dom_rerank", leg_chunks, leg_rerank_idx),
                     ("legacy_bm25_v1_rank_order", leg_chunks, leg_rank_idx),
+                    ("breakthrough_blind_dom_prefix_0_k", bt_chunks, bt_blind_idx),
                     ("breakthrough_bm25f_dual_rank_order", bt_chunks, bt_rank_idx),
                 ):
                     for k_val in (1, 5, 20):
@@ -3573,6 +3582,13 @@ def run_self_tests() -> None:
     # Verify Token-LCS catches word-order permutation while Bag-of-Words F1 is 1.0
     m_perm = compute_order_and_linebreak_metrics("d c b a", "a b c d")
     assert m_perm["bag_of_words_f1"] == 1.0 and m_perm["rouge_l_token_lcs_f1"] < 0.5
+    # Verify untruncated LCS beyond word 1,200 (0 truncation cap)
+    long_doc = " ".join(f"tok_{i}" for i in range(2500))
+    m_long = compute_order_and_linebreak_metrics(long_doc, long_doc)
+    assert m_long["rouge_l_token_lcs_f1"] == 1.0
+    tail_missing = " ".join(f"tok_{i}" for i in range(1200))
+    m_trunc = compute_order_and_linebreak_metrics(tail_missing, long_doc)
+    assert abs(m_trunc["rouge_l_token_lcs_f1"] - (2 * 1200 / (1200 + 2500))) < 1e-6, m_trunc
     print("SELF_TESTS_PASSED")
 
 

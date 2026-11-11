@@ -1011,8 +1011,7 @@ def _current_pid_namespace_id():
 def _verify_build_network_isolation(run):
     if platform.system() != "Linux":
         raise RuntimeError("Native research children require Linux PID and network namespaces")
-    if platform.machine().lower() not in ("x86_64", "amd64"):
-        raise RuntimeError("Native research dependencies and benchmarks are pinned to x86_64 Linux")
+    campaign.HostEnvelope.detect(os_name="Linux")
     host_netns = _current_network_namespace_id()
     host_pidns = _current_pid_namespace_id()
     probe = """import json, os, socket, sys
@@ -1224,10 +1223,12 @@ def _preflight_cargo_cache(run, files, variants, target_cache):
     if "Cargo.lock" not in files or "Cargo.toml" not in files:
         raise ValueError("Cargo cache preflight requires frozen Cargo build inputs")
 
+    resolved_target = process_isolation.default_cargo_target()
+    fetch_args = process_isolation.cargo_fetch_args(resolved_target)
     report = {"schema": "athena-offline-cargo-cache/1", "status": "RUNNING",
               "policy": process_isolation.CARGO_FETCH_POLICY,
-              "fetch_argv": ["cargo", *process_isolation.CARGO_FETCH_ARGS],
-              "target": "x86_64-unknown-linux-gnu", "planned_variants": list(variants),
+              "fetch_argv": ["cargo", *fetch_args],
+              "target": resolved_target, "planned_variants": list(variants),
               "verified_profiles": []}
     run.manifest["cargo_cache_preflight"] = report
     run.save()
@@ -1312,13 +1313,14 @@ def _planned_cargo_cache_variants(design, *, variants=None, pilot_only=False):
 
 
 def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only=False,
-                     target=process_isolation.CARGO_FETCH_ARGS[-1], include_subprojects=True,
+                     target=None, include_subprojects=True,
                      stage_sdk_artifacts=False, timeout=600, runner_fn=None):
     """Pre-populate and offline-verify the host Cargo cache before network-isolated execution."""
     from cloud_experiments import contenders, libraries
 
-    if target != process_isolation.CARGO_FETCH_ARGS[-1]:
-        raise ValueError("Unsupported pinned Linux Cargo cache target")
+    resolved_target = process_isolation.default_cargo_target() if target is None else str(target)
+    if resolved_target not in process_isolation.SUPPORTED_CARGO_TARGETS:
+        raise ValueError("Unsupported pinned Cargo cache target")
     if type(include_subprojects) is not bool:
         raise TypeError("Cargo cache subproject selector must be a boolean")
     if type(stage_sdk_artifacts) is not bool:
@@ -1339,6 +1341,8 @@ def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only
     if cache.is_symlink():
         raise ValueError("Cargo cache root cannot be a symlink")
     cache = cache.parent.resolve(strict=True) / cache.name
+    target = resolved_target
+    offline_fetch_args = process_isolation.cargo_fetch_args(target)
     if cache == source or cache.is_relative_to(source):
         raise ValueError("Cargo cache root must be outside the frozen source tree")
     cache.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1400,7 +1404,7 @@ def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only
                     if profile["package_count"] is None:
                         warm_run.run(["cargo", "fetch", "--locked", "--target", target],
                                      cwd=workspace, timeout=timeout)
-                        warm_run.run(["cargo", *process_isolation.CARGO_FETCH_ARGS],
+                        warm_run.run(["cargo", *offline_fetch_args],
                                      cwd=workspace, timeout=timeout)
                     graph = libraries.offline_dependency_metadata(
                         warm_run, workspace,
@@ -1440,7 +1444,7 @@ def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only
                         _assert_cargo_configuration_absent(sub_manifest_dir, cargo_home)
                         warm_run.run(["cargo", "fetch", "--locked", "--target", target],
                                      cwd=sub_manifest_dir, timeout=timeout)
-                        warm_run.run(["cargo", *process_isolation.CARGO_FETCH_ARGS],
+                        warm_run.run(["cargo", *offline_fetch_args],
                                      cwd=sub_manifest_dir, timeout=timeout)
                     subprojects.append({
                         "project": prefix,
@@ -3142,12 +3146,13 @@ def _execute_native_locked(source, spec_path, output, *, budget, budget_sha256, 
     files = verify_snapshot(source, design)
     if ROOT.resolve() != source:
         raise RuntimeError("Execute the delivered frozen harness from its own source root")
-    if platform.system() != "Linux" or sys.version_info[:2] != (3, 13):
-        raise RuntimeError("Native cloud execution requires Linux/Python3.13; preparation supports3.11+")
+    envelope = campaign.HostEnvelope.detect()
+    if envelope.os_name != "Linux":
+        raise RuntimeError("Native cloud execution requires Linux; preparation supports Python 3.11+")
     try:
         import numpy as np
     except ImportError as error:
-        raise RuntimeError("Native cloud execution requires NumPy in the selected Python 3.13 runtime") from error
+        raise RuntimeError("Native cloud execution requires NumPy in the selected Python >=3.11 runtime") from error
     numpy_version = np.__version__
     if not isinstance(numpy_version, str) or not numpy_version:
         raise RuntimeError("Selected Python runtime returned an invalid NumPy version")
@@ -3785,8 +3790,9 @@ def _h07_validate_block(design, scheduled, block_record):
 def execute_service_study(run, *, resume=False):
     """Run the predeclared provider × lifetime study inside the admitted native run."""
     from cloud_experiments import service_lab, service_study
-    if platform.system() != "Linux" or sys.version_info[:2] != (3, 13):
-        raise RuntimeError("H07 service measurements require the admitted Linux/Python 3.13 runtime")
+    envelope = campaign.HostEnvelope.detect()
+    if envelope.os_name != "Linux":
+        raise RuntimeError("H07 service measurements require the admitted Linux/Python >=3.11 runtime")
     design = service_study.validate_design(run.manifest.get("spec", {}).get("service_study"))
     limits = run.manifest["spec"]["limits"]
     block_limit = limits["service_study_block_bytes"]

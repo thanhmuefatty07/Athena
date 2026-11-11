@@ -6011,6 +6011,135 @@ fn philox_u01(seed: u64, step: u64, substream: u32, draw: u32) -> f64 {
     (((u >> 11) as f64) + 0.5) * (1.0 / ((1u64 << 53) as f64))
 }
 
+fn philox_4x32_10_crn(seed: u64, rep: u32, step: u32, arm: u32, chan: u32) -> [u32; 4] {
+    let mut c0 = rep;
+    let mut c1 = step;
+    let mut c2 = arm;
+    let mut c3 = chan;
+    let mut k0 = seed as u32;
+    let mut k1 = (seed >> 32) as u32;
+    const M0: u64 = 0xD251_1F53;
+    const M1: u64 = 0xCD9E_8D57;
+    const W0: u32 = 0x9E37_79B9;
+    const W1: u32 = 0xBB67_AE85;
+    for _ in 0..10 {
+        let prod0 = M0.wrapping_mul(c0 as u64);
+        let prod1 = M1.wrapping_mul(c2 as u64);
+        let hi0 = (prod0 >> 32) as u32;
+        let lo0 = prod0 as u32;
+        let hi1 = (prod1 >> 32) as u32;
+        let lo1 = prod1 as u32;
+        c0 = hi1 ^ c1 ^ k0;
+        c1 = lo1;
+        c2 = hi0 ^ c3 ^ k1;
+        c3 = lo0;
+        k0 = k0.wrapping_add(W0);
+        k1 = k1.wrapping_add(W1);
+    }
+    [c0, c1, c2, c3]
+}
+
+fn philox_u01_crn(seed: u64, rep: u32, step: u32, arm: u32, chan: u32) -> f64 {
+    let [c0, c1, _, _] = philox_4x32_10_crn(seed, rep, step, arm, chan);
+    let u = ((c0 as u64) << 32) | (c1 as u64);
+    (((u >> 11) as f64) + 0.5) * (1.0 / ((1u64 << 53) as f64))
+}
+
+struct PhiloxStreamRng {
+    seed: u64,
+    rep: u32,
+    step: u32,
+    arm: u32,
+    chan_cursor: u32,
+    buf: [u32; 4],
+    idx: usize,
+}
+
+impl PhiloxStreamRng {
+    fn new(seed: u64, rep: u32, step: u32, arm: u32, base_chan: u32) -> Self {
+        Self {
+            seed,
+            rep,
+            step,
+            arm,
+            chan_cursor: base_chan,
+            buf: [0; 4],
+            idx: 4,
+        }
+    }
+}
+
+impl rand::RngCore for PhiloxStreamRng {
+    fn next_u32(&mut self) -> u32 {
+        if self.idx >= 4 {
+            self.buf =
+                philox_4x32_10_crn(self.seed, self.rep, self.step, self.arm, self.chan_cursor);
+            self.chan_cursor = self.chan_cursor.wrapping_add(1);
+            self.idx = 0;
+        }
+        let v = self.buf[self.idx];
+        self.idx += 1;
+        v
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let hi = u64::from(self.next_u32());
+        let lo = u64::from(self.next_u32());
+        (hi << 32) | lo
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let mut offset = 0;
+        while offset < dest.len() {
+            let word = self.next_u32().to_le_bytes();
+            let take = (dest.len() - offset).min(4);
+            dest[offset..offset + take].copy_from_slice(&word[..take]);
+            offset += take;
+        }
+    }
+}
+
+fn classify_corpus_stratum(item: &Value) -> &'static str {
+    for key in ["stratum", "corpus_stratum", "corpus", "source"] {
+        if let Some(raw) = item[key].as_str() {
+            let s = raw.trim().to_ascii_lowercase();
+            if s.starts_with("warc") || s.contains("commoncrawl") || s.starts_with("cc-") {
+                return "warc";
+            }
+            if s == "wmb" || s.starts_with("webmainbench") {
+                return "webmainbench";
+            }
+            if s == "nq" || s.starts_with("natural_questions") {
+                return "natural_questions";
+            }
+            if s.starts_with("synthetic") {
+                return "synthetic";
+            }
+        }
+    }
+    for key in ["id", "doc_id", "category", "url"] {
+        if let Some(raw) = item[key].as_str() {
+            let s = raw.trim().to_ascii_lowercase();
+            if s.starts_with("warc") || s.contains("cc-main-") {
+                return "warc";
+            }
+            if s.starts_with("wmb_") || s.starts_with("wmb-") || s.contains("webmainbench") {
+                return "webmainbench";
+            }
+            if s.starts_with("nq_") || s.contains("nq.invalid") {
+                return "natural_questions";
+            }
+            if s.starts_with("m4_padded_") {
+                return "webmainbench_padded_synthetic";
+            }
+            if s.starts_with("syn") || s.contains("hard_neg") || s.contains("waf_") {
+                return "synthetic";
+            }
+        }
+    }
+    "unspecified"
+}
+
 fn extract_grounded_table_cells_for_breakthrough(html: &str) -> Vec<String> {
     let parsed = Html::parse_document(html);
     let Ok(table_sel) = Selector::parse("main table, article table") else {
@@ -6476,8 +6605,11 @@ fn static_role(role_str: &str) -> &'static str {
 }
 
 fn evaluate_v2_nfc_probe(req: &Value) -> Result<Value, String> {
-    let cases = req["cases"].as_array().ok_or("nfc_probe requires cases array")?;
+    let cases = req["cases"]
+        .as_array()
+        .ok_or("nfc_probe requires cases array")?;
     let mut results = Vec::with_capacity(cases.len());
+    let mut stratum_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for case in cases {
         let id = case["id"].as_str().unwrap_or("");
         let category = case["category"].as_str().unwrap_or("");
@@ -6512,8 +6644,11 @@ fn evaluate_v2_nfc_probe(req: &Value) -> Result<Value, String> {
         )
         .is_empty();
 
+        let stratum = classify_corpus_stratum(case);
+        *stratum_counts.entry(stratum).or_insert(0) += 1;
         results.push(json!({
             "id": id,
+            "stratum": stratum,
             "category": category,
             "input": nfd_input,
             "expected_nfc": expected_nfc,
@@ -6527,6 +6662,7 @@ fn evaluate_v2_nfc_probe(req: &Value) -> Result<Value, String> {
     Ok(json!({
         "status": "OK",
         "op": "nfc_probe",
+        "stratum_counts": stratum_counts,
         "results": results,
     }))
 }
@@ -6618,7 +6754,8 @@ fn evaluate_v2_aae_contract_probe(_req: &Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     // Tight budget (512 bytes): Meta frame fits (~180 bytes), but chunk #1 (~1500 bytes) exceeds 512 bytes,
     // causing export_jsonl_with_limit to fail with Err("AAE output byte budget exceeded") even though chunk #2 is tiny!
-    let tight_res = export_jsonl_with_limit(&page, &url, 1_700_000_000_000, Some("quantum"), 5, 512);
+    let tight_res =
+        export_jsonl_with_limit(&page, &url, 1_700_000_000_000, Some("quantum"), 5, 512);
     let tight_failed_entire_envelope = tight_res.is_err();
     let tight_err_msg = tight_res.err().map(|e| e.to_string()).unwrap_or_default();
 
@@ -6635,13 +6772,8 @@ fn evaluate_v2_aae_contract_probe(_req: &Value) -> Result<Value, String> {
     );
     let bt_sparse = parse_html_breakthrough(html_sparse_neg, &url, ParseLimits::default())
         .map_err(|e| e.to_string())?;
-    let contrastive_recs = export_contrastive_training_records(
-        &bt_sparse,
-        &url,
-        "SSA register allocation LLVM",
-        1,
-        4,
-    );
+    let contrastive_recs =
+        export_contrastive_training_records(&bt_sparse, &url, "SSA register allocation LLVM", 1, 4);
     let mut zero_score_negs = 0usize;
     let mut total_negs = 0usize;
     for rec in &contrastive_recs {
@@ -6685,6 +6817,7 @@ fn evaluate_v2_waf_probe(req: &Value) -> Result<Value, String> {
         .ok_or("waf_probe requires items array")?;
     let url = Url::parse("https://bench.invalid/").map_err(|e| e.to_string())?;
     let mut results = Vec::with_capacity(items.len());
+    let mut stratum_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
     for item in items {
         let id = item["id"].as_str().unwrap_or("");
@@ -6730,8 +6863,11 @@ fn evaluate_v2_waf_probe(req: &Value) -> Result<Value, String> {
             || projected_chunks == 0;
         let elapsed_us = t0.elapsed().as_micros() as u64;
 
+        let stratum = classify_corpus_stratum(item);
+        *stratum_counts.entry(stratum).or_insert(0) += 1;
         results.push(json!({
             "id": id,
+            "stratum": stratum,
             "category": category,
             "status": status,
             "body_bytes": bytes.len(),
@@ -6750,13 +6886,22 @@ fn evaluate_v2_waf_probe(req: &Value) -> Result<Value, String> {
     Ok(json!({
         "status": "OK",
         "op": "waf_probe",
+        "stratum_counts": stratum_counts,
         "results": results,
     }))
 }
 
 fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
-    let seeds = req["seeds"].as_u64().unwrap_or(16) as usize;
-    let steps_per_seed = req["steps_per_seed"].as_u64().unwrap_or(300) as usize;
+    let seeds = req["seeds"]
+        .as_u64()
+        .or_else(|| req["replicates"].as_u64())
+        .unwrap_or(16) as usize;
+    let steps_per_seed = req["steps_per_seed"]
+        .as_u64()
+        .or_else(|| req["steps"].as_u64())
+        .unwrap_or(300) as usize;
+    let base_seed = req["seed"].as_u64().unwrap_or(0);
+    let domain_growth_limit = req["domain_growth_limit"].as_u64().unwrap_or(50_000) as usize;
 
     let base_configs = vec![
         ProxyEndpointConfig {
@@ -6824,23 +6969,24 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
             let mut all_lats = Vec::with_capacity(seeds * steps_per_seed);
             for seed_idx in 0..seeds {
                 let epoch = Instant::now();
-                let mut router =
-                    ProxyPoolRouter::new(epoch, base_configs.clone(), algo, 0.000005);
-                let mut rng = rand::rngs::StdRng::seed_from_u64(
-                    0xB4D1_0000_u64
-                        .wrapping_add((r_idx as u64) << 16)
-                        .wrapping_add(seed_idx as u64),
-                );
+                let mut router = ProxyPoolRouter::new(epoch, base_configs.clone(), algo, 0.000005);
+                let env_seed = 0xC024_7777_u64
+                    .wrapping_add((r_idx as u64) << 20)
+                    .wrapping_add(base_seed);
+                let pol_seed = 0xB4D1_0000_u64
+                    .wrapping_add((r_idx as u64) << 16)
+                    .wrapping_add(base_seed);
                 for step in 0..steps_per_seed {
                     let now = epoch + Duration::from_millis((step as u64) * 250);
-                    let dec = router.select_route(&mut rng, now).unwrap();
+                    let mut policy_rng =
+                        PhiloxStreamRng::new(pol_seed, seed_idx as u32, step as u32, 0xFFFF, 2);
+                    let dec = router.select_route(&mut policy_rng, now).unwrap();
                     let arm = dec.primary_id;
-                    let seed_u64 = 0xC024_7777_u64
-                        .wrapping_add((r_idx as u64) << 20)
-                        .wrapping_add(seed_idx as u64);
-                    // Orthogonal CRN draw indexed by (step, arm) so arm i has identical environment draw across policies
-                    let env_u = philox_u01(seed_u64, step as u64, arm as u32, 0);
-                    let lat_u = philox_u01(seed_u64, step as u64, arm as u32, 1);
+                    // Stateless 5-arg Philox CRN: identical (seed, rep, step, arm, chan) across all policies
+                    let env_u =
+                        philox_u01_crn(env_seed, seed_idx as u32, step as u32, arm as u32, 0);
+                    let lat_u =
+                        philox_u01_crn(env_seed, seed_idx as u32, step as u32, arm as u32, 1);
 
                     let (outcome, lat_ms, wire_bytes) = match r_idx {
                         0 => {
@@ -6956,8 +7102,10 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
                 .cloned()
                 .map(|c| ProxyNodeStats::new(epoch, c))
                 .collect();
+            let mut cusums: Vec<CusumDetector> = (0..base_configs.len())
+                .map(|_| CusumDetector::new(0.05, 2.6))
+                .collect();
             let mut ebayes = EmpiricalBayesProxyPool::new(4.0, 8.0);
-            let mut rng = rand::rngs::StdRng::seed_from_u64(0xFAC7_0000_u64 + seed_idx as u64);
 
             for step in 0..steps_per_seed {
                 let now = epoch + Duration::from_millis((step as u64) * 250);
@@ -6971,11 +7119,18 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
                     if quarantine_cooldown && any_unquarantined && s.is_quarantined(now) {
                         continue;
                     }
+                    let mut arm_rng = PhiloxStreamRng::new(
+                        0xFAC7_0000_u64.wrapping_add(base_seed),
+                        seed_idx as u32,
+                        step as u32,
+                        idx as u32,
+                        2,
+                    );
                     let a = s.alpha.max(1e-3);
                     let b = s.beta.max(1e-3);
                     let sampled_joint = rand_distr::Beta::new(a, b)
                         .ok()
-                        .map(|d| d.sample(&mut rng))
+                        .map(|d| d.sample(&mut arm_rng))
                         .unwrap_or(0.5);
                     let sampled_p = if factored_net_waf {
                         let a_net = s.alpha_net.max(1e-3);
@@ -6984,11 +7139,11 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
                         let b_waf = s.beta_waf.max(1e-3);
                         let sf = rand_distr::Beta::new(a_net, b_net)
                             .ok()
-                            .map(|d| d.sample(&mut rng))
+                            .map(|d| d.sample(&mut arm_rng))
                             .unwrap_or(0.5)
                             * rand_distr::Beta::new(a_waf, b_waf)
                                 .ok()
-                                .map(|d| d.sample(&mut rng))
+                                .map(|d| d.sample(&mut arm_rng))
                                 .unwrap_or(0.5);
                         0.5 * sampled_joint + 0.5 * sf
                     } else {
@@ -7008,16 +7163,28 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
                         0.0
                     };
                     let eff_p = (0.75 * sampled_p + 0.25 * eb_prior + sticky).clamp(0.005, 0.999);
-                    let loss = (s.config.cost_usd_per_attempt + 0.000005 * s.ewma_latency_ms) / eff_p;
+                    let loss =
+                        (s.config.cost_usd_per_attempt + 0.000005 * s.ewma_latency_ms) / eff_p;
                     if loss < best_loss {
                         best_loss = loss;
                         best_arm = idx;
                     }
                 }
 
-                let seed_u64 = 0xC024_9999_u64 + seed_idx as u64;
-                let env_u = philox_u01(seed_u64, step as u64, best_arm as u32, 0);
-                let lat_u = philox_u01(seed_u64, step as u64, best_arm as u32, 1);
+                let env_u = philox_u01_crn(
+                    0xC024_9999_u64,
+                    seed_idx as u32,
+                    step as u32,
+                    best_arm as u32,
+                    0,
+                );
+                let lat_u = philox_u01_crn(
+                    0xC024_9999_u64,
+                    seed_idx as u32,
+                    step as u32,
+                    best_arm as u32,
+                    1,
+                );
 
                 // Mixed non-stationary regime:
                 // steps 0..80: arms 0,1 (subnet 0) clean;
@@ -7056,24 +7223,42 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
                 let ip = format!("10.0.{}.{}", nodes[best_arm].subnet_group, best_arm + 1);
                 ebayes.observe(&asn, &sub, &ip, outcome.is_usable());
 
-                let pre_alpha = nodes[best_arm].alpha;
-                let pre_alpha_waf = nodes[best_arm].alpha_waf;
-                let triggered_cusum = nodes[best_arm].observe(
+                // Pass quarantine_enabled = false so ProxyNodeStats::observe never conflates
+                // Factor B (cusum_reset) with Factor D (quarantined_until).
+                let _ = nodes[best_arm].observe(
                     now,
                     outcome,
                     lat_ms,
                     wire_bytes,
                     Duration::from_secs(180),
-                    quarantine_cooldown,
+                    false,
                 );
-                if !cusum_reset && triggered_cusum {
-                    // Undo CUSUM alpha reset when factor B is off
-                    nodes[best_arm].alpha = pre_alpha;
-                    nodes[best_arm].alpha_waf = pre_alpha_waf;
-                } else if cusum_reset && !quarantine_cooldown && nodes[best_arm].cusum_pos >= 2.6 {
+                let cusum_triggered = cusums[best_arm].observe(!outcome.is_usable());
+                if cusum_reset && cusum_triggered {
                     nodes[best_arm].alpha = 1.0 + 0.25 * (nodes[best_arm].alpha - 1.0);
                     nodes[best_arm].alpha_waf = 1.0 + 0.20 * (nodes[best_arm].alpha_waf - 1.0);
                     nodes[best_arm].cusum_pos = 0.0;
+                }
+                if quarantine_cooldown && !outcome.is_usable() {
+                    let cooldown_ms = match outcome {
+                        FetchOutcomeKind::SoftBlockChallenge => 3_500,
+                        FetchOutcomeKind::HardBlockWaf => 8_000,
+                        FetchOutcomeKind::RateLimited429 { retry_after_secs } => {
+                            retry_after_secs.unwrap_or(10).saturating_mul(1_000)
+                        }
+                        FetchOutcomeKind::TimeoutOrReset | FetchOutcomeKind::ProxyDead => {
+                            if nodes[best_arm].consecutive_failures >= 2 {
+                                5_000
+                            } else {
+                                0
+                            }
+                        }
+                        FetchOutcomeKind::Success | FetchOutcomeKind::NotModified304 => 0,
+                    };
+                    if cooldown_ms > 0 {
+                        nodes[best_arm].quarantined_until =
+                            Some(now + Duration::from_millis(cooldown_ms));
+                    }
                 }
                 if ebayes_shrinkage && outcome.is_block_or_ratelimit() {
                     let sub_g = nodes[best_arm].subnet_group;
@@ -7125,7 +7310,7 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
     let mut domain_routers: BTreeMap<String, ProxyPoolRouter> = BTreeMap::new();
     let mut growth_checkpoints = Vec::new();
     let epoch = Instant::now();
-    for d_idx in 1..=50_000usize {
+    for d_idx in 1..=domain_growth_limit {
         let asn = format!("AS{}", 1000 + (d_idx % 2000));
         let subnet = format!(
             "{}.{}.{}.0/24",
@@ -7176,6 +7361,8 @@ fn evaluate_v2_bandit_factorial_probe(req: &Value) -> Result<Value, String> {
     Ok(json!({
         "status": "OK",
         "op": "bandit_factorial_probe",
+        "rng": "philox_4x32_10",
+        "quarantined_until_confounded": false,
         "router_algorithm_comparison": router_algo_cells,
         "factorial_16_ablation": factorial_16_cells,
         "domain_50k_memory_growth": growth_checkpoints,
@@ -7188,6 +7375,7 @@ fn evaluate_v2_cache_heap_probe(req: &Value) -> Result<Value, String> {
         .ok_or("cache_heap_probe requires docs array")?;
     let url = Url::parse("https://bench.invalid/").map_err(|e| e.to_string())?;
     let mut results = Vec::with_capacity(docs.len());
+    let mut stratum_counts: BTreeMap<&'static str, usize> = BTreeMap::new();
 
     for doc in docs {
         let id = doc["id"].as_str().unwrap_or("");
@@ -7217,16 +7405,14 @@ fn evaluate_v2_cache_heap_probe(req: &Value) -> Result<Value, String> {
             // True in-memory bytes of SourceContent:
             // Note: response.payload (bytes_downloaded) is dropped at the end of run_blocking (L652),
             // so SourceContent in memory holds Arc<Projection> + OnceLock<PreparedRank>.
-            let true_q1_in_memory_bytes =
-                proj_retained + std::mem::size_of::<Projection>() + 128;
+            let true_q1_in_memory_bytes = proj_retained + std::mem::size_of::<Projection>() + 128;
             let true_q2_in_memory_bytes = true_q1_in_memory_bytes + lazy_prepared_rank_bytes;
 
             // Untracked BreakthroughProjection heap allocations:
             let mut untracked_bt_bytes = 0usize;
             for rc in &bt_page.rich_chunks {
-                untracked_bt_bytes += std::mem::size_of::<
-                    athena_core_v2::projection::BreakthroughChunk,
-                >();
+                untracked_bt_bytes +=
+                    std::mem::size_of::<athena_core_v2::projection::BreakthroughChunk>();
                 untracked_bt_bytes += rc.dom_path_slug.capacity();
                 for h in rc.heading_stack.iter().flatten() {
                     untracked_bt_bytes += h.capacity();
@@ -7253,12 +7439,16 @@ fn evaluate_v2_cache_heap_probe(req: &Value) -> Result<Value, String> {
                     untracked_bt_bytes += cell.text.capacity();
                 }
                 for slot_row in &grid.slots {
-                    untracked_bt_bytes += slot_row.capacity() * std::mem::size_of::<Option<usize>>();
+                    untracked_bt_bytes +=
+                        slot_row.capacity() * std::mem::size_of::<Option<usize>>();
                 }
             }
 
+            let stratum = classify_corpus_stratum(doc);
+            *stratum_counts.entry(stratum).or_insert(0) += 1;
             results.push(json!({
                 "id": id,
+                "stratum": stratum,
                 "bytes_downloaded": bytes_downloaded,
                 "chunk_count_legacy": legacy_page.chunks.len(),
                 "chunk_count_breakthrough": bt_page.rich_chunks.len(),
@@ -7279,6 +7469,7 @@ fn evaluate_v2_cache_heap_probe(req: &Value) -> Result<Value, String> {
     Ok(json!({
         "status": "OK",
         "op": "cache_heap_probe",
+        "stratum_counts": stratum_counts,
         "results": results,
     }))
 }
@@ -7311,6 +7502,50 @@ fn evaluate_v2_math_code_probe(req: &Value) -> Result<Value, String> {
     }))
 }
 
+fn evaluate_v2_cetd_entropy_probe(req: &Value) -> Result<Value, String> {
+    let html = req["html"]
+        .as_str()
+        .ok_or("cetd_entropy_v1_probe requires html")?;
+    let url_str = req["url"].as_str().unwrap_or("https://bench.invalid/");
+    let url = Url::parse(url_str)
+        .or_else(|_| Url::parse("https://bench.invalid/"))
+        .map_err(|e| e.to_string())?;
+    let max_words = req["max_words_per_chunk"].as_u64().unwrap_or(512) as usize;
+    let s4_limits = ParseLimits {
+        max_words_per_chunk: max_words.max(1),
+        boilerplate: BoilerplatePolicy::MainContentV1,
+        ..ParseLimits::default()
+    };
+    let s5_limits = ParseLimits {
+        max_words_per_chunk: max_words.max(1),
+        boilerplate: BoilerplatePolicy::CetdEntropyV1,
+        ..ParseLimits::default()
+    };
+    let leg_s4 = parse_html_with_limits(html, &url, s4_limits)?;
+    let leg_s5 = parse_html_with_limits(html, &url, s5_limits)?;
+    let bt_s4 = parse_html_breakthrough(html, &url, s4_limits)?;
+    let bt_s5 = parse_html_breakthrough(html, &url, s5_limits)?;
+
+    let leg_s4_text = join_chunks_text(&leg_s4.chunks);
+    let leg_s5_text = join_chunks_text(&leg_s5.chunks);
+    let bt_s4_text = join_chunks_text(&bt_s4.projection.chunks);
+    let bt_s5_text = join_chunks_text(&bt_s5.projection.chunks);
+
+    Ok(json!({
+        "status": "OK",
+        "op": "cetd_entropy_v1_probe",
+        "stratum": classify_corpus_stratum(req),
+        "legacy_s4_chunks": leg_s4.chunks.len(),
+        "legacy_s5_chunks": leg_s5.chunks.len(),
+        "leg_cetd_entropy_identical_to_s4": leg_s4_text == leg_s5_text,
+        "leg_cetd_chunks_pruned_vs_s4": leg_s4.chunks.len().saturating_sub(leg_s5.chunks.len()),
+        "breakthrough_s4_chunks": bt_s4.projection.chunks.len(),
+        "breakthrough_s5_chunks": bt_s5.projection.chunks.len(),
+        "bt_cetd_entropy_identical_to_s4": bt_s4_text == bt_s5_text,
+        "bt_cetd_chunks_pruned_vs_s4": bt_s4.projection.chunks.len().saturating_sub(bt_s5.projection.chunks.len()),
+    }))
+}
+
 fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
     let op = req["op"].as_str().unwrap_or("evaluate");
     match op {
@@ -7321,6 +7556,7 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
         "cache_heap_probe" => return evaluate_v2_cache_heap_probe(req),
         "math_code_probe" => return evaluate_v2_math_code_probe(req),
         "aae_contract_probe" => return evaluate_v2_aae_contract_probe(req),
+        "cetd_entropy_v1_probe" => return evaluate_v2_cetd_entropy_probe(req),
         _ => {}
     }
 
@@ -7357,23 +7593,7 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
         match parse_html_with_limits(html, &url, base_limits) {
             Ok(leg) => {
                 let leg_us = t0.elapsed().as_micros() as u64;
-                let extracted_table_cells = parse_projection_and_table_cells(
-                    html,
-                    &url,
-                    base_limits,
-                    &HtmlTableLimits {
-                        max_tables: 64,
-                        max_rows: 1000,
-                        max_cols: 1000,
-                        max_html_bytes: base_limits.max_html_bytes,
-                        max_nodes: base_limits.max_parser_nodes,
-                        max_text_bytes: base_limits.max_text_bytes,
-                    },
-                    true,
-                )
-                .ok()
-                .and_then(|(_, tc)| tc);
-                let mut leg_chunks_json: Vec<Value> = leg
+                let leg_chunks_json: Vec<Value> = leg
                     .chunks
                     .iter()
                     .enumerate()
@@ -7387,34 +7607,14 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
                         })
                     })
                     .collect();
-                let mut combined_chunks = leg.chunks.clone();
-                if let Some(tcells) = &extracted_table_cells {
-                    for tc in tcells {
-                        if let Some(txt) = tc["text"].as_str() {
-                            let role = static_role(tc["role"].as_str().unwrap_or("table_cell"));
-                            let cid = leg_chunks_json.len();
-                            leg_chunks_json.push(json!({
-                                "chunk_id": cid,
-                                "node": 0,
-                                "role": role,
-                                "text": txt,
-                                "links": [],
-                            }));
-                            combined_chunks.push(Chunk {
-                                node: 0,
-                                role,
-                                text: txt.to_owned(),
-                                links: Vec::new(),
-                            });
-                        }
-                    }
-                }
                 let mut leg_rank = json!({});
                 if let Some(q) = query_opt {
+                    let blind_dom_prefix: Vec<usize> =
+                        (0..leg.chunks.len().min(highlight_limit)).collect();
                     let tr0 = Instant::now();
                     let bm25_v1_ranked = highlight_indices(&leg.chunks, q, highlight_limit);
-                    let mut bm25_v1_dom_order = bm25_v1_ranked.clone();
-                    bm25_v1_dom_order.sort_unstable();
+                    let mut bm25_top20_dom_rerank = bm25_v1_ranked.clone();
+                    bm25_top20_dom_rerank.sort_unstable();
                     let bm25_v1_us = tr0.elapsed().as_micros() as u64;
 
                     let tr1 = Instant::now();
@@ -7427,8 +7627,10 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
                     );
                     let bm25f_dual_us = tr1.elapsed().as_micros() as u64;
                     leg_rank = json!({
+                        "blind_dom_prefix_0_k": blind_dom_prefix,
                         "bm25_v1_ranked_indices": bm25_v1_ranked,
-                        "bm25_v1_dom_ordered_indices": bm25_v1_dom_order,
+                        "bm25_top20_dom_rerank": bm25_top20_dom_rerank,
+                        "bm25_v1_dom_ordered_indices": bm25_top20_dom_rerank,
                         "bm25_v1_us": bm25_v1_us,
                         "bm25f_dual_ranked_indices": bm25f_dual_ranked,
                         "bm25f_dual_us": bm25f_dual_us,
@@ -7522,6 +7724,8 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
                 let mut bt_rank = json!({});
                 let mut contrastive_json = Vec::new();
                 if let Some(q) = query_opt {
+                    let blind_dom_prefix: Vec<usize> =
+                        (0..bt.projection.chunks.len().min(highlight_limit)).collect();
                     let tr0 = Instant::now();
                     let bm25_v1_ranked =
                         highlight_indices(&bt.projection.chunks, q, highlight_limit);
@@ -7548,10 +7752,13 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
                         }
                     }
                     bt_rank = json!({
+                        "blind_dom_prefix_0_k": blind_dom_prefix,
                         "bm25_v1_ranked_indices": bm25_v1_ranked,
+                        "bm25_top20_dom_rerank": bm25_v1_dom_order,
                         "bm25_v1_dom_ordered_indices": bm25_v1_dom_order,
                         "bm25_v1_us": bm25_v1_us,
                         "bm25f_dual_ranked_indices": bm25f_dual_ranked,
+                        "bm25f_top20_dom_rerank": bm25f_dual_dom_order,
                         "bm25f_dual_dom_ordered_indices": bm25f_dual_dom_order,
                         "bm25f_dual_us": bm25f_dual_us,
                     });
@@ -7634,6 +7841,24 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
         let leg_s5 = parse_html_with_limits(html, &url, cetd_entropy_limits).ok();
         let s5_us = ts5.elapsed().as_micros() as u64;
 
+        let leg_s4_text = leg_s4
+            .as_ref()
+            .map(|p| join_chunks_text(&p.chunks))
+            .unwrap_or_default();
+        let leg_s5_text = leg_s5
+            .as_ref()
+            .map(|p| join_chunks_text(&p.chunks))
+            .unwrap_or_default();
+        let leg_s4_chunks = leg_s4.as_ref().map(|p| p.chunks.len()).unwrap_or(0);
+        let leg_s5_chunks = leg_s5.as_ref().map(|p| p.chunks.len()).unwrap_or(0);
+        let bt_s4_chunks = bt_s4
+            .as_ref()
+            .map(|p| p.projection.chunks.len())
+            .unwrap_or(0);
+        let bt_s5_chunks = bt_s5
+            .as_ref()
+            .map(|p| p.projection.chunks.len())
+            .unwrap_or(0);
         let bt_s4_text = bt_s4
             .as_ref()
             .map(|p| join_chunks_text(&p.projection.chunks))
@@ -7674,11 +7899,14 @@ fn evaluate_v2_record(req: &Value) -> Result<Value, String> {
                     "us": s4_us,
                 },
                 "s5_cetd_prune": {
-                    "legacy_text": leg_s5.as_ref().map(|p| join_chunks_text(&p.chunks)).unwrap_or_default(),
-                    "legacy_chunks": leg_s5.as_ref().map(|p| p.chunks.len()).unwrap_or(0),
+                    "legacy_text": leg_s5_text,
+                    "legacy_chunks": leg_s5_chunks,
+                    "leg_cetd_entropy_identical_to_s4": leg_s4_text == leg_s5_text,
+                    "leg_cetd_chunks_pruned_vs_s4": leg_s4_chunks.saturating_sub(leg_s5_chunks),
                     "bt_text": bt_s5_text,
-                    "bt_chunks": bt_s5.as_ref().map(|p| p.projection.chunks.len()).unwrap_or(0),
+                    "bt_chunks": bt_s5_chunks,
                     "bt_cetd_entropy_identical_to_s4": bt_s4_text == bt_s5_text,
+                    "bt_cetd_chunks_pruned_vs_s4": bt_s4_chunks.saturating_sub(bt_s5_chunks),
                     "us": s5_us,
                 },
             }),
@@ -7695,13 +7923,15 @@ fn run_evaluate_v2_stream(input_arg: &str) -> Result<(), String> {
         Box::new(fs::File::open(input_arg).map_err(|e| e.to_string())?)
     };
     let mut stdout = io::BufWriter::new(io::stdout().lock());
-    let stream = serde_json::Deserializer::from_reader(io::BufReader::new(reader)).into_iter::<Value>();
+    let stream =
+        serde_json::Deserializer::from_reader(io::BufReader::new(reader)).into_iter::<Value>();
     for item in stream {
         let req = item.map_err(|e| format!("invalid evaluate-v2 JSON input: {e}"))?;
         let catch_panic = req["catch_panic"].as_bool().unwrap_or(true);
         let response = if catch_panic {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| evaluate_v2_record(&req)))
-            {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                evaluate_v2_record(&req)
+            })) {
                 Ok(Ok(val)) => val,
                 Ok(Err(err)) => json!({"status": "ERROR", "error": err}),
                 Err(panic_payload) => {
@@ -7722,7 +7952,9 @@ fn run_evaluate_v2_stream(input_arg: &str) -> Result<(), String> {
             }
         };
         let line = serde_json::to_string(&response).map_err(|e| e.to_string())?;
-        stdout.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        stdout
+            .write_all(line.as_bytes())
+            .map_err(|e| e.to_string())?;
         stdout.write_all(b"\n").map_err(|e| e.to_string())?;
         stdout.flush().map_err(|e| e.to_string())?;
     }
@@ -8802,5 +9034,145 @@ mod tests {
         run_cloud_024_campaign(2, 7, 250, Some(path_str)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), uninterrupted);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn h1_blind_dom_prefix_and_bm25_top20_dom_rerank_are_non_aliased() {
+        let mut body = String::from("<html><body><main>");
+        for idx in 0..25 {
+            body.push_str(&format!(
+                "<p>Filler paragraph number {idx} discussing generic cloud infrastructure.</p>"
+            ));
+        }
+        body.push_str(
+            "<p>Target needle quantum_eigenvalue_theorem_2026 appears only at index 25.</p>",
+        );
+        body.push_str("</main></body></html>");
+        let resp = evaluate_v2_record(&json!({
+            "op": "evaluate",
+            "doc_id": "h1-test",
+            "html": body,
+            "query": "quantum_eigenvalue_theorem_2026",
+            "parser_mode": "both",
+            "highlight_limit": 20,
+        }))
+        .unwrap();
+        for arm in ["legacy", "breakthrough"] {
+            let ranking = &resp[arm]["ranking"];
+            let blind: Vec<usize> = ranking["blind_dom_prefix_0_k"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as usize)
+                .collect();
+            let rerank: Vec<usize> = ranking["bm25_top20_dom_rerank"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as usize)
+                .collect();
+            assert_eq!(blind, (0..20).collect::<Vec<usize>>());
+            assert!(
+                rerank.contains(&25),
+                "{arm} BM25 rerank must surface index 25"
+            );
+            assert_ne!(
+                blind, rerank,
+                "{arm} blind DOM prefix must not alias BM25 top-20"
+            );
+        }
+    }
+
+    #[test]
+    fn h2_legacy_chunk_export_has_1x_table_cell_count_and_symmetric_timing() {
+        let html = "<html><body><main><h1>Spec</h1><table><tr><th>Metric</th><th>Value</th></tr><tr><td>AlphaCell</td><td>42ms</td></tr></table></main></body></html>";
+        let resp = evaluate_v2_record(&json!({
+            "op": "evaluate",
+            "doc_id": "h2-test",
+            "html": html,
+            "parser_mode": "both",
+        }))
+        .unwrap();
+        let leg_cells = resp["legacy"]["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["role"].as_str() == Some("table_cell"))
+            .count();
+        let bt_cells = resp["breakthrough"]["chunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["role"].as_str() == Some("table_cell"))
+            .count();
+        assert_eq!(
+            leg_cells, 2,
+            "expected 1x table_cell count (2 td cells, never 4)"
+        );
+        assert_eq!(leg_cells, bt_cells);
+    }
+
+    #[test]
+    fn h3_bandit_probe_uses_real_routers_and_crn_without_quarantine_confound() {
+        let req = json!({
+            "op": "bandit_factorial_probe",
+            "steps": 60,
+            "replicates": 2,
+            "domain_growth_limit": 500,
+            "seed": 20261111u64,
+        });
+        let r1 = evaluate_v2_record(&req).unwrap();
+        let r2 = evaluate_v2_record(&req).unwrap();
+        assert_eq!(r1["status"], "OK");
+        assert_eq!(r1["rng"], "philox_4x32_10");
+        assert_eq!(r1["quarantined_until_confounded"], false);
+        assert_eq!(r1["factorial_16_ablation"].as_array().unwrap().len(), 16);
+        assert_eq!(r1, r2, "Philox CRN bandit probe must be deterministic");
+        let r3 = evaluate_v2_record(&json!({
+            "op": "bandit_factorial_probe",
+            "steps": 60,
+            "replicates": 2,
+            "domain_growth_limit": 500,
+            "seed": 20261112u64,
+        }))
+        .unwrap();
+        assert_ne!(
+            r1["router_algorithm_comparison"],
+            r3["router_algorithm_comparison"]
+        );
+    }
+
+    #[test]
+    fn h4_and_d1_corpus_strata_and_cetd_entropy_overwrite_are_measured() {
+        let nfc_out = evaluate_v2_record(&json!({
+            "op": "nfc_probe",
+            "cases": [
+                {"id": "warc_1", "stratum": "warc", "category": "warc_nfc", "input": "Cafe\u{0301}", "expected_nfc": "Caf\u{00e9}"},
+                {"id": "wmb_1", "stratum": "webmainbench", "category": "wmb_nfc", "input": "Cafe\u{0301}", "expected_nfc": "Caf\u{00e9}"},
+                {"id": "syn_1", "category": "syn_nfc", "input": "Cafe\u{0301}", "expected_nfc": "Caf\u{00e9}"},
+            ]
+        }))
+        .unwrap();
+        assert_eq!(nfc_out["stratum_counts"]["warc"], 1);
+        assert_eq!(nfc_out["stratum_counts"]["webmainbench"], 1);
+        assert_eq!(nfc_out["stratum_counts"]["synthetic"], 1);
+
+        let d1_html = "<html><body><h1>Core Article Heading</h1><p>Comprehensive body paragraph explaining deterministic systems measurement methodology across multi-core processors.</p><p>All rights reserved Privacy Policy</p></body></html>";
+        let d1_out = evaluate_v2_record(&json!({
+            "op": "cetd_entropy_v1_probe",
+            "stratum": "webmainbench",
+            "html": d1_html,
+        }))
+        .unwrap();
+        assert_eq!(d1_out["stratum"], "webmainbench");
+        assert_eq!(
+            d1_out["leg_cetd_entropy_identical_to_s4"], false,
+            "legacy parse_html_with_limits actively applies CetdEntropyV1 link-density pruning"
+        );
+        assert!(d1_out["leg_cetd_chunks_pruned_vs_s4"].as_u64().unwrap() >= 1);
+        assert_eq!(
+            d1_out["bt_cetd_entropy_identical_to_s4"], true,
+            "D1: parse_html_breakthrough overwrites projection.chunks with updated_chunks without CetdEntropyV1"
+        );
     }
 }

@@ -1,4 +1,5 @@
 /target/
+/cloud_experiments/athena_cloudbench/target/
 /cloud_experiments/lexbor_adapter/target/
 /cloud_experiments/mcp_sdk/rust/target/
 /cloud_experiments/mcp_sdk/typescript/node_modules/

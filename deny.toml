@@ -1,7 +1,7 @@
 # Dependency policy for Athena's supported local and cloud build targets.
 # Include all optional features and dev dependencies so the candidate graph is visible.
 [graph]
-targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"]
 all-features = true
 
 [licenses]

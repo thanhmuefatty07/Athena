@@ -1,0 +1,51 @@
+[package]
+name = "athena-cloudbench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Athena-CloudBench (v5) 3-mode deterministic CPU/Memory/Pool harness and exact evaluation metrics"
+
+[workspace]
+
+[features]
+default = ["engine"]
+engine = [
+    "dep:athena-core-v2",
+    "dep:athena-lexbor-adapter-research",
+    "dep:blake3",
+    "dep:bytes",
+    "dep:libc",
+    "dep:scraper",
+    "dep:url",
+]
+
+[dependencies]
+athena-core-v2 = { path = "../..", version = "=0.1.0", features = ["research-probes"], optional = true }
+athena-lexbor-adapter-research = { path = "../lexbor_adapter", version = "=0.1.0", optional = true }
+blake3 = { version = "1.8", optional = true }
+bytes = { version = "1.10", optional = true }
+libc = { version = "0.2", optional = true }
+scraper = { version = "=0.27.0", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = { version = "2.5", optional = true }
+
+[[bin]]
+name = "mode_a_cpu"
+path = "src/bin/mode_a_cpu.rs"
+required-features = ["engine"]
+
+[[bin]]
+name = "mode_a_mem"
+path = "src/bin/mode_a_mem.rs"
+required-features = ["engine"]
+
+[[bin]]
+name = "mode_b_pool"
+path = "src/bin/mode_b_pool.rs"
+required-features = ["engine"]
+
+[dev-dependencies]
+rand = "0.9"

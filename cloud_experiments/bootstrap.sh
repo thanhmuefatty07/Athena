@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 python3 "$SCRIPT_DIR/rustup_bootstrap.py"
 run_bounded_command runuser -u athena-research -- /home/athena-research/.cargo/bin/rustup component add --toolchain 1.99.1 rustfmt clippy
 python3 --version
-python3 -c 'import numpy,sys; assert sys.version_info[:2] == (3, 13), sys.version; print("NumPy", numpy.__version__, "selected by", sys.executable)'
+python3 -c 'import numpy,sys; assert sys.version_info >= (3, 11), sys.version; print("NumPy", numpy.__version__, "selected by", sys.executable)'
 node --version
 node -e 'const major = Number(process.versions.node.split(".")[0]); if (!Number.isInteger(major) || major < 20) { throw new Error("Node >= 20 required, got " + process.versions.node); }'
 run_bounded_command runuser -u athena-research -- /home/athena-research/.cargo/bin/rustc +1.99.1 -Vv

@@ -78,7 +78,11 @@ class WcebRunnerTests(unittest.TestCase):
                 tracemalloc.stop()
             self.assertLess(peak, 512 * 1024,
                             "Reading a small dev report must use bounded chunks instead of pre-allocating MAX_REPORT_BYTES")
-            self.assertEqual(written, freeze_path)
+            self.assertEqual(written.resolve(), freeze_path.resolve())
+            unresolved_freeze = Path(temporary) / "freeze-unresolved.json"
+            written_unresolved = wceb_runner.freeze_candidates(
+                str(dev_path), str(unresolved_freeze), ["scraper"])
+            self.assertEqual(written_unresolved.resolve(), unresolved_freeze.resolve())
             with self.assertRaises(FileExistsError):
                 wceb_runner.freeze_candidates(str(dev_path), str(freeze_path), ["vector"])
             binaries = [dict(report["binaries"][0]), dict(report["binaries"][1])]

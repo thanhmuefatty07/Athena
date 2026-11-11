@@ -6,8 +6,10 @@ import itertools
 import json
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 import platform
+from typing import Literal
 import random
 import shutil
 import subprocess
@@ -21,9 +23,74 @@ from kaggle_experiments import pack_snapshots, protocol, runner
 
 PROTOCOL = "athena-cloud-native/1"
 ROOT = Path(__file__).resolve().parent.parent
+ADMITTED_OS_NAMES = ("Linux", "Darwin")
+ADMITTED_TARGETS = (
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+)
+MIN_PYTHON_VERSION = (3, 11)
+
+
+@dataclass(frozen=True)
+class HostEnvelope:
+    os_name: Literal["Linux", "Darwin"]
+    python_min: tuple[int, int]
+    target_triple: str
+
+    @classmethod
+    def detect(
+        cls,
+        *,
+        os_name: str | None = None,
+        machine: str | None = None,
+        version_info: tuple[int, ...] | None = None,
+    ) -> "HostEnvelope":
+        resolved_os = platform.system() if os_name is None else os_name
+        if resolved_os not in ADMITTED_OS_NAMES:
+            raise RuntimeError(
+                f"Unsupported host OS {resolved_os!r}; admitted OSes: {', '.join(ADMITTED_OS_NAMES)}"
+            )
+        resolved_ver = (
+            tuple(sys.version_info[:2])
+            if version_info is None
+            else tuple(int(x) for x in version_info[:2])
+        )
+        if len(resolved_ver) < 2 or resolved_ver < MIN_PYTHON_VERSION:
+            raise RuntimeError(
+                f"Unsupported Python runtime {resolved_ver!r}; require >= {MIN_PYTHON_VERSION}"
+            )
+        resolved_machine = (platform.machine() if machine is None else machine).strip().lower()
+        if resolved_os == "Linux" and resolved_machine in ("x86_64", "amd64"):
+            triple = "x86_64-unknown-linux-gnu"
+        elif resolved_os == "Linux" and resolved_machine in ("aarch64", "arm64"):
+            triple = "aarch64-unknown-linux-gnu"
+        elif resolved_os == "Darwin" and resolved_machine in ("arm64", "aarch64"):
+            triple = "aarch64-apple-darwin"
+        else:
+            raise RuntimeError(
+                f"Unsupported host target ({resolved_os!r}, {resolved_machine!r}); "
+                f"admitted targets: {', '.join(ADMITTED_TARGETS)}"
+            )
+        return cls(
+            os_name=resolved_os,  # type: ignore[arg-type]
+            python_min=MIN_PYTHON_VERSION,
+            target_triple=triple,
+        )
 CLOUD_EXPERIMENT_BUNDLE_FILES = (
     "cloud_experiments/agent_lab.py",
     "cloud_experiments/agent_tasks.json",
+    "cloud_experiments/athena_cloudbench/Cargo.lock",
+    "cloud_experiments/athena_cloudbench/Cargo.toml",
+    "cloud_experiments/athena_cloudbench/src/bin/mode_a_cpu.rs",
+    "cloud_experiments/athena_cloudbench/src/bin/mode_a_mem.rs",
+    "cloud_experiments/athena_cloudbench/src/bin/mode_b_pool.rs",
+    "cloud_experiments/athena_cloudbench/src/framing.rs",
+    "cloud_experiments/athena_cloudbench/src/host_qos.rs",
+    "cloud_experiments/athena_cloudbench/src/lcs_uax29.rs",
+    "cloud_experiments/athena_cloudbench/src/lib.rs",
+    "cloud_experiments/athena_cloudbench/src/teds_grits.rs",
+    "cloud_experiments/athena_cloudbench/tests/micro_defects_g19.rs",
     "cloud_experiments/bench.rs",
     "cloud_experiments/bootstrap.sh",
     "cloud_experiments/campaign.py",
@@ -930,8 +997,7 @@ def execute(source, spec_path, output):
     if digest(json.dumps(spec, sort_keys=True).encode()) != identity or spec["protocol"] != PROTOCOL:
         raise ValueError("Spec identity/protocol mismatch")
     spec["study_id"] = identity
-    if platform.system() != "Linux" or sys.version_info[:2] != (3, 13):
-        raise RuntimeError("Confirmation requires Linux/Python 3.13; local preparation supports Python 3.11+")
+    envelope = HostEnvelope.detect()
     if shutil.disk_usage(output.parent).free < 20 * 1024 ** 3:
         raise RuntimeError("Less than 20 GiB free before build")
     run = runner.EvidenceRun(output, "cloud-native", identity, spec)
@@ -949,10 +1015,16 @@ def execute(source, spec_path, output):
             raise RuntimeError("Pinned Rust 1.99.1 required")
         if os.environ.get("RUSTFLAGS") or any(key.startswith("CARGO_PROFILE_RELEASE_") for key in os.environ):
             raise RuntimeError("Uncontrolled compiler/profile flags")
-        affinity = sorted(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity"):
+            affinity = sorted(os.sched_getaffinity(0))
+            cpu_info = run.run(["lscpu", "--json"], log_output=False).decode()
+        else:
+            affinity = list(range(os.cpu_count() or 1))
+            cpu_info = json.dumps({"os": envelope.os_name, "target": envelope.target_triple})
         cpu = str(affinity[-1])
         run.manifest["environment"] = {"python": sys.version, "platform": platform.platform(), "rustc": runtime,
-            "lscpu": run.run(["lscpu", "--json"], log_output=False).decode(), "affinity": affinity,
+            "target_triple": envelope.target_triple,
+            "lscpu": cpu_info, "affinity": affinity,
             "timing_cpu": cpu, "free_bytes_start": shutil.disk_usage(output.parent).free,
             "timing": "10 warmups; immutable fixture setup, initial output fingerprint and JSON report outside timer; allocation/free inside operation; no live network",
             "rss": "GNU time fresh process peak, including input, parse/setup, initial output and warmup; not component-only allocations"}

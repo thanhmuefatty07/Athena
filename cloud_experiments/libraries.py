@@ -5,6 +5,7 @@ import hashlib
 import tomllib
 from pathlib import Path
 
+from cloud_experiments import process_isolation
 from kaggle_experiments.protocol import strict_json_loads
 from kaggle_experiments import runner as kaggle_runner
 
@@ -24,18 +25,44 @@ SONIC_MODERN_LOCK_SHA256 = "086eeb2c2c164ebcf43f2c8c7ebc936579413932be4181749044
 
 
 def offline_dependency_metadata(run, source, *, cargo_feature_args=("--features", "research-probes"),
-                                target="x86_64-unknown-linux-gnu"):
+                                target=None):
     """Read a locked Cargo graph while explicitly forbidding Cargo network use."""
-    class OfflineMetadataRun:
-        def run(self, command, **kwargs):
-            command = list(command)
-            if command[:2] != ["cargo", "metadata"] or "--offline" in command:
-                raise ValueError("Offline dependency metadata adapter received an unexpected command")
-            command.insert(2, "--offline")
-            return run.run(command, **kwargs)
-
-    return kaggle_runner.dependency_metadata(
-        OfflineMetadataRun(), source, cargo_feature_args=cargo_feature_args, target=target)
+    resolved_target = process_isolation.default_cargo_target() if target is None else str(target)
+    profiles = {
+        ("--features", "research-probes"): "aws-lc",
+        ("--no-default-features", "--features", "research-probes,tls-ring"): "ring",
+    }
+    feature_args = tuple(cargo_feature_args)
+    if feature_args not in profiles or resolved_target not in process_isolation.SUPPORTED_CARGO_TARGETS:
+        raise ValueError("Unsupported pinned multi-arch dependency-graph profile")
+    source_path = Path(source)
+    command = [
+        "cargo", "metadata", "--offline", "--locked", "--format-version", "1",
+        "--filter-platform", resolved_target, *feature_args,
+    ]
+    metadata = strict_json_loads(run.run(command, cwd=source_path, log_output=False))
+    root_id = metadata["resolve"]["root"]
+    root_node = next(node for node in metadata["resolve"]["nodes"] if node["id"] == root_id)
+    packages = {package["id"]: package for package in metadata["packages"]}
+    direct = {
+        dependency["name"]: {
+            "name": packages[dependency["pkg"]]["name"],
+            "version": packages[dependency["pkg"]]["version"],
+            "id": dependency["pkg"],
+        }
+        for dependency in root_node["deps"]
+    }
+    return {
+        "root": root_id,
+        "direct": direct,
+        "tls_provider": profiles[feature_args],
+        "packages": {
+            key: {"name": item["name"], "version": item["version"], "source": item["source"]}
+            for key, item in packages.items()
+        },
+        "nodes": metadata["resolve"]["nodes"],
+        "lock_sha256": kaggle_runner.sha256_file(source_path / "Cargo.lock"),
+    }
 ATTR_CURRENT_LOCK = "cloud_experiments/locks/html5ever-0.39.0-attr-index.lock"
 ATTR_CURRENT_LOCK_SHA256 = "9a900882f46a481a2b47aba5de3ffac470fd1c62dc657e80e1b5ff475c13d96c"
 ATTR_MODERN_LOCK = "cloud_experiments/locks/html5ever-0.40.1-attr-index.lock"

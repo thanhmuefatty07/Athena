@@ -7,22 +7,54 @@ permissions:
   contents: read
 jobs:
   audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master reviewed 2026-10-24
         with:
           toolchain: '1.99.1'
           components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo test --locked --all-targets --features research-probes
-      - run: cargo clippy --locked --all-targets --features research-probes -- -D warnings
+      - name: Verify Phase A src/ immutability
+        run: git diff --exit-code src/
+      - name: Check formatting across all 4 Cargo manifests and standalone probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for manifest in \
+            Cargo.toml \
+            cloud_experiments/lexbor_adapter/Cargo.toml \
+            cloud_experiments/mcp_sdk/rust/Cargo.toml \
+            cloud_experiments/athena_cloudbench/Cargo.toml; do
+            cargo fmt --manifest-path "$manifest" --all -- --check
+          done
+          rustfmt --edition 2024 --check \
+            cloud_experiments/bench.rs \
+            cloud_experiments/core_probe.rs \
+            cloud_experiments/service_probe.rs
+      - name: Run Clippy (-D warnings) across all 4 Cargo manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --all-targets --features research-probes -- -D warnings
+          cargo clippy --locked --manifest-path cloud_experiments/lexbor_adapter/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml --all-targets -- -D warnings
+      - name: Run locked Rust test suites across all 4 Cargo manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets --features research-probes
+          cargo test --locked --manifest-path cloud_experiments/lexbor_adapter/Cargo.toml
+          cargo test --locked --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml
+          cargo test --locked --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml
       - run: cargo build --locked --release --features research-probes
 
   linux-platform-gates:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -30,6 +62,9 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.21.1'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master reviewed 2026-10-24
         with:
           toolchain: '1.99.1'
@@ -44,12 +79,13 @@ jobs:
         run: timeout --kill-after=15s 300s python -m pip install --disable-pip-version-check --no-input --no-cache-dir numpy==1.26.4
       - name: Check Linux entrypoint syntax
         run: bash -n cloud_experiments/bootstrap.sh cloud_experiments/finish.sh cloud_experiments/lexbor/build_and_smoke.sh
-      - name: Build probe, Lexbor, and MCP SDK fixtures for zero-skip Linux harness
+      - name: Build probe, Lexbor, CloudBench twins, and MCP SDK fixtures for zero-skip Linux harness
         shell: bash
         run: |
           set -euo pipefail
           timeout --kill-after=15s 600s cargo build --locked --release --features research-probes --bin core_probe
           timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml --locked --release
+          timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml --locked --release
           timeout --kill-after=15s 300s npm --prefix cloud_experiments/mcp_sdk/typescript ci --ignore-scripts --no-audit --no-fund
           timeout --kill-after=15s 300s bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-ci
       - name: Run Linux-only process and service boundaries
@@ -121,8 +157,8 @@ jobs:
           set -euo pipefail
           timeout --kill-after=10s 120s python -B -m cloud_experiments.campaign audit-decisions > linux-audit.json
           timeout --kill-after=10s 120s python -B -m cloud_experiments.research inventory > linux-inventory.json
-          timeout --kill-after=10s 30s rustc +1.99.1 -Vv > rust-version.txt
-          timeout --kill-after=10s 120s cargo +1.99.1 metadata --locked --format-version 1 > cargo-metadata.json
+          timeout --kill-after=10s 30s rustc -Vv > rust-version.txt
+          timeout --kill-after=10s 120s cargo metadata --locked --format-version 1 > cargo-metadata.json
       - name: Upload Linux gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -138,3 +174,71 @@ jobs:
             linux-inventory.json
             rust-version.txt
             cargo-metadata.json
+
+  linux-arm64-gate:
+    if: vars.ENABLE_GITHUB_ARM64_RUNNERS != '0' && (!github.event.repository.private || vars.ENABLE_PRIVATE_ARM64_RUNNERS == '1')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master reviewed 2026-10-24
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Verify native aarch64-unknown-linux-gnu Lexbor smoke and 4-manifest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-arm64
+          cargo test --locked --all-targets --features research-probes
+          cargo test --locked --manifest-path cloud_experiments/lexbor_adapter/Cargo.toml
+          cargo test --locked --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml
+          cargo test --locked --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml
+
+  nightly-sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master reviewed 2026-10-24
+        with:
+          toolchain: 'nightly-2026-10-24'
+          components: miri, rust-src, llvm-tools-preview
+      - name: Run pure-Rust Miri undefined-behavior gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test \
+            --locked \
+            --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
+            --no-default-features \
+            --lib
+      - name: Run AddressSanitizer + LeakSanitizer on Lexbor FFI adapter and CloudBench
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=address
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          cargo test --locked --target x86_64-unknown-linux-gnu \
+            --manifest-path cloud_experiments/lexbor_adapter/Cargo.toml
+          cargo test --locked --target x86_64-unknown-linux-gnu \
+            --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
+            --lib
+      - name: Run ThreadSanitizer on SingleFlight, SourceCache, and Bandit concurrency primitives
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=thread
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          set -euo pipefail
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- singleflight
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- bandit
+          cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- orchestrator

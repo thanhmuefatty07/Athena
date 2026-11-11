@@ -1915,8 +1915,13 @@ class ExpandedResearchControls(unittest.TestCase):
             transformed = contenders.transform(files, variant)
             libraries.verify_build_inputs(files, transformed, profile["factors"])
             graph = libraries.offline_dependency_metadata(
-                CargoRun(), research.ROOT, cargo_feature_args=profile["build"]["cargo_feature_args"],
-                target="x86_64-unknown-linux-gnu")
+                CargoRun(), research.ROOT, cargo_feature_args=profile["build"]["cargo_feature_args"])
+            for extra_target in campaign.ADMITTED_TARGETS:
+                extra_graph = libraries.offline_dependency_metadata(
+                    CargoRun(), research.ROOT,
+                    cargo_feature_args=profile["build"]["cargo_feature_args"],
+                    target=extra_target)
+                self.assertEqual(extra_graph["tls_provider"], expected_provider)
             evidence = libraries.verify_graph(files["Cargo.lock"], transformed["Cargo.lock"],
                                               graph, profile["factors"])
             self.assertEqual(evidence["tls_provider"]["selected"], expected_provider)
@@ -2686,8 +2691,9 @@ class ExpandedResearchControls(unittest.TestCase):
                    and event[1] == ("cargo", *research.process_isolation.CARGO_FETCH_ARGS)]
         self.assertEqual(len(fetches), 1, "The reviewed lock profile must be fetched exactly once")
         self.assertEqual(fetches[0][1],
-                         ("cargo", "fetch", "--offline", "--locked", "--target", "x86_64-unknown-linux-gnu"),
+                         ("cargo", *research.process_isolation.CARGO_FETCH_ARGS),
                          "Dependency fetch must require the pre-seeded local cache")
+        self.assertIn(fetches[0][1][-1], campaign.ADMITTED_TARGETS)
         self.assertEqual(fetches[0][2].get("network_mode"), "offline-cargo-fetch",
                          "Dependency fetch must use the network-denied child boundary")
         self.assertTrue(dependency_metadata.call_count >= 2)
@@ -2777,8 +2783,29 @@ class ExpandedResearchControls(unittest.TestCase):
             self.assertIn("--net", run.commands[0])
             self.assertIn("--pid", run.commands[0])
 
-    def test_native_isolation_preflight_rejects_non_x86_64_before_child_launch(self):
+    def test_native_isolation_preflight_admits_multi_arch_and_rejects_unsupported_before_child_launch(self):
         from unittest.mock import patch
+
+        self.assertEqual(
+            campaign.HostEnvelope.detect(os_name="Linux", machine="x86_64", version_info=(3, 11)),
+            campaign.HostEnvelope(os_name="Linux", python_min=(3, 11), target_triple="x86_64-unknown-linux-gnu"),
+        )
+        self.assertEqual(
+            campaign.HostEnvelope.detect(os_name="Linux", machine="aarch64", version_info=(3, 12)),
+            campaign.HostEnvelope(os_name="Linux", python_min=(3, 11), target_triple="aarch64-unknown-linux-gnu"),
+        )
+        self.assertEqual(
+            campaign.HostEnvelope.detect(os_name="Darwin", machine="arm64", version_info=(3, 12)),
+            campaign.HostEnvelope(os_name="Darwin", python_min=(3, 11), target_triple="aarch64-apple-darwin"),
+        )
+        for bad_kwargs in (
+            {"os_name": "Windows", "machine": "x86_64", "version_info": (3, 12)},
+            {"os_name": "Linux", "machine": "x86_64", "version_info": (3, 10)},
+            {"os_name": "Linux", "machine": "riscv64", "version_info": (3, 12)},
+            {"os_name": "Darwin", "machine": "x86_64", "version_info": (3, 12)},
+        ):
+            with self.assertRaises(RuntimeError):
+                campaign.HostEnvelope.detect(**bad_kwargs)
 
         class Run:
             def __init__(self):
@@ -2790,8 +2817,8 @@ class ExpandedResearchControls(unittest.TestCase):
 
         run = Run()
         with patch.object(research.platform, "system", return_value="Linux"), \
-                patch.object(research.platform, "machine", return_value="aarch64"):
-            with self.assertRaisesRegex(RuntimeError, "pinned to x86_64 Linux"):
+                patch.object(research.platform, "machine", return_value="riscv64"):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported host target"):
                 research._verify_build_network_isolation(run)
         self.assertEqual(run.commands, [],
                          "An unsupported native target must fail before launching a child")
@@ -4185,8 +4212,9 @@ raise SystemExit(research.main())
                             "Attribute-index lock profile warmup must materialize the local html5ever vendor crate")
             self.assertTrue(observed_lexbor_parent_manifests and all(observed_lexbor_parent_manifests),
                             "lexbor_adapter subproject warmup must preserve ../.. parent Cargo.toml resolution")
+            expected_target = research.process_isolation.default_cargo_target()
             online_fetches = [cmd for cmd, _, _ in commands
-                              if cmd == ("cargo", "fetch", "--locked", "--target", "x86_64-unknown-linux-gnu")]
+                              if cmd == ("cargo", "fetch", "--locked", "--target", expected_target)]
             offline_fetches = [cmd for cmd, _, _ in commands
                                if cmd == ("cargo", *research.process_isolation.CARGO_FETCH_ARGS)]
             npm_installs = [cmd for cmd, _, _ in commands

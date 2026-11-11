@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import platform
 import shutil
 import sys
 
@@ -9,7 +10,34 @@ import sys
 POLICY = "linux-unshare-user-mount-pid-net-loopback-kill-child/1"
 CARGO_FETCH_POLICY = "linux-unshare-user-mount-pid-net-offline-cargo-fetch/1"
 CARGO_FETCH_NETWORK_MODE = "offline-cargo-fetch"
-CARGO_FETCH_ARGS = ("fetch", "--offline", "--locked", "--target", "x86_64-unknown-linux-gnu")
+ADMITTED_TARGETS = (
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+)
+SUPPORTED_CARGO_TARGETS = ADMITTED_TARGETS
+
+
+def default_cargo_target() -> str:
+    os_name = platform.system()
+    machine = platform.machine().strip().lower()
+    if os_name == "Linux" and machine in ("x86_64", "amd64"):
+        return "x86_64-unknown-linux-gnu"
+    if os_name == "Linux" and machine in ("aarch64", "arm64"):
+        return "aarch64-unknown-linux-gnu"
+    if os_name == "Darwin" and machine in ("arm64", "aarch64"):
+        return "aarch64-apple-darwin"
+    return "x86_64-unknown-linux-gnu"
+
+
+def cargo_fetch_args(target: str | None = None) -> tuple[str, ...]:
+    resolved = default_cargo_target() if target is None else str(target)
+    if resolved not in ADMITTED_TARGETS:
+        raise ValueError(f"Unsupported Cargo target triple: {resolved!r}")
+    return ("fetch", "--offline", "--locked", "--target", resolved)
+
+
+CARGO_FETCH_ARGS = cargo_fetch_args()
 
 
 def command_argv(command, *, required=True, network_mode="deny"):
@@ -23,8 +51,10 @@ def command_argv(command, *, required=True, network_mode="deny"):
         raise ValueError("Process-isolation command must not be empty")
     if network_mode == CARGO_FETCH_NETWORK_MODE and (
             Path(argv[0]).name.lower() not in ("cargo", "cargo.exe")
-            or tuple(argv[1:]) != CARGO_FETCH_ARGS):
-        raise ValueError("Offline Cargo-cache validation permits only the exact locked x86_64 Linux fetch")
+            or len(argv) != 6
+            or tuple(argv[1:5]) != ("fetch", "--offline", "--locked", "--target")
+            or argv[5] not in ADMITTED_TARGETS):
+        raise ValueError("Offline Cargo-cache validation permits only the exact locked admitted target fetch")
     if not required:
         if network_mode != "deny":
             raise RuntimeError("Cargo-cache validation requires process containment")

@@ -188,9 +188,14 @@ class LifecycleControls(unittest.TestCase):
                     patch.object(isolation.shutil, "which", return_value=str(executable)), \
                     patch.object(isolation.os, "access", return_value=True):
                 self.assertEqual(isolation.CARGO_FETCH_ARGS,
-                                 ("fetch", "--offline", "--locked", "--target", "x86_64-unknown-linux-gnu"))
+                                 isolation.cargo_fetch_args(isolation.default_cargo_target()))
                 fetch = isolation.command_argv(["cargo", *isolation.CARGO_FETCH_ARGS],
                                                network_mode="offline-cargo-fetch")
+                for admitted_triple in isolation.ADMITTED_TARGETS:
+                    admitted_cmd = isolation.command_argv(
+                        ["cargo", *isolation.cargo_fetch_args(admitted_triple)],
+                        network_mode="offline-cargo-fetch")
+                    self.assertEqual(admitted_cmd[-1], admitted_triple)
             fetch_separator = fetch.index("--")
             self.assertEqual(fetch[1:fetch_separator],
                              ["--user", "--map-root-user", "--net", "--pid", "--fork",
@@ -203,7 +208,7 @@ class LifecycleControls(unittest.TestCase):
                 isolation.command_argv(["cargo", "build"], network_mode="offline-cargo-fetch")
             with self.assertRaisesRegex(ValueError, "only the exact locked"):
                 isolation.command_argv(
-                    ["cargo", *isolation.CARGO_FETCH_ARGS[:-1], "aarch64-unknown-linux-gnu"],
+                    ["cargo", "fetch", "--offline", "--locked", "--target", "riscv64gc-unknown-linux-gnu"],
                     network_mode="offline-cargo-fetch")
             with self.assertRaisesRegex(RuntimeError, "requires process containment"):
                 isolation.command_argv(["cargo", *isolation.CARGO_FETCH_ARGS], required=False,
@@ -1558,7 +1563,8 @@ class MacCampaignPumpEndToEnd(unittest.TestCase):
         command = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
                    "start-or-resume", "--run-dir", str(run_dir), "--core-probe-bin",
                    str(self.BINARY), "--seeds-per-block", "4", "--block-interval-s", "0",
-                   "--shard-blocks", "2", "--max-blocks", "3"]
+                   "--shard-blocks", "2", "--max-blocks", "3",
+                   "--min-free-bytes", "0", "--max-swap-bytes", "68719476736"]
         try:
             for expected_next in (3, 6):
                 proc = subprocess.run(command, cwd=self.ROOT, capture_output=True, text=True,
@@ -1593,7 +1599,8 @@ class MacCampaignPumpEndToEnd(unittest.TestCase):
         command = [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
                    "start-or-resume", "--mode", "warc", "--run-dir", str(run_dir),
                    "--core-probe-bin", str(self.BINARY), "--warc", str(warc_path),
-                   "--shard-pages", "2", "--page-interval-s", "0", "--max-pages", "3"]
+                   "--shard-pages", "2", "--page-interval-s", "0", "--max-pages", "3",
+                   "--min-free-bytes", "0", "--max-swap-bytes", "68719476736"]
         try:
             for expected_pages, expected_status in (
                 (3, "COMPLETED_MAX_PAGES"),
@@ -1615,6 +1622,46 @@ class MacCampaignPumpEndToEnd(unittest.TestCase):
                 store.close()
         finally:
             warc_path.unlink(missing_ok=True)
+            shutil.rmtree(run_dir, ignore_errors=True)
+
+
+    def test_cli_watermark_flags_validate_and_propagate_to_status_and_launch_agent(self):
+        import uuid as _uuid
+
+        run_dir = self.ROOT / "target" / f"test-mac-watermarks-{_uuid.uuid4().hex[:12]}"
+        try:
+            bad = subprocess.run(
+                [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                 "status", "--run-dir", str(run_dir), "--min-free-bytes", "-1"],
+                cwd=self.ROOT, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(bad.returncode, lifecycle.EXIT_HOLD)
+            self.assertEqual(json.loads(bad.stdout.strip())["status"], "CONFIG_INVALID")
+
+            ok = subprocess.run(
+                [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                 "status", "--run-dir", str(run_dir),
+                 "--min-free-bytes", "0", "--max-swap-bytes", "68719476736"],
+                cwd=self.ROOT, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            payload = json.loads(ok.stdout.strip())
+            self.assertEqual(payload["hardware_health"]["min_free_bytes"], 0)
+            self.assertEqual(payload["hardware_health"]["max_swap_bytes"], 68719476736)
+            self.assertNotIn(
+                payload["hardware_health"]["status"],
+                ("PAUSED_DISK_WATERMARK", "PAUSED_SWAP_PRESSURE"),
+            )
+
+            plist_proc = subprocess.run(
+                [sys.executable, "-B", "-m", "cloud_experiments.lifecycle", "mac-daemon",
+                 "render-launch-agent", "--run-dir", str(run_dir),
+                 "--min-free-bytes", "0", "--max-swap-bytes", "68719476736"],
+                cwd=self.ROOT, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(plist_proc.returncode, 0, plist_proc.stderr)
+            self.assertIn("68719476736", plist_proc.stdout)
+        finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
 
