@@ -35,11 +35,24 @@ impl Default for HtmlTableLimits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlTableSlot {
+    pub occupied: bool,
+    pub cell_index: Option<usize>,
+    pub top_offset: i32,
+    pub left_offset: i32,
+    pub rowspan: usize,
+    pub colspan: usize,
+    pub is_header: bool,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HtmlTable {
     pub id: Option<String>,
     pub caption: Option<String>,
     pub rows: Vec<HtmlTableRow>,
     pub grid: Grid,
+    pub slots: Vec<Vec<HtmlTableSlot>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +76,65 @@ pub struct HtmlTableCell {
     pub abbr: Option<String>,
     pub id: Option<String>,
     pub locator: String,
+}
+
+pub fn materialize_slot_grid(grid: &Grid) -> Vec<Vec<HtmlTableSlot>> {
+    let height = grid.slots.len();
+    let width = grid.width;
+    if height == 0 || width == 0 {
+        return Vec::new();
+    }
+
+    let mut bounds: Vec<Option<(usize, usize, usize, usize)>> = vec![None; grid.cells.len()];
+    for (r, row) in grid.slots.iter().enumerate() {
+        for (c, slot) in row.iter().take(width).enumerate() {
+            if let Some(idx) = *slot
+                && idx < bounds.len()
+            {
+                bounds[idx] = Some(match bounds[idx] {
+                    None => (r, r, c, c),
+                    Some((min_r, max_r, min_c, max_c)) => {
+                        (min_r.min(r), max_r.max(r), min_c.min(c), max_c.max(c))
+                    }
+                });
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(height);
+    for (r, row) in grid.slots.iter().enumerate() {
+        let mut out_row = Vec::with_capacity(width);
+        for c in 0..width {
+            match row.get(c).copied().flatten() {
+                Some(idx) if idx < grid.cells.len() => {
+                    let (min_r, max_r, min_c, max_c) = bounds[idx].unwrap_or((r, r, c, c));
+                    let cell = &grid.cells[idx];
+                    out_row.push(HtmlTableSlot {
+                        occupied: true,
+                        cell_index: Some(idx),
+                        top_offset: -((r.saturating_sub(min_r)) as i32),
+                        left_offset: -((c.saturating_sub(min_c)) as i32),
+                        rowspan: max_r.saturating_sub(min_r) + 1,
+                        colspan: max_c.saturating_sub(min_c) + 1,
+                        is_header: cell.is_header,
+                        text: cell.text.clone(),
+                    });
+                }
+                _ => out_row.push(HtmlTableSlot {
+                    occupied: false,
+                    cell_index: None,
+                    top_offset: 0,
+                    left_offset: 0,
+                    rowspan: 0,
+                    colspan: 0,
+                    is_header: false,
+                    text: String::new(),
+                }),
+            }
+        }
+        out.push(out_row);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -381,12 +453,58 @@ pub fn extract_tables(
                 return Err("decoded text byte budget exceeded".into());
             }
         }
+        let slots = materialize_slot_grid(&grid);
         output.push(HtmlTable {
             id: table_node.attr("id").map(str::to_owned),
             caption,
             rows: output_rows,
             grid,
+            slots,
         });
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{LexborAttrProfile, parse_tree_with_profile};
+
+    #[test]
+    fn slot_occupancy_distinguishes_unoccupied_holes_from_explicit_empty_td_and_spans() {
+        let html = b"<table>\
+            <tr><th colspan=\"2\">Header</th><th>Extra</th></tr>\
+            <tr><td>OnlyOne</td></tr>\
+            <tr><td>First</td><td></td><td>Third</td></tr>\
+            </table>";
+        let tree = parse_tree_with_profile(html, LexborAttrProfile::Minimal).expect("parse");
+        let tables = extract_tables(html.len(), &tree.nodes, HtmlTableLimits::default())
+            .expect("extract_tables");
+        assert_eq!(tables.len(), 1);
+        let slots = &tables[0].slots;
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots[0].len(), 3);
+
+        // Row 0: colspan=2 occupies (0,0) and (0,1) with left_offset=0 and -1
+        assert!(slots[0][0].occupied);
+        assert_eq!(slots[0][0].colspan, 2);
+        assert_eq!(slots[0][0].left_offset, 0);
+        assert!(slots[0][1].occupied);
+        assert_eq!(slots[0][1].colspan, 2);
+        assert_eq!(slots[0][1].left_offset, -1);
+
+        // Row 1: ragged row has OnlyOne at (1,0), unoccupied holes at (1,1) and (1,2)
+        assert!(slots[1][0].occupied);
+        assert_eq!(slots[1][0].text, "OnlyOne");
+        assert!(!slots[1][1].occupied);
+        assert_eq!(slots[1][1].cell_index, None);
+        assert!(!slots[1][2].occupied);
+
+        // Row 2: explicit empty <td></td> at (2,1) IS occupied with empty text
+        assert!(slots[2][1].occupied);
+        assert!(slots[2][1].cell_index.is_some());
+        assert_eq!(slots[2][1].text, "");
+        assert_eq!(slots[2][1].rowspan, 1);
+        assert_eq!(slots[2][1].colspan, 1);
+    }
 }

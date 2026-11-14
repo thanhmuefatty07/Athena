@@ -4,198 +4,352 @@ use std::{
     process::Command,
 };
 
-const LEXBOR_COMMIT: &str = "2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe";
-const LEXBOR_ZIP_SHA256: &str = "2ac0d4234a305a6e992a6a5d2bb0ebb468be93a22e5631e334f7da8c127ba282";
+const PINNED_COMMIT: &str = "2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe";
 
-fn collect_c_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("failed to read Lexbor directory {}: {e}", dir.display()));
-    let mut paths: Vec<PathBuf> = entries
-        .map(|entry| entry.expect("valid dir entry").path())
-        .collect();
-    paths.sort();
-    for path in paths {
-        if path.is_dir() {
-            if path.file_name().and_then(|n| n.to_str()) == Some("windows_nt") {
-                continue;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SanitizerMode {
+    None,
+    AddressUndefined,
+    Thread,
+}
+
+impl SanitizerMode {
+    fn from_env() -> Self {
+        match env::var("ATHENA_LEXBOR_SANITIZER") {
+            Err(_) => Self::None,
+            Ok(raw) => match raw.trim() {
+                "" | "none" => Self::None,
+                "address_undefined" => Self::AddressUndefined,
+                "thread" => Self::Thread,
+                other => panic!(
+                    "unsupported ATHENA_LEXBOR_SANITIZER={other:?}; expected none, address_undefined, or thread"
+                ),
+            },
+        }
+    }
+
+    fn slug(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::AddressUndefined => "address_undefined",
+            Self::Thread => "thread",
+        }
+    }
+
+    fn c_flags(self) -> &'static [&'static str] {
+        match self {
+            Self::None => &[],
+            Self::AddressUndefined => &[
+                "-fsanitize=address,undefined",
+                "-fno-omit-frame-pointer",
+                "-g",
+            ],
+            Self::Thread => &["-fsanitize=thread", "-fno-omit-frame-pointer", "-g"],
+        }
+    }
+}
+
+fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
+    if sanitizer == SanitizerMode::None {
+        return;
+    }
+    let rustflags = format!(
+        "{} {}",
+        env::var("RUSTFLAGS").unwrap_or_default(),
+        env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default()
+    );
+    match sanitizer {
+        SanitizerMode::None => {}
+        SanitizerMode::AddressUndefined => {
+            if rustflags.contains("sanitizer=address") {
+                println!("cargo:rustc-link-arg=-fsanitize=undefined");
+            } else {
+                println!("cargo:rustc-link-arg=-fsanitize=address,undefined");
             }
-            collect_c_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("c") {
+        }
+        SanitizerMode::Thread => {
+            if !rustflags.contains("sanitizer=thread") {
+                println!("cargo:rustc-link-arg=-fsanitize=thread");
+            }
+        }
+    }
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos" {
+        let cc_bin = env::var("CC").unwrap_or_else(|_| "cc".to_owned());
+        if let Ok(output) = Command::new(&cc_bin).arg("--print-runtime-dir").output()
+            && output.status.success()
+        {
+            let rt_dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let rt_path = Path::new(&rt_dir);
+            if !rt_dir.is_empty() && rt_path.is_dir() {
+                println!("cargo:rustc-link-search=native={rt_dir}");
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{rt_dir}");
+                match sanitizer {
+                    SanitizerMode::None => {}
+                    SanitizerMode::AddressUndefined => {
+                        if !rustflags.contains("sanitizer=address") {
+                            if rt_path.join("libclang_rt.asan_osx_dynamic.dylib").is_file() {
+                                println!("cargo:rustc-link-lib=dylib=clang_rt.asan_osx_dynamic");
+                            } else if rt_path
+                                .join("libclang_rt.ubsan_osx_dynamic.dylib")
+                                .is_file()
+                            {
+                                println!("cargo:rustc-link-lib=dylib=clang_rt.ubsan_osx_dynamic");
+                            }
+                        }
+                    }
+                    SanitizerMode::Thread => {
+                        if !rustflags.contains("sanitizer=thread")
+                            && rt_path.join("libclang_rt.tsan_osx_dynamic.dylib").is_file()
+                        {
+                            println!("cargo:rustc-link-lib=dylib=clang_rt.tsan_osx_dynamic");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_INCLUDE_DIR");
+    println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_ARCHIVE");
+    println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_SOURCE_DIR");
+    println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_SANITIZER");
+    println!("cargo:rerun-if-env-changed=RUSTFLAGS");
+    println!("cargo:rerun-if-changed=src/lexbor_shim.c");
+
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
+    let shim_path = manifest_dir.join("src").join("lexbor_shim.c");
+    let sanitizer = SanitizerMode::from_env();
+
+    let (lib_dir, include_dir) = match (
+        env::var("ATHENA_LEXBOR_LIB_DIR").ok(),
+        env::var("ATHENA_LEXBOR_INCLUDE_DIR").ok(),
+    ) {
+        (Some(l), Some(i)) => (PathBuf::from(l), PathBuf::from(i)),
+        _ => build_auto_lexbor(&manifest_dir, sanitizer),
+    };
+
+    let mut shim_build = cc::Build::new();
+    shim_build
+        .file(shim_path)
+        .include(&include_dir)
+        .define("LEXBOR_STATIC", None)
+        .flag_if_supported("-std=c11");
+    if sanitizer != SanitizerMode::None {
+        shim_build.opt_level(1);
+        for flag in sanitizer.c_flags() {
+            shim_build.flag(flag);
+        }
+    }
+    shim_build.compile("athena_lexbor_shim");
+
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    println!("cargo:rustc-link-lib=static=lexbor_static");
+    emit_sanitizer_link_args(sanitizer);
+}
+
+/// Automatically extracts and builds static `liblexbor_static.a` strictly inside `OUT_DIR`
+/// (zero writes to `~/athena_data/v5_pinned`) when `ATHENA_LEXBOR_LIB_DIR` is unset.
+fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf, PathBuf) {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
+    let auto_root = out_dir.join(format!("lexbor-auto-{}", sanitizer.slug()));
+    let install_dir = auto_root.join("install");
+    let cached_lib = install_dir.join("lib").join("liblexbor_static.a");
+    let cached_lib64 = install_dir.join("lib64").join("liblexbor_static.a");
+    let cached_inc = install_dir.join("include");
+
+    if cached_inc.join("lexbor").exists() {
+        if cached_lib.exists() {
+            return (install_dir.join("lib"), cached_inc);
+        }
+        if cached_lib64.exists() {
+            return (install_dir.join("lib64"), cached_inc);
+        }
+    }
+
+    fs::create_dir_all(&auto_root).expect("create OUT_DIR/lexbor-auto");
+
+    let src_dir = if let Ok(explicit_src) = env::var("ATHENA_LEXBOR_SOURCE_DIR") {
+        PathBuf::from(explicit_src)
+    } else {
+        let archive = find_pinned_archive(manifest_dir).unwrap_or_else(|| {
+            panic!(
+                "ATHENA_LEXBOR_LIB_DIR not set and pinned Lexbor archive lexbor-{PINNED_COMMIT}.zip not found in ~/athena_data/v5_pinned/"
+            )
+        });
+        let unpack_dir = auto_root.join("src");
+        let extracted = unpack_dir.join(format!("lexbor-{PINNED_COMMIT}"));
+        if !extracted.exists() {
+            fs::create_dir_all(&unpack_dir).expect("create unpack_dir");
+            let status = Command::new("unzip")
+                .args([
+                    "-q",
+                    archive.to_str().expect("utf8 archive path"),
+                    "-d",
+                    unpack_dir.to_str().expect("utf8 unpack path"),
+                ])
+                .status()
+                .expect("failed to invoke unzip for pinned Lexbor archive");
+            assert!(status.success(), "unzip failed on {}", archive.display());
+        }
+        extracted
+    };
+
+    let build_dir = auto_root.join("build");
+    let has_cmake = Command::new("cmake")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if has_cmake {
+        let mut cfg_cmd = Command::new("cmake");
+        cfg_cmd.args([
+            "-S",
+            src_dir.to_str().expect("utf8 src_dir"),
+            "-B",
+            build_dir.to_str().expect("utf8 build_dir"),
+            if sanitizer == SanitizerMode::None {
+                "-DCMAKE_BUILD_TYPE=Release"
+            } else {
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo"
+            },
+            &format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()),
+            "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+            "-DLEXBOR_BUILD_SHARED=OFF",
+            "-DLEXBOR_BUILD_STATIC=ON",
+            "-DLEXBOR_BUILD_TESTS=OFF",
+            "-DLEXBOR_BUILD_EXAMPLES=OFF",
+            "-DLEXBOR_WITHOUT_THREADS=ON",
+        ]);
+        if sanitizer != SanitizerMode::None {
+            cfg_cmd.arg(format!("-DCMAKE_C_FLAGS={}", sanitizer.c_flags().join(" ")));
+        }
+        let cfg = cfg_cmd
+            .status()
+            .expect("failed to configure Lexbor via cmake");
+        assert!(cfg.success(), "cmake configure for Lexbor failed");
+
+        let jobs = env::var("CARGO_BUILD_JOBS").unwrap_or_else(|_| "3".to_owned());
+        let bld = Command::new("cmake")
+            .args([
+                "--build",
+                build_dir.to_str().expect("utf8 build_dir"),
+                "--parallel",
+                &jobs,
+            ])
+            .status()
+            .expect("failed to build Lexbor via cmake");
+        assert!(bld.success(), "cmake build for Lexbor failed");
+
+        let ins = Command::new("cmake")
+            .args(["--install", build_dir.to_str().expect("utf8 build_dir")])
+            .status()
+            .expect("failed to install Lexbor via cmake");
+        assert!(ins.success(), "cmake install for Lexbor failed");
+    } else {
+        let source_root = src_dir.join("source");
+        let mut c_files = Vec::new();
+        collect_c_sources(&source_root, &mut c_files);
+        let mut build = cc::Build::new();
+        build
+            .include(&source_root)
+            .define("LEXBOR_STATIC", None)
+            .define("LEXBOR_WITHOUT_THREADS", None)
+            .warnings(false)
+            .flag_if_supported("-std=c99")
+            .opt_level(if sanitizer == SanitizerMode::None {
+                2
+            } else {
+                1
+            });
+        for flag in sanitizer.c_flags() {
+            build.flag(flag);
+        }
+        for f in &c_files {
+            build.file(f);
+        }
+        build.compile("lexbor_static");
+        let inc_dst = install_dir.join("include").join("lexbor");
+        copy_headers_recursive(&source_root.join("lexbor"), &inc_dst);
+        let lib_dst = install_dir.join("lib");
+        fs::create_dir_all(&lib_dst).expect("create lib_dst");
+        fs::copy(
+            out_dir.join("liblexbor_static.a"),
+            lib_dst.join("liblexbor_static.a"),
+        )
+        .expect("copy liblexbor_static.a");
+    }
+
+    if cached_lib.exists() {
+        (install_dir.join("lib"), cached_inc)
+    } else if cached_lib64.exists() {
+        (install_dir.join("lib64"), cached_inc)
+    } else {
+        panic!(
+            "liblexbor_static.a missing after auto-build in {}",
+            install_dir.display()
+        );
+    }
+}
+
+fn find_pinned_archive(manifest_dir: &Path) -> Option<PathBuf> {
+    if let Ok(p) = env::var("ATHENA_LEXBOR_ARCHIVE") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        let pb = PathBuf::from(home)
+            .join("athena_data")
+            .join("v5_pinned")
+            .join(format!("lexbor-{PINNED_COMMIT}.zip"));
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    let repo_candidate = manifest_dir
+        .parent()?
+        .parent()?
+        .join("athena_data")
+        .join("v5_pinned")
+        .join(format!("lexbor-{PINNED_COMMIT}.zip"));
+    if repo_candidate.is_file() {
+        return Some(repo_candidate);
+    }
+    None
+}
+
+fn collect_c_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir).expect("read Lexbor source dir");
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.to_string_lossy().contains("windows_nt") {
+            continue;
+        }
+        if path.is_dir() {
+            collect_c_sources(&path, out);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("c") {
             out.push(path);
         }
     }
 }
 
-fn verify_zip_sha256(zip_path: &Path) -> bool {
-    for (prog, args) in [
-        ("sha256sum", vec![zip_path.to_str().unwrap_or("")]),
-        ("shasum", vec!["-a", "256", zip_path.to_str().unwrap_or("")]),
-    ] {
-        if let Ok(output) = Command::new(prog).args(&args).output()
-            && output.status.success()
-            && let Ok(text) = String::from_utf8(output.stdout)
-            && let Some(digest) = text.split_whitespace().next()
-        {
-            return digest.eq_ignore_ascii_case(LEXBOR_ZIP_SHA256);
-        }
-    }
-    false
-}
-
-fn locate_or_fetch_verified_archive(out_dir: &Path) -> PathBuf {
-    let zip_name = format!("lexbor-{LEXBOR_COMMIT}.zip");
-    let mut candidates = Vec::new();
-    if let Some(explicit) = env::var_os("ATHENA_LEXBOR_ARCHIVE_CACHE")
-        && !explicit.is_empty()
-    {
-        candidates.push(PathBuf::from(explicit));
-    }
-    if let Some(home) = env::var_os("HOME") {
-        candidates.push(
-            PathBuf::from(home)
-                .join("athena_data")
-                .join("v5_pinned")
-                .join(&zip_name),
-        );
-    }
-    candidates.push(PathBuf::from("/tmp/athena-lexbor-cache").join(&zip_name));
-    candidates.push(out_dir.join(&zip_name));
-
-    for candidate in &candidates {
-        if candidate.is_file() && verify_zip_sha256(candidate) {
-            return candidate.clone();
-        }
-    }
-
-    if env::var("ATHENA_OFFLINE").ok().as_deref() == Some("1") {
-        panic!("ATHENA_OFFLINE=1 and no SHA-256-verified Lexbor archive found in cache");
-    }
-
-    let dest = out_dir.join(&zip_name);
-    let url = format!("https://codeload.github.com/lexbor/lexbor/zip/{LEXBOR_COMMIT}");
-    let status = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "120",
-            "--max-filesize",
-            "16777216",
-            &url,
-            "--output",
-        ])
-        .arg(&dest)
-        .status()
-        .expect("curl is required when no cached Lexbor archive is present");
-    assert!(status.success(), "failed to download pinned Lexbor archive");
-    assert!(
-        verify_zip_sha256(&dest),
-        "downloaded Lexbor archive failed SHA-256 verification"
-    );
-    dest
-}
-
-fn build_auto_lexbor(out_dir: &Path) -> PathBuf {
-    let extracted = out_dir.join(format!("lexbor-{LEXBOR_COMMIT}"));
-    let source_include = extracted.join("source");
-    if !source_include
-        .join("lexbor/html/interfaces/document.h")
-        .is_file()
-    {
-        let archive = locate_or_fetch_verified_archive(out_dir);
-        let status = Command::new("unzip")
-            .arg("-q")
-            .arg("-o")
-            .arg(&archive)
-            .arg("-d")
-            .arg(out_dir)
-            .status()
-            .expect("unzip is required to unpack pinned Lexbor archive");
-        assert!(status.success(), "unzip failed for pinned Lexbor archive");
-    }
-
-    let mut c_files = Vec::new();
-    collect_c_files(&source_include.join("lexbor"), &mut c_files);
-    assert!(!c_files.is_empty(), "no Lexbor C sources discovered");
-
-    let mut build = cc::Build::new();
-    build
-        .include(&source_include)
-        .define("LEXBOR_STATIC", None)
-        .std("c99")
-        .opt_level(2)
-        .warnings(false);
-    for file in &c_files {
-        build.file(file);
-    }
-    build.compile("lexbor_static");
-    source_include
-}
-
-fn main() {
-    for name in [
-        "ATHENA_LEXBOR_SOURCE_DIR",
-        "ATHENA_LEXBOR_BUILD_DIR",
-        "ATHENA_LEXBOR_LIB_DIR",
-        "ATHENA_LEXBOR_ARCHIVE_CACHE",
-        "ATHENA_OFFLINE",
-    ] {
-        println!("cargo:rerun-if-env-changed={name}");
-    }
-    println!("cargo:rerun-if-changed=src/lexbor_shim.c");
-
-    let src_env = env::var_os("ATHENA_LEXBOR_SOURCE_DIR");
-    let bld_env = env::var_os("ATHENA_LEXBOR_BUILD_DIR");
-    let lib_env = env::var_os("ATHENA_LEXBOR_LIB_DIR");
-
-    let (source_include, extra_include) = match (src_env, bld_env, lib_env) {
-        (Some(src), Some(bld), Some(lib)) => {
-            let source = PathBuf::from(src);
-            let build = PathBuf::from(bld);
-            let libraries = PathBuf::from(lib);
-            let include = source.join("source");
-            if !include.join("lexbor/html/interfaces/document.h").is_file()
-                || !build.is_dir()
-                || !libraries.is_dir()
-            {
-                panic!("Lexbor source/build/library paths do not identify the pinned native build");
-            }
-            println!("cargo:rustc-link-search=native={}", libraries.display());
-            println!("cargo:rustc-link-lib=static=lexbor_static");
-            (include, Some(build))
-        }
-        (None, None, None) => {
-            let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"));
-            let include = build_auto_lexbor(&out_dir);
-            (include, None)
-        }
-        _ => panic!(
-            "ATHENA_LEXBOR_SOURCE_DIR, ATHENA_LEXBOR_BUILD_DIR, and ATHENA_LEXBOR_LIB_DIR must either all be set or all be unset"
-        ),
-    };
-
-    let mut shim = cc::Build::new();
-    shim.file("src/lexbor_shim.c")
-        .include(&source_include)
-        .define("LEXBOR_STATIC", None)
-        .std("c11")
-        .warnings(true)
-        .warnings_into_errors(true);
-    if let Some(build_dir) = extra_include {
-        shim.include(build_dir);
-    }
-    shim.compile("athena_lexbor_shim");
-
-    let target = env::var("TARGET").expect("Cargo sets TARGET");
-    if target.contains("linux") || target.contains("freebsd") {
-        for library in ["m", "dl", "pthread"] {
-            println!("cargo:rustc-link-lib={library}");
-        }
-    } else if target.contains("apple") || target.contains("darwin") {
-        for library in ["m", "pthread"] {
-            println!("cargo:rustc-link-lib={library}");
+fn copy_headers_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create header dir");
+    for entry in fs::read_dir(src).expect("read header dir") {
+        let path = entry.expect("header entry").path();
+        let target = dst.join(path.file_name().expect("file_name"));
+        if path.is_dir() {
+            copy_headers_recursive(&path, &target);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("h") {
+            fs::copy(&path, &target).expect("copy header");
         }
     }
 }

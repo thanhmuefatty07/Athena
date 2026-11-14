@@ -5,6 +5,7 @@ use athena_core_v2::projection::{
     project_research_nodes,
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     error::Error,
     ffi::{c_int, c_void},
@@ -26,6 +27,13 @@ pub enum LexborAttrProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LexborCharsetMode {
+    #[default]
+    StrictUtf8,
+    TranscodeWhatwg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LexborHeapCounters {
     pub alloc_calls: usize,
     pub live_bytes: usize,
@@ -36,6 +44,7 @@ pub struct LexborHeapCounters {
 pub enum LexborError {
     InvalidResourceBudget,
     InvalidBaseUrl,
+    InvalidUtf8,
     ParseFailed(String),
     ProjectionFailed(String),
 }
@@ -45,6 +54,7 @@ impl fmt::Display for LexborError {
         match self {
             Self::InvalidResourceBudget => f.write_str("invalid resource budget"),
             Self::InvalidBaseUrl => f.write_str("invalid base URL"),
+            Self::InvalidUtf8 => f.write_str("input is not valid UTF-8 under strict_utf8 mode"),
             Self::ParseFailed(msg) | Self::ProjectionFailed(msg) => f.write_str(msg),
         }
     }
@@ -105,12 +115,17 @@ type NodeCallback = unsafe extern "C" fn(
 type DiagnosticCallback =
     unsafe extern "C" fn(*mut c_void, u8, usize, *const u8, usize, usize, usize) -> c_int;
 
+pub type LexborGrowthHook = extern "C" fn(usize);
+
 const MAX_DIAGNOSTIC_EVENTS: usize = 256;
 
 const EVENT_NODE: u8 = 0;
 const EVENT_ATTRIBUTE: u8 = 1;
 const NODE_ELEMENT: u8 = 1;
 const NODE_TEXT: u8 = 2;
+
+const TRANSCODE_OK: c_int = 0;
+const TRANSCODE_ERR_TOO_LARGE: c_int = 3;
 
 unsafe extern "C" {
     fn athena_lexbor_parse(
@@ -145,6 +160,34 @@ unsafe extern "C" {
         live_bytes_out: *mut usize,
         peak_bytes_out: *mut usize,
     );
+
+    fn athena_lxb_current_live_bytes() -> usize;
+
+    fn athena_lxb_set_growth_hook(hook: Option<LexborGrowthHook>);
+
+    fn athena_lexbor_transcode_whatwg_utf8(
+        raw: *const u8,
+        raw_len: usize,
+        headers: *const u8,
+        headers_len: usize,
+        max_output_bytes: usize,
+        utf8_out: *mut *mut u8,
+        utf8_len_out: *mut usize,
+    ) -> c_int;
+
+    fn athena_lexbor_free_buffer(buf: *mut u8);
+}
+
+#[inline]
+pub fn lexbor_current_live_bytes() -> usize {
+    unsafe { athena_lxb_current_live_bytes() }
+}
+
+#[inline]
+pub fn lexbor_set_growth_hook(hook: Option<LexborGrowthHook>) {
+    unsafe {
+        athena_lxb_set_growth_hook(hook);
+    }
 }
 
 pub fn lexbor_shim_reset_and_enable_metering() -> LexborHeapCounters {
@@ -183,6 +226,118 @@ pub fn lexbor_shim_heap_counters() -> LexborHeapCounters {
     }
 }
 
+struct CBufferGuard(*mut u8);
+
+impl Drop for CBufferGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                athena_lexbor_free_buffer(self.0);
+            }
+        }
+    }
+}
+
+/// Sniffs BOM / HTTP `Content-Type` / `<meta>` charset via Lexbor's `lxb_html_encoding`
+/// and transcodes raw HTML bytes to validated UTF-8 via `lxb_encoding_decode` (`0` `from_utf8_lossy`).
+pub fn transcode_html_whatwg_utf8(
+    raw_body: &[u8],
+    raw_headers: &[u8],
+    max_output_bytes: usize,
+) -> Result<String, LexborError> {
+    if raw_body.len() > max_output_bytes {
+        return Err(LexborError::InvalidResourceBudget);
+    }
+    let mut out_ptr: *mut u8 = ptr::null_mut();
+    let mut out_len: usize = 0;
+    let rc = unsafe {
+        athena_lexbor_transcode_whatwg_utf8(
+            raw_body.as_ptr(),
+            raw_body.len(),
+            if raw_headers.is_empty() {
+                ptr::null()
+            } else {
+                raw_headers.as_ptr()
+            },
+            raw_headers.len(),
+            max_output_bytes,
+            ptr::addr_of_mut!(out_ptr),
+            ptr::addr_of_mut!(out_len),
+        )
+    };
+    let guard = CBufferGuard(out_ptr);
+    if rc == TRANSCODE_ERR_TOO_LARGE {
+        return Err(LexborError::InvalidResourceBudget);
+    }
+    if rc != TRANSCODE_OK {
+        return Err(LexborError::ParseFailed(format!(
+            "Lexbor WHATWG transcoding failed with code {rc}"
+        )));
+    }
+    let vec = if out_len == 0 {
+        Vec::new()
+    } else {
+        if guard.0.is_null() {
+            return Err(LexborError::ParseFailed(
+                "Lexbor WHATWG transcoding returned null buffer".into(),
+            ));
+        }
+        let bytes = unsafe { slice::from_raw_parts(guard.0, out_len) };
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| LexborError::InvalidResourceBudget)?;
+        owned.extend_from_slice(bytes);
+        owned
+    };
+    drop(guard);
+    String::from_utf8(vec).map_err(|_| LexborError::InvalidUtf8)
+}
+
+fn has_utf16_bom(bytes: &[u8]) -> bool {
+    bytes.len() >= 2
+        && ((bytes[0] == 0xFE && bytes[1] == 0xFF) || (bytes[0] == 0xFF && bytes[1] == 0xFE))
+}
+
+fn prepare_utf8_input<'a>(
+    raw_body: &'a [u8],
+    raw_headers: &[u8],
+    max_input_bytes: usize,
+    charset_mode: LexborCharsetMode,
+) -> Result<Cow<'a, str>, LexborError> {
+    if raw_body.len() > max_input_bytes {
+        return Err(LexborError::InvalidResourceBudget);
+    }
+    match charset_mode {
+        LexborCharsetMode::StrictUtf8 => {
+            let s = std::str::from_utf8(raw_body).map_err(|_| LexborError::InvalidUtf8)?;
+            Ok(Cow::Borrowed(s))
+        }
+        LexborCharsetMode::TranscodeWhatwg => {
+            if raw_headers.is_empty()
+                && !has_utf16_bom(raw_body)
+                && let Ok(valid_utf8) = std::str::from_utf8(raw_body)
+            {
+                // Still check if an explicit non-UTF-8 <meta charset> would reinterpret ASCII?
+                // Valid UTF-8 has identical ASCII 0x00..0x7F and multibyte sequences rarely collide
+                // with valid legacy single-byte unless <meta charset> overrides high bytes.
+                let prefix_len = valid_utf8.len().min(2048);
+                let ascii_only = raw_body.iter().all(|&b| b < 0x80);
+                let has_meta_charset = raw_body[..prefix_len]
+                    .windows(7)
+                    .any(|w| w.eq_ignore_ascii_case(b"charset"));
+                if ascii_only || !has_meta_charset {
+                    let trimmed = valid_utf8.strip_prefix('\u{FEFF}').unwrap_or(valid_utf8);
+                    return Ok(Cow::Borrowed(trimmed));
+                }
+            }
+            let max_out = max_input_bytes.saturating_mul(3).min(u32::MAX as usize);
+            let decoded = transcode_html_whatwg_utf8(raw_body, raw_headers, max_out)?;
+            Ok(Cow::Owned(decoded))
+        }
+    }
+}
+
 struct Collector {
     document_node: usize,
     max_parser_nodes: usize,
@@ -191,7 +346,6 @@ struct Collector {
     diagnostic_events: Vec<LexborDiagnosticEvent>,
     capture_diagnostics: bool,
     diagnostics_truncated: bool,
-    lossy_utf8: bool,
     input_base: usize,
     input_len: usize,
     error: Option<&'static str>,
@@ -211,12 +365,7 @@ struct RawNodeEvent {
 }
 
 impl Collector {
-    fn new_bytes(
-        max_parser_nodes: usize,
-        capture_diagnostics: bool,
-        lossy_utf8: bool,
-        input: &[u8],
-    ) -> Self {
+    fn new_str(max_parser_nodes: usize, capture_diagnostics: bool, input: &str) -> Self {
         Self {
             document_node: 0,
             max_parser_nodes,
@@ -225,7 +374,6 @@ impl Collector {
             diagnostic_events: Vec::new(),
             capture_diagnostics,
             diagnostics_truncated: false,
-            lossy_utf8,
             input_base: input.as_ptr() as usize,
             input_len: input.len(),
             error: None,
@@ -255,7 +403,6 @@ impl Collector {
                 copied.push_str(value);
                 Ok(copied)
             }
-            Err(_) if self.lossy_utf8 => Ok(String::from_utf8_lossy(bytes).into_owned()),
             Err(_) => Err("Lexbor returned invalid UTF-8"),
         }
     }
@@ -478,12 +625,7 @@ fn parse_tree_internal(
         return Err("invalid resource budget".into());
     }
 
-    let mut collector = Collector::new_bytes(
-        limits.max_parser_nodes,
-        capture_diagnostics,
-        false,
-        html.as_bytes(),
-    );
+    let mut collector = Collector::new_str(limits.max_parser_nodes, capture_diagnostics, html);
     let mut tree_errors = 0usize;
     let mut tokenizer_errors = 0usize;
     let status = unsafe {
@@ -519,22 +661,29 @@ fn parse_tree_internal(
     ))
 }
 
-pub fn parse_tree_with_limits_and_profile(
+pub fn parse_tree_with_limits_profile_and_charset(
     html: &[u8],
+    raw_headers: &[u8],
     limits: ParseLimits,
     profile: LexborAttrProfile,
+    charset_mode: LexborCharsetMode,
 ) -> Result<LexborTree, LexborError> {
     if !validate_limits(html.len(), limits) {
         return Err(LexborError::InvalidResourceBudget);
     }
+    let decoded = prepare_utf8_input(html, raw_headers, limits.max_html_bytes, charset_mode)?;
+    let utf8_str = decoded.as_ref();
+    if utf8_str.len() > u32::MAX as usize {
+        return Err(LexborError::InvalidResourceBudget);
+    }
 
-    let mut collector = Collector::new_bytes(limits.max_parser_nodes, false, true, html);
+    let mut collector = Collector::new_str(limits.max_parser_nodes, false, utf8_str);
     let mut tree_errors = 0usize;
     let mut tokenizer_errors = 0usize;
     let status = unsafe {
         athena_lexbor_parse_with_profile(
-            html.as_ptr(),
-            html.len(),
+            utf8_str.as_ptr(),
+            utf8_str.len(),
             profile as u8,
             collect_node,
             ptr::addr_of_mut!(collector).cast(),
@@ -544,14 +693,13 @@ pub fn parse_tree_with_limits_and_profile(
         )
     };
     if let Some(error) = collector.error {
-        return Err(LexborError::ParseFailed(error.into()));
+        return Err(LexborError::ParseFailed(error.to_owned()));
     }
     if status != 0 {
         return Err(LexborError::ParseFailed(format!(
             "Lexbor parse failed with status {status}"
         )));
     }
-
     Ok(LexborTree {
         nodes: collector.nodes,
         diagnostics: LexborDiagnostics {
@@ -561,11 +709,62 @@ pub fn parse_tree_with_limits_and_profile(
     })
 }
 
+pub fn parse_tree_with_limits_and_profile(
+    html: &[u8],
+    limits: ParseLimits,
+    profile: LexborAttrProfile,
+) -> Result<LexborTree, LexborError> {
+    let mode = if !has_utf16_bom(html) && std::str::from_utf8(html).is_ok() {
+        LexborCharsetMode::StrictUtf8
+    } else {
+        LexborCharsetMode::TranscodeWhatwg
+    };
+    parse_tree_with_limits_profile_and_charset(html, &[], limits, profile, mode)
+}
+
 pub fn parse_tree_with_profile(
     html: &[u8],
     profile: LexborAttrProfile,
 ) -> Result<LexborTree, LexborError> {
     parse_tree_with_limits_and_profile(html, ParseLimits::default(), profile)
+}
+
+pub fn parse_and_project_pure_with_charset(
+    html: &[u8],
+    raw_headers: &[u8],
+    base_url: &str,
+    limits: ParseLimits,
+    charset_mode: LexborCharsetMode,
+) -> Result<Projection, LexborError> {
+    if !validate_limits(html.len(), limits) {
+        return Err(LexborError::InvalidResourceBudget);
+    }
+    let base = Url::parse(base_url).map_err(|_| LexborError::InvalidBaseUrl)?;
+    let decoded = prepare_utf8_input(html, raw_headers, limits.max_html_bytes, charset_mode)?;
+    let utf8_bytes = decoded.as_bytes();
+    let effective_limits = ParseLimits {
+        max_html_bytes: limits.max_html_bytes.max(utf8_bytes.len()),
+        ..limits
+    };
+    let tree = parse_tree_with_limits_profile_and_charset(
+        utf8_bytes,
+        &[],
+        effective_limits,
+        LexborAttrProfile::Minimal,
+        LexborCharsetMode::StrictUtf8,
+    )?;
+    let warning_count = tree
+        .diagnostics
+        .tree_errors
+        .saturating_add(tree.diagnostics.tokenizer_errors);
+    project_research_nodes(
+        utf8_bytes.len(),
+        &tree.nodes,
+        &base,
+        effective_limits,
+        warning_count,
+    )
+    .map_err(|err| LexborError::ProjectionFailed(err.to_owned()))
 }
 
 /// Pure Lexbor parse + Athena projection with zero `html5ever` invocations (`G5`, `T2b`).
@@ -574,17 +773,12 @@ pub fn parse_and_project_pure(
     base_url: &str,
     limits: ParseLimits,
 ) -> Result<Projection, LexborError> {
-    if !validate_limits(html.len(), limits) {
-        return Err(LexborError::InvalidResourceBudget);
-    }
-    let base = Url::parse(base_url).map_err(|_| LexborError::InvalidBaseUrl)?;
-    let tree = parse_tree_with_limits_and_profile(html, limits, LexborAttrProfile::Minimal)?;
-    let warning_count = tree
-        .diagnostics
-        .tree_errors
-        .saturating_add(tree.diagnostics.tokenizer_errors);
-    project_research_nodes(html.len(), &tree.nodes, &base, limits, warning_count)
-        .map_err(|err| LexborError::ProjectionFailed(err.to_owned()))
+    let mode = if !has_utf16_bom(html) && std::str::from_utf8(html).is_ok() {
+        LexborCharsetMode::StrictUtf8
+    } else {
+        LexborCharsetMode::TranscodeWhatwg
+    };
+    parse_and_project_pure_with_charset(html, &[], base_url, limits, mode)
 }
 
 pub fn parse_tree(html: &str, limits: ParseLimits) -> Result<LexborTree, String> {
@@ -636,13 +830,26 @@ fn project_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::cell::Cell as TlsCell;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
 
-    static METER_LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HOOK_MAX_C_LIVE: TlsCell<usize> = const { TlsCell::new(0) };
+        static HOOK_CALLS: TlsCell<usize> = const { TlsCell::new(0) };
+    }
+
+    extern "C" fn record_c_growth(c_live: usize) {
+        HOOK_CALLS.with(|c| c.set(c.get() + 1));
+        HOOK_MAX_C_LIVE.with(|m| {
+            if c_live > m.get() {
+                m.set(c_live);
+            }
+        });
+    }
 
     #[test]
     fn lexbor_memory_setup_tracks_1000_node_peak_and_zero_live_after_destroy() {
-        let _guard = METER_LOCK.lock().expect("metering lock");
         let mut html = String::from("<!doctype html><html><body><main>");
         for idx in 0..1_000 {
             html.push_str(&format!(
@@ -651,6 +858,9 @@ mod tests {
         }
         html.push_str("</main></body></html>");
 
+        HOOK_CALLS.with(|c| c.set(0));
+        HOOK_MAX_C_LIVE.with(|m| m.set(0));
+        lexbor_set_growth_hook(Some(record_c_growth));
         let reset = lexbor_shim_reset_and_enable_metering();
         assert_eq!(reset.alloc_calls, 0);
         assert_eq!(reset.live_bytes, 0);
@@ -658,6 +868,7 @@ mod tests {
 
         let tree = parse_tree_with_profile(html.as_bytes(), LexborAttrProfile::Minimal)
             .expect("1000-node DOM parses");
+        lexbor_set_growth_hook(None);
         assert!(tree.nodes.len() >= 2_000);
 
         let after = lexbor_shim_heap_counters();
@@ -671,11 +882,62 @@ mod tests {
             after.live_bytes, 0,
             "lxb_html_document_destroy must release 100% of Lexbor C heap allocations"
         );
+        assert_eq!(lexbor_current_live_bytes(), 0);
+        assert!(HOOK_CALLS.with(|c| c.get()) > 0);
+        assert_eq!(HOOK_MAX_C_LIVE.with(|m| m.get()), after.peak_bytes);
+    }
+
+    #[test]
+    fn thread_local_lexbor_counters_never_cross_contaminate_across_concurrent_threads() {
+        let workers = 8usize;
+        let barrier = Arc::new(Barrier::new(workers));
+        let mut handles = Vec::with_capacity(workers);
+
+        for tid in 0..workers {
+            let b = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || {
+                b.wait();
+                let reset = lexbor_shim_reset_and_enable_metering();
+                assert_eq!(reset.alloc_calls, 0);
+                assert_eq!(reset.live_bytes, 0);
+
+                if tid % 2 == 0 {
+                    // Idle thread: zero Lexbor calls while odd threads allocate heavily
+                    b.wait();
+                    let snap = lexbor_shim_heap_counters();
+                    assert_eq!(
+                        snap.alloc_calls, 0,
+                        "idle thread {tid} polluted by sibling threads: {snap:?}"
+                    );
+                    assert_eq!(snap.peak_bytes, 0);
+                    assert_eq!(snap.live_bytes, 0);
+                } else {
+                    let mut big = String::from("<!doctype html><html><body><main>");
+                    for i in 0..600 {
+                        big.push_str(&format!(
+                            "<article id=\"a-{tid}-{i}\"><p>Item {i}</p></article>"
+                        ));
+                    }
+                    big.push_str("</main></body></html>");
+                    let tree = parse_tree_with_profile(big.as_bytes(), LexborAttrProfile::StageIr)
+                        .expect("parse heavy html");
+                    assert!(tree.nodes.len() > 1_200);
+                    b.wait();
+                    let snap = lexbor_shim_heap_counters();
+                    assert!(snap.alloc_calls > 0);
+                    assert!(snap.peak_bytes > 16 * 1024);
+                    assert_eq!(snap.live_bytes, 0);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
     }
 
     #[test]
     fn attr_profiles_distill_cloaking_styles_without_benign_css_heap_bloat() {
-        let _guard = METER_LOCK.lock().expect("metering lock");
         let huge_svg_bg = "A".repeat(32 * 1024);
         let html = format!(
             "<main>\
@@ -731,24 +993,147 @@ mod tests {
             .find(|(k, _)| k == "style")
             .map(|(_, v)| v.as_str())
             .expect("distilled style present on cloaked element");
-        assert_eq!(style_val, "display:none;opacity:0");
+        assert_eq!(style_val, "color:red;display:none;opacity:0");
         assert!(style_val.len() < 64);
     }
 
     #[test]
+    fn stage_ir_preserves_all_16_css_properties_non_transparent_colors_and_all_25_attributes() {
+        let html = b"<main>\
+            <span id=\"wcag-hex\" style=\"color: #FEFEFE; background-color: #FFFFFF\">low contrast hex</span>\
+            <span id=\"wcag-rgb\" style=\"color: rgb(250, 251, 252); background-color: rgba(255, 255, 255, 0.98)\">low contrast rgb</span>\
+            <span id=\"wcag-hsl\" style=\"color: hsl(120, 100%, 25%); background-color: ivory; background: #fff url(data:image/png;base64,AAAA) no-repeat\">hsl + named</span>\
+            <div id=\"all16\" style=\"color:#112233;background-color:#abcdef;background:#fff;left:-9999px;top:-5000px;text-indent:-9999px;width:0;height:0;overflow:hidden;opacity:0.02;font-size:0px;visibility:hidden;display:none;clip:rect(0, 0, 0, 0);clip-path:inset(100%);transform:translateX(-9999px) scale(0)\">cloaked</div>\
+            <math id=\"m1\" alttext=\"E=mc^2\" display=\"block\" notation=\"LaTeX\" data-mw=\"{}\" data-latex=\"E=mc^2\" data-tex=\"E=mc^2\" data-lang=\"tex\" data-language=\"latex\" title=\"formula\" lang=\"en\" dir=\"ltr\" role=\"math\" aria-hidden=\"false\" hidden></math>\
+            <table><tr><th id=\"h1\" scope=\"col\" abbr=\"Rev\" colspan=\"2\" rowspan=\"1\">Revenue</th></tr><tr><td headers=\"h1\"><a href=\"/doc\" rel=\"nofollow\"><img src=\"/fig.png\" alt=\"diagram\"/></a></td></tr></table>\
+            </main>";
+
+        let tree = parse_tree_with_profile(html, LexborAttrProfile::StageIr).expect("stage_ir");
+        let by_id = |target: &str| -> &ResearchNode {
+            tree.nodes
+                .iter()
+                .find(|n| n.attr("id") == Some(target))
+                .unwrap_or_else(|| panic!("missing element #{target}"))
+        };
+
+        assert_eq!(
+            by_id("wcag-hex").attr("style"),
+            Some("color:#fefefe;background-color:#ffffff")
+        );
+        assert_eq!(
+            by_id("wcag-rgb").attr("style"),
+            Some("color:rgb(250,251,252);background-color:rgba(255,255,255,0.98)")
+        );
+        assert_eq!(
+            by_id("wcag-hsl").attr("style"),
+            Some("color:hsl(120,100%,25%);background-color:ivory;background:#fff no-repeat")
+        );
+
+        let all16_style = by_id("all16").attr("style").expect("all16 style");
+        for prop in [
+            "color:#112233",
+            "background-color:#abcdef",
+            "background:#fff",
+            "left:-9999px",
+            "top:-5000px",
+            "text-indent:-9999px",
+            "width:0",
+            "height:0",
+            "overflow:hidden",
+            "opacity:0.02",
+            "font-size:0px",
+            "visibility:hidden",
+            "display:none",
+            "clip:rect(0,0,0,0)",
+            "clip-path:inset(100%)",
+            "transform:translatex(-9999px) scale(0)",
+        ] {
+            assert!(
+                all16_style.split(';').any(|d| d == prop),
+                "missing normalized declaration {prop:?} in {all16_style:?}"
+            );
+        }
+
+        let m1 = by_id("m1");
+        for (k, v) in [
+            ("alttext", "E=mc^2"),
+            ("display", "block"),
+            ("notation", "LaTeX"),
+            ("data-mw", "{}"),
+            ("data-latex", "E=mc^2"),
+            ("data-tex", "E=mc^2"),
+            ("data-lang", "tex"),
+            ("data-language", "latex"),
+            ("title", "formula"),
+            ("lang", "en"),
+            ("dir", "ltr"),
+            ("role", "math"),
+            ("aria-hidden", "false"),
+            ("hidden", ""),
+        ] {
+            assert_eq!(m1.attr(k), Some(v), "missing attribute {k} on math node");
+        }
+
+        let h1 = by_id("h1");
+        assert_eq!(h1.attr("scope"), Some("col"));
+        assert_eq!(h1.attr("abbr"), Some("Rev"));
+        assert_eq!(h1.attr("colspan"), Some("2"));
+        assert_eq!(h1.attr("rowspan"), Some("1"));
+
+        let td = tree.nodes.iter().find(|n| n.name == "td").expect("td node");
+        assert_eq!(td.attr("headers"), Some("h1"));
+        let a = tree.nodes.iter().find(|n| n.name == "a").expect("a node");
+        assert_eq!(a.attr("href"), Some("/doc"));
+        assert_eq!(a.attr("rel"), Some("nofollow"));
+        let img = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "img")
+            .expect("img node");
+        assert_eq!(img.attr("src"), Some("/fig.png"));
+        assert_eq!(img.attr("alt"), Some("diagram"));
+    }
+
+    #[test]
+    fn whatwg_transcoding_decodes_shift_jis_and_strict_utf8_rejects_non_utf8() {
+        // Shift_JIS bytes for "日本語" (\x93\xfa\x96\x7b\x8c\xea)
+        let sjis_html = b"<html><head><meta charset=\"Shift_JIS\"></head><body><main><p>\x93\xfa\x96\x7b\x8c\xea</p></main></body></html>";
+
+        let strict_err = parse_and_project_pure_with_charset(
+            sjis_html,
+            &[],
+            "https://www.w3.org/International/",
+            Limits::default(),
+            LexborCharsetMode::StrictUtf8,
+        );
+        assert!(matches!(strict_err, Err(LexborError::InvalidUtf8)));
+
+        let proj = parse_and_project_pure_with_charset(
+            sjis_html,
+            &[],
+            "https://www.w3.org/International/",
+            Limits::default(),
+            LexborCharsetMode::TranscodeWhatwg,
+        )
+        .expect("transcoded Shift_JIS projection");
+        assert!(
+            proj.chunks.iter().any(|c| c.text.contains("日本語")),
+            "expected decoded 日本語 in chunks"
+        );
+    }
+
+    #[test]
     fn parse_and_project_pure_projects_without_html5ever() {
-        let _guard = METER_LOCK.lock().expect("metering lock");
         let html = b"<!doctype html><html><head><title>Pure Lexbor</title></head>\
                      <body><main><h1>Heading</h1><p>Alpha <a href=\"/next\">link</a> omega.</p></main></body></html>";
-        let proj =
-            parse_and_project_pure(html, "https://example.org/docs/start", Limits::default())
-                .expect("pure projection");
+        let proj = parse_and_project_pure(html, "https://www.w3.org/docs/start", Limits::default())
+            .expect("pure projection");
         assert!(proj.chunks.iter().any(|c| c.text == "Heading"));
         assert!(
             proj.chunks
                 .iter()
                 .any(|c| c.text.contains("Alpha link omega."))
         );
-        assert!(proj.links.iter().any(|l| l == "https://example.org/next"));
+        assert!(proj.links.iter().any(|l| l == "https://www.w3.org/next"));
     }
 }

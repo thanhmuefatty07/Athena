@@ -1,216 +1,350 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-commit=2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe
-archive_sha256=2ac0d4234a305a6e992a6a5d2bb0ebb468be93a22e5631e334f7da8c127ba282
+commit="2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe"
+expected_sha256="2ac0d4234a305a6e992a6a5d2bb0ebb468be93a22e5631e334f7da8c127ba282"
 archive_url="https://codeload.github.com/lexbor/lexbor/zip/${commit}"
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-repo_root="$(cd "${script_dir}/../.." && pwd -P)"
 
-fail() { printf 'ERROR: %s\n' "$*" >&2; exit 2; }
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+canary_src="${script_dir}/canary.c"
+adapter_manifest="${repo_root}/cloud_experiments/lexbor_adapter/Cargo.toml"
 
-if [[ $# == 0 && -n "${ATHENA_LEXBOR_WORK_ROOT:-}" ]]; then
-    raw_scratch="$ATHENA_LEXBOR_WORK_ROOT"
-elif [[ $# == 1 ]]; then
-    raw_scratch="$1"
-else
-    fail 'usage: build_and_smoke.sh ABSOLUTE_FRESH_SCRATCH_ROOT'
+sanitizer="${ATHENA_LEXBOR_SANITIZER:-none}"
+case "$sanitizer" in
+    ""|none)
+        sanitizer="none"
+        ;;
+    address_undefined|thread)
+        ;;
+    *)
+        echo "unsupported ATHENA_LEXBOR_SANITIZER=${sanitizer} (expected none, address_undefined, or thread)" >&2
+        exit 2
+        ;;
+esac
+
+auto_scratch_parent=""
+cleanup_auto_scratch() {
+    if [[ -n "$auto_scratch_parent" && -d "$auto_scratch_parent" ]]; then
+        rm -rf "$auto_scratch_parent"
+    fi
+}
+trap cleanup_auto_scratch EXIT
+
+if [[ $# -gt 1 ]]; then
+    echo "usage: build_and_smoke.sh [ABSOLUTE_FRESH_SCRATCH_ROOT]" >&2
+    exit 2
 fi
-[[ "$raw_scratch" == /* ]] || fail 'scratch root must be an absolute path'
+if [[ $# -eq 1 ]]; then
+    scratch="$1"
+elif [[ -n "${ATHENA_LEXBOR_WORK_ROOT:-}" ]]; then
+    scratch="$ATHENA_LEXBOR_WORK_ROOT"
+else
+    auto_scratch_parent="$(mktemp -d "${TMPDIR:-/tmp}/athena-lexbor-smoke.XXXXXX")"
+    scratch="${auto_scratch_parent}/run"
+fi
 
-for tool in cargo rustc cc ar unzip python3; do
-    command -v "$tool" >/dev/null 2>&1 || fail "required tool not found: $tool"
-done
+if [[ -z "$scratch" || "$scratch" != /* || -e "$scratch" ]]; then
+    echo "scratch root must be a non-existing absolute path: $scratch" >&2
+    exit 2
+fi
+
+case "$scratch" in
+    "$repo_root"|"$repo_root"/*)
+        echo "scratch root must be outside repository root: $scratch" >&2
+        exit 2
+        ;;
+esac
+
+v5_pinned_dir="${HOME:-}/athena_data/v5_pinned"
+case "$scratch" in
+    "$v5_pinned_dir"|"$v5_pinned_dir"/*)
+        echo "scratch root must never touch read-only v5_pinned: $scratch" >&2
+        exit 2
+        ;;
+esac
+
+mkdir -p "$scratch"
 
 sha256_file() {
-    local target="$1"
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$target" | awk '{print $1}'
-    elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$target" | awk '{print $1}'
+        sha256sum "$1" | awk '{print $1}'
     else
-        python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$target"
+        shasum -a 256 "$1" | awk '{print $1}'
     fi
 }
 
-scratch="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$raw_scratch")"
-case "${scratch}/" in
-    "${repo_root}/"*) fail 'scratch root must be outside the repository' ;;
-esac
-[[ ! -e "$scratch" && ! -L "$scratch" ]] || fail 'scratch root must not already exist'
+now_ms() {
+    python3 -c 'import time; print(int(time.time() * 1000))'
+}
 
-if rustc --version 2>/dev/null | grep -q '^rustc 1\.99\.1 '; then
-    rustc_cmd=(rustc)
-    cargo_cmd=(cargo)
-elif rustc +1.99.1 --version >/dev/null 2>&1 && cargo +1.99.1 --version >/dev/null 2>&1; then
-    rustc_cmd=(rustc +1.99.1)
-    cargo_cmd=(cargo +1.99.1)
-else
-    fail 'Rust 1.99.1 must be installed before this run'
-fi
-"${rustc_cmd[@]}" --version >/dev/null 2>&1 || fail 'Rust 1.99.1 check failed'
-"${cargo_cmd[@]}" --version >/dev/null 2>&1 || fail 'Cargo 1.99.1 check failed'
+step_log="${scratch}/steps.tsv"
+: > "$step_log"
 
-scratch_parent="$(dirname "$scratch")"
-[[ -d "$scratch_parent" ]] || fail 'scratch parent must already exist'
-free_kib="$(df -Pk "$scratch_parent" | awk 'NR==2 {print $4}')"
-[[ "$free_kib" =~ ^[0-9]+$ ]] || fail 'cannot measure scratch capacity'
-(( free_kib >= 8388608 )) || fail 'need at least 8 GiB free for the pinned native and Rust adapter build'
-
-mkdir "$scratch"
-archive="$scratch/lexbor-${commit}.zip"
-source="$scratch/lexbor-${commit}"
-build="$scratch/build"
-logs="$scratch/logs"
-mkdir "$logs"
-
-pinned_local_cache="${HOME:-}/athena_data/v5_pinned/lexbor-${commit}.zip"
-archive_cache="${ATHENA_LEXBOR_ARCHIVE_CACHE:-}"
-if [[ -z "$archive_cache" && -n "${HOME:-}" && -d "${HOME}/athena_data/v5_pinned" ]]; then
-    archive_cache="$pinned_local_cache"
-fi
-
-for candidate_cache in "$archive_cache" "$pinned_local_cache"; do
-    if [[ -n "$candidate_cache" && -f "$candidate_cache" && ! -L "$candidate_cache" ]]; then
-        cached_sha256="$(sha256_file "$candidate_cache")"
-        if [[ "$cached_sha256" == "$archive_sha256" ]]; then
-            cp "$candidate_cache" "$archive"
-            break
-        fi
+run_step() {
+    local name="$1"
+    shift
+    local log="${scratch}/${name}.log"
+    local started ended rc
+    started="$(now_ms)"
+    set +e
+    "$@" >"$log" 2>&1
+    rc=$?
+    set -e
+    ended="$(now_ms)"
+    printf '%s\t%s\t%s\t%s\n' "$name" "$rc" "$((ended - started))" "$log" >> "$step_log"
+    if [[ "$rc" -ne 0 ]]; then
+        cat "$log" >&2
+        return "$rc"
     fi
-done
+}
 
-if [[ ! -f "$archive" ]]; then
-    [[ "${ATHENA_OFFLINE:-0}" != "1" ]] || fail 'offline mode requires a pre-verified ATHENA_LEXBOR_ARCHIVE_CACHE'
-    command -v curl >/dev/null 2>&1 || fail 'required tool not found: curl'
-    curl --fail --location --silent --show-error --max-time 120 --max-filesize 16777216 \
-        "$archive_url" --output "$archive"
+archive="${scratch}/lexbor-${commit}.zip"
+pinned_local_cache="${v5_pinned_dir}/lexbor-${commit}.zip"
+explicit_archive_cache="${ATHENA_LEXBOR_ARCHIVE_CACHE:-}"
+
+if [[ -n "$explicit_archive_cache" ]]; then
+    case "$explicit_archive_cache" in
+        "$v5_pinned_dir"|"$v5_pinned_dir"/*)
+            # Treat anything under ~/athena_data/v5_pinned as strictly read-only.
+            if [[ ! -f "$explicit_archive_cache" ]]; then
+                echo "refusing to write missing archive inside read-only v5_pinned: $explicit_archive_cache" >&2
+                exit 2
+            fi
+            run_step fetch cp "$explicit_archive_cache" "$archive"
+            ;;
+        *)
+            if [[ -f "$explicit_archive_cache" ]]; then
+                run_step fetch cp "$explicit_archive_cache" "$archive"
+            elif [[ -f "$pinned_local_cache" ]]; then
+                run_step fetch cp "$pinned_local_cache" "$archive"
+                mkdir -p "$(dirname "$explicit_archive_cache")"
+                cp "$archive" "${explicit_archive_cache}.tmp.$$"
+                mv "${explicit_archive_cache}.tmp.$$" "$explicit_archive_cache"
+            elif [[ "${ATHENA_OFFLINE:-0}" == "1" ]]; then
+                echo "ATHENA_OFFLINE=1 and Lexbor archive cache is missing: $explicit_archive_cache" >&2
+                exit 2
+            else
+                run_step fetch curl -fsSL --retry 3 --output "$archive" "$archive_url"
+                actual_prefetch_sha256="$(sha256_file "$archive")"
+                if [[ "$actual_prefetch_sha256" != "$expected_sha256" ]]; then
+                    echo "Lexbor archive digest mismatch: expected ${expected_sha256}, got ${actual_prefetch_sha256}" >&2
+                    exit 1
+                fi
+                mkdir -p "$(dirname "$explicit_archive_cache")"
+                cp "$archive" "${explicit_archive_cache}.tmp.$$"
+                mv "${explicit_archive_cache}.tmp.$$" "$explicit_archive_cache"
+            fi
+            ;;
+    esac
+elif [[ -f "$pinned_local_cache" ]]; then
+    # Read-only copy from ~/athena_data/v5_pinned; zero writes to v5_pinned.
+    run_step fetch cp "$pinned_local_cache" "$archive"
+elif [[ "${ATHENA_OFFLINE:-0}" == "1" ]]; then
+    echo "ATHENA_OFFLINE=1 and pinned Lexbor archive is missing: $pinned_local_cache" >&2
+    exit 2
+else
+    run_step fetch curl -fsSL --retry 3 --output "$archive" "$archive_url"
 fi
+
 actual_sha256="$(sha256_file "$archive")"
-[[ "$actual_sha256" == "$archive_sha256" ]] || fail 'pinned Lexbor archive SHA-256 mismatch'
-if [[ -n "$archive_cache" && ! -e "$archive_cache" && ! -L "$archive_cache" ]]; then
-    cache_parent="$(dirname "$archive_cache")"
-    if [[ -d "$cache_parent" ]]; then
-        cp "$archive" "${archive_cache}.tmp.$$"
-        mv -f "${archive_cache}.tmp.$$" "$archive_cache"
+if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+    echo "Lexbor archive digest mismatch: expected ${expected_sha256}, got ${actual_sha256}" >&2
+    exit 1
+fi
+
+run_step unpack unzip -q "$archive" -d "$scratch"
+src_dir="${scratch}/lexbor-${commit}"
+build_dir="${scratch}/build-${sanitizer}"
+install_dir="${scratch}/install-${sanitizer}"
+
+san_cflags=()
+san_ldflags=()
+if [[ "$sanitizer" == "address_undefined" ]]; then
+    san_cflags=(-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+    san_ldflags=(-fsanitize=address,undefined)
+elif [[ "$sanitizer" == "thread" ]]; then
+    san_cflags=(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
+    san_ldflags=(-fsanitize=thread)
+fi
+
+if [[ "$sanitizer" != "none" && "$(uname -s)" == "Darwin" ]]; then
+    clang_rt_dir="$(cc --print-runtime-dir 2>/dev/null || true)"
+    if [[ -n "$clang_rt_dir" && -d "$clang_rt_dir" ]]; then
+        san_ldflags+=("-Wl,-rpath,${clang_rt_dir}")
     fi
 fi
-unzip -q "$archive" -d "$scratch"
-[[ -f "$source/CMakeLists.txt" ]] || fail 'pinned ZIP did not extract the expected source tree'
 
-run_bounded() {
-    local label="$1"; shift
-    local log="$logs/${label}.log"
-    local status=0
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --signal=TERM --kill-after=30s 900s "$@" >"$log" 2>&1 || status=$?
-    else
-        python3 - "$log" "$@" <<'PY' || status=$?
-import os, signal, subprocess, sys
-log_path = sys.argv[1]
-cmd = sys.argv[2:]
-with open(log_path, "wb") as out:
-    proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-    try:
-        rc = proc.wait(timeout=900)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-        sys.exit(124)
-    sys.exit(rc)
-PY
-    fi
-    if [[ "$status" -eq 0 ]]; then
-        return 0
-    fi
-    printf 'FAILED: %s (exit %s); log: %s\n' "$label" "$status" "$log" >&2
-    tail -n 80 "$log" >&2 || true
-    exit "$status"
-}
+san_cflags_joined="${san_cflags[*]:-}"
 
-if command -v cmake >/dev/null 2>&1 && [[ "${ATHENA_LEXBOR_FORCE_CC_FALLBACK:-0}" != "1" ]]; then
-    run_bounded configure cmake -S "$source" -B "$build" \
+build_backend="cmake"
+if command -v cmake >/dev/null 2>&1; then
+    cmake_extra=()
+    if [[ -n "$san_cflags_joined" ]]; then
+        cmake_extra+=("-DCMAKE_C_FLAGS=${san_cflags_joined}")
+    fi
+    run_step configure cmake -S "$src_dir" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DLEXBOR_BUILD_SHARED=OFF -DLEXBOR_BUILD_STATIC=ON \
-        -DLEXBOR_BUILD_TESTS=OFF -DLEXBOR_BUILD_EXAMPLES=OFF \
-        -DLEXBOR_BUILD_UTILS=OFF -DLEXBOR_BUILD_BENCHMARKS=OFF \
-        -DLEXBOR_BUILD_WITH_ASAN=OFF -DLEXBOR_BUILD_SEPARATELY=OFF
-    run_bounded build cmake --build "$build" --config Release --target lexbor_static --parallel 2
+        -DCMAKE_INSTALL_PREFIX="$install_dir" \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DLEXBOR_BUILD_SHARED=OFF \
+        -DLEXBOR_BUILD_STATIC=ON \
+        -DLEXBOR_BUILD_TESTS=OFF \
+        -DLEXBOR_BUILD_EXAMPLES=OFF \
+        -DLEXBOR_WITHOUT_THREADS=ON \
+        ${cmake_extra[@]+"${cmake_extra[@]}"}
+    run_step build cmake --build "$build_dir" --parallel "${CARGO_BUILD_JOBS:-3}"
+    run_step install cmake --install "$build_dir"
 else
-    mkdir -p "$build/objs"
-    posix_cc_script='
-import concurrent.futures, os, shutil, subprocess, sys
-from pathlib import Path
-src_root = Path(sys.argv[1])
-build_dir = Path(sys.argv[2])
-obj_dir = build_dir / "objs"
+    build_backend="posix_cc_script"
+    run_step build python3 - "$src_dir" "$build_dir" "$install_dir" "$san_cflags_joined" <<'PY'
+import concurrent.futures
+import os
+import pathlib
+import shlex
+import shutil
+import subprocess
+import sys
+
+src_dir = pathlib.Path(sys.argv[1])
+build_dir = pathlib.Path(sys.argv[2])
+install_dir = pathlib.Path(sys.argv[3])
+extra_cflags = shlex.split(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else []
+source_root = src_dir / "source"
+obj_root = build_dir / "objects"
+lib_dir = install_dir / "lib"
+include_dir = install_dir / "include"
+obj_root.mkdir(parents=True, exist_ok=True)
+lib_dir.mkdir(parents=True, exist_ok=True)
+
+sources = [
+    path for path in sorted(source_root.rglob("*.c"))
+    if "ports/windows_nt" not in path.as_posix()
+]
+if not sources:
+    raise SystemExit("no Lexbor C sources discovered")
+
 cc = os.environ.get("CC", "cc")
 ar = os.environ.get("AR", "ar")
-c_files = [
-    path for path in sorted((src_root / "lexbor").rglob("*.c"))
-    if not ("ports" in path.relative_to(src_root).parts and "windows_nt" in path.relative_to(src_root).parts)
+ranlib = os.environ.get("RANLIB", "ranlib")
+opt_flag = "-O1" if extra_cflags else "-O2"
+flags = [
+    opt_flag, "-fPIC", "-std=c99",
+    "-DLEXBOR_STATIC", "-DLEXBOR_WITHOUT_THREADS",
+    f"-I{source_root}",
+    *extra_cflags,
 ]
-if not c_files:
-    raise SystemExit("No Lexbor POSIX C sources found")
-def compile_one(c_path: Path) -> str:
-    rel = "__".join(c_path.relative_to(src_root).parts) + ".o"
-    obj_path = obj_dir / rel
-    subprocess.run([cc, "-std=c99", "-O2", "-DLEXBOR_STATIC", "-I", str(src_root), "-c", str(c_path), "-o", str(obj_path)], check=True)
-    return str(obj_path)
-jobs = max(1, min(int(os.environ.get("CARGO_BUILD_JOBS", "3")), 4))
-with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-    objs = list(pool.map(compile_one, c_files))
-lib_path = build_dir / "liblexbor_static.a"
-subprocess.run([ar, "rcs", str(lib_path), *objs], check=True)
-if shutil.which("ranlib"):
-    subprocess.run(["ranlib", str(lib_path)], check=True)
-print(f"Built {lib_path} from {len(objs)} translation units")
-'
-    run_bounded build-posix-cc python3 -c "$posix_cc_script" "$source/source" "$build"
+
+def compile_one(source: pathlib.Path) -> pathlib.Path:
+    rel = source.relative_to(source_root)
+    obj = (obj_root / rel).with_suffix(".o")
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([cc, *flags, "-c", str(source), "-o", str(obj)], check=True)
+    return obj
+
+workers = min(int(os.environ.get("CARGO_BUILD_JOBS", "3") or "3"), os.cpu_count() or 1, 8)
+with concurrent.futures.ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
+    objects = list(pool.map(compile_one, sources))
+
+archive = lib_dir / "liblexbor_static.a"
+subprocess.run([ar, "rcs", str(archive), *(str(obj) for obj in objects)], check=True)
+subprocess.run([ranlib, str(archive)], check=True)
+shutil.copytree(source_root / "lexbor", include_dir / "lexbor", dirs_exist_ok=True)
+PY
 fi
 
-libraries=()
-while IFS= read -r found_lib; do
-    if [[ -n "$found_lib" ]]; then
-        libraries+=("$found_lib")
+lib_path=""
+for candidate in \
+    "${install_dir}/lib/liblexbor_static.a" \
+    "${install_dir}/lib64/liblexbor_static.a" \
+    "${build_dir}/liblexbor_static.a"
+do
+    if [[ -f "$candidate" ]]; then
+        lib_path="$candidate"
+        break
     fi
-done < <(find "$build" -type f -name 'liblexbor_static.a' -print)
-[[ ${#libraries[@]} == 1 ]] || fail "expected one liblexbor_static.a, found ${#libraries[@]}"
-
-canary_link_flags=(-lm -pthread)
-if [[ "$(uname -s)" != "Darwin" ]]; then
-    canary_link_flags=(-lm -ldl -pthread)
+done
+if [[ -z "$lib_path" ]]; then
+    echo "liblexbor_static.a was not produced" >&2
+    exit 1
 fi
-run_bounded canary-build cc -std=c11 -O2 -Wall -Wextra -Werror -DLEXBOR_STATIC \
-    -I "$source/source" -I "$build" "$script_dir/canary.c" "${libraries[0]}" \
-    "${canary_link_flags[@]}" -o "$scratch/lexbor-canary"
-run_bounded canary-run "$scratch/lexbor-canary"
+lib_dir="$(dirname "$lib_path")"
+include_dir="${install_dir}/include"
+canary_bin="${scratch}/lexbor_canary"
 
-library_dir="$(dirname "${libraries[0]}")"
+canary_opt="-O2"
+if [[ "$sanitizer" != "none" ]]; then
+    canary_opt="-O1"
+fi
+
+run_step canary-build cc "$canary_opt" -std=c99 -Wall -Wextra -Werror \
+    -DLEXBOR_STATIC \
+    ${san_cflags[@]+"${san_cflags[@]}"} \
+    -I"$include_dir" \
+    "$canary_src" \
+    "$lib_path" \
+    ${san_ldflags[@]+"${san_ldflags[@]}"} \
+    -o "$canary_bin"
+
+asan_opts="halt_on_error=1"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    asan_opts="detect_leaks=0:halt_on_error=1"
+fi
+ubsan_opts="print_stacktrace=1:halt_on_error=1"
+tsan_opts="halt_on_error=1"
+
+run_step canary-run env \
+    ASAN_OPTIONS="$asan_opts" \
+    UBSAN_OPTIONS="$ubsan_opts" \
+    TSAN_OPTIONS="$tsan_opts" \
+    "$canary_bin"
+canary_json="$(cat "${scratch}/canary-run.log")"
+
 cargo_offline_args=()
-if [[ "${ATHENA_OFFLINE:-0}" == "1" ]] || "${cargo_cmd[@]}" metadata --locked --offline --format-version 1 \
-    --manifest-path "$repo_root/cloud_experiments/lexbor_adapter/Cargo.toml" >/dev/null 2>&1; then
+if [[ "${ATHENA_OFFLINE:-0}" == "1" ]]; then
     cargo_offline_args=(--offline)
 fi
-run_bounded adapter-tests env \
-    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
-    ATHENA_LEXBOR_SOURCE_DIR="$source" \
-    ATHENA_LEXBOR_BUILD_DIR="$build" \
-    ATHENA_LEXBOR_LIB_DIR="$library_dir" \
-    CARGO_TARGET_DIR="${ATHENA_LEXBOR_ADAPTER_TARGET_DIR:-${CARGO_TARGET_DIR:-$scratch/cargo-target}}" \
-    "${cargo_cmd[@]}" test "${cargo_offline_args[@]}" --locked \
-        --manifest-path "$repo_root/cloud_experiments/lexbor_adapter/Cargo.toml" -- --nocapture
+adapter_target_dir="${ATHENA_LEXBOR_ADAPTER_TARGET_DIR:-${scratch}/adapter-target-${sanitizer}}"
+if [[ -n "${ATHENA_LEXBOR_ADAPTER_TARGET_DIR:-}" && "$sanitizer" != "none" ]]; then
+    adapter_target_dir="${ATHENA_LEXBOR_ADAPTER_TARGET_DIR}-${sanitizer}"
+fi
 
-library_bytes="$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "${libraries[0]}")"
-printf '{"status":"LOCAL_NATIVE_AND_ADAPTER_CHARACTERIZATION_PASS","adapter_result":"PASS_STRICT_SIX_CASE_AAE_AND_WARNING_PARITY","l01_status":"NOT_ADMITTED","commit":"%s","archive_sha256":"%s","library_bytes":%s,"scope":"fresh local Lexbor build, one C API canary, six adapter tests; L01 admission still requires native/2 integration, Linux/GCE validation, ownership/failure and resource/cost evidence; no hard memory-limit or comparative-performance claim"}\n' \
-    "$commit" "$actual_sha256" "$library_bytes"
+run_step adapter-tests env \
+    ATHENA_LEXBOR_LIB_DIR="$lib_dir" \
+    ATHENA_LEXBOR_INCLUDE_DIR="$include_dir" \
+    ATHENA_LEXBOR_SANITIZER="$sanitizer" \
+    CARGO_TARGET_DIR="$adapter_target_dir" \
+    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
+    ASAN_OPTIONS="$asan_opts" \
+    UBSAN_OPTIONS="$ubsan_opts" \
+    TSAN_OPTIONS="$tsan_opts" \
+    cargo test --manifest-path "$adapter_manifest" --locked ${cargo_offline_args[@]+"${cargo_offline_args[@]}"}
+
+python3 - "$commit" "$expected_sha256" "$actual_sha256" "$build_backend" "$lib_path" "$step_log" "$canary_json" "$sanitizer" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+commit, expected_sha, actual_sha, backend, lib_path, step_log, canary_json, sanitizer = sys.argv[1:]
+steps = []
+for line in pathlib.Path(step_log).read_text(encoding="utf-8").splitlines():
+    name, rc, elapsed_ms, log = line.split("\t")
+    steps.append({
+        "step": name,
+        "returncode": int(rc),
+        "elapsed_ms": int(elapsed_ms),
+        "log_bytes": os.path.getsize(log),
+    })
+print(json.dumps({
+    "schema": "AthenaLexborFeasibilitySmoke/1",
+    "lexbor_commit": commit,
+    "expected_archive_sha256": expected_sha,
+    "actual_archive_sha256": actual_sha,
+    "build_backend": backend,
+    "sanitizer": sanitizer,
+    "static_lib_bytes": os.path.getsize(lib_path),
+    "canary": json.loads(canary_json),
+    "steps": steps,
+}, sort_keys=True))
+PY
