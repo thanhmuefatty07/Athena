@@ -71,6 +71,7 @@ pub struct GridCellSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridSlot {
+    pub occupied: bool,
     pub top_offset: i32,
     pub left_offset: i32,
     pub rowspan: i32,
@@ -89,10 +90,11 @@ impl TableSlotGrid {
     pub fn from_cells(rows: usize, cols: usize, cells: &[GridCellSpec]) -> Self {
         let mut slots = vec![
             GridSlot {
+                occupied: false,
                 top_offset: 0,
                 left_offset: 0,
-                rowspan: 1,
-                colspan: 1,
+                rowspan: 0,
+                colspan: 0,
                 text: String::new(),
             };
             rows.saturating_mul(cols)
@@ -112,6 +114,7 @@ impl TableSlotGrid {
                         break;
                     }
                     slots[r * cols + col] = GridSlot {
+                        occupied: true,
                         top_offset: -(dr as i32),
                         left_offset: -(dc as i32),
                         rowspan: rs as i32,
@@ -327,6 +330,12 @@ pub fn compute_bounded_teds(
 
 #[inline]
 fn slot_topology_iou(a: &GridSlot, b: &GridSlot) -> f64 {
+    if a.occupied != b.occupied {
+        return 0.0;
+    }
+    if !a.occupied && !b.occupied {
+        return 1.0;
+    }
     let ay0 = a.top_offset;
     let ax0 = a.left_offset;
     let ay1 = ay0 + a.rowspan.max(1);
@@ -352,10 +361,16 @@ fn slot_topology_iou(a: &GridSlot, b: &GridSlot) -> f64 {
 }
 
 fn slot_content_lcs_f1(a: &GridSlot, b: &GridSlot) -> f64 {
+    if a.occupied != b.occupied {
+        return 0.0;
+    }
+    if !a.occupied && !b.occupied {
+        return 1.0;
+    }
     let ta = uax29_word_tokens(&a.text);
     let tb = uax29_word_tokens(&b.text);
     if ta.is_empty() && tb.is_empty() {
-        return 1.0;
+        return if a.text == b.text { 1.0 } else { 0.0 };
     }
     if ta.is_empty() || tb.is_empty() {
         return 0.0;
@@ -410,20 +425,22 @@ fn weighted_1d_lcs_with_alignment(
     (dp[n * cols + m], pairs)
 }
 
-fn factored_2d_lcs_sum(r1: usize, c1: usize, r2: usize, c2: usize, sim_matrix: &[f64]) -> f64 {
-    if r1 == 0 || c1 == 0 || r2 == 0 || c2 == 0 {
-        return 0.0;
-    }
-    let at = |i1: usize, j1: usize, i2: usize, j2: usize| -> f64 {
-        sim_matrix[(((i1 * c1 + j1) * r2) + i2) * c2 + j2]
-    };
+fn factored_2d_directional_best(
+    r1: usize,
+    c1: usize,
+    r2: usize,
+    c2: usize,
+    at: impl Fn(usize, usize, usize, usize) -> f64,
+) -> f64 {
+    let mut best_sum = 0.0f64;
 
-    // Pass 1: initial column pairing via row-wise 1D LCS, then row pairing conditioned on matched columns, refined once.
     let (_, mut matched_cols) = weighted_1d_lcs_with_alignment(c1, c2, |j1, j2| {
         weighted_1d_lcs_with_alignment(r1, r2, |i1, i2| at(i1, j1, i2, j2)).0
     });
-    let mut best_sum = 0.0f64;
     for _ in 0..2 {
+        if matched_cols.is_empty() {
+            break;
+        }
         let (row_sum, matched_rows) = weighted_1d_lcs_with_alignment(r1, r2, |i1, i2| {
             matched_cols
                 .iter()
@@ -431,6 +448,9 @@ fn factored_2d_lcs_sum(r1: usize, c1: usize, r2: usize, c2: usize, sim_matrix: &
                 .sum::<f64>()
         });
         best_sum = best_sum.max(row_sum);
+        if matched_rows.is_empty() {
+            break;
+        }
         let (col_sum, next_cols) = weighted_1d_lcs_with_alignment(c1, c2, |j1, j2| {
             matched_rows
                 .iter()
@@ -440,7 +460,48 @@ fn factored_2d_lcs_sum(r1: usize, c1: usize, r2: usize, c2: usize, sim_matrix: &
         best_sum = best_sum.max(col_sum);
         matched_cols = next_cols;
     }
+
+    let (_, mut matched_rows) = weighted_1d_lcs_with_alignment(r1, r2, |i1, i2| {
+        weighted_1d_lcs_with_alignment(c1, c2, |j1, j2| at(i1, j1, i2, j2)).0
+    });
+    for _ in 0..2 {
+        if matched_rows.is_empty() {
+            break;
+        }
+        let (col_sum, seed2_cols) = weighted_1d_lcs_with_alignment(c1, c2, |j1, j2| {
+            matched_rows
+                .iter()
+                .map(|&(i1, i2)| at(i1, j1, i2, j2))
+                .sum::<f64>()
+        });
+        best_sum = best_sum.max(col_sum);
+        if seed2_cols.is_empty() {
+            break;
+        }
+        let (row_sum, next_rows) = weighted_1d_lcs_with_alignment(r1, r2, |i1, i2| {
+            seed2_cols
+                .iter()
+                .map(|&(j1, j2)| at(i1, j1, i2, j2))
+                .sum::<f64>()
+        });
+        best_sum = best_sum.max(row_sum);
+        matched_rows = next_rows;
+    }
+
     best_sum
+}
+
+fn factored_2d_lcs_sum(r1: usize, c1: usize, r2: usize, c2: usize, sim_matrix: &[f64]) -> f64 {
+    if r1 == 0 || c1 == 0 || r2 == 0 || c2 == 0 {
+        return 0.0;
+    }
+    let sum_a_to_b = factored_2d_directional_best(r1, c1, r2, c2, |i1, j1, i2, j2| {
+        sim_matrix[(((i1 * c1 + j1) * r2) + i2) * c2 + j2]
+    });
+    let sum_b_to_a = factored_2d_directional_best(r2, c2, r1, c1, |i2, j2, i1, j1| {
+        sim_matrix[(((i1 * c1 + j1) * r2) + i2) * c2 + j2]
+    });
+    0.5 * (sum_a_to_b + sum_b_to_a)
 }
 
 /// Computes Smock et al. (CVPR 2023) `GriTS_Top` (2D relative-span IoU) and `GriTS_Cont` (2D UAX #29 Token-LCS) over WHATWG slot grids.
@@ -489,18 +550,19 @@ pub fn compute_grits(pred: &TableSlotGrid, gold: &TableSlotGrid) -> GritsMetrics
     let top_sum = factored_2d_lcs_sum(pred.rows, pred.cols, gold.rows, gold.cols, &top_sim);
     let cont_sum = factored_2d_lcs_sum(pred.rows, pred.cols, gold.rows, gold.cols, &cont_sim);
 
+    let area_sum = (area_p + area_g) as f64;
     let top_prec = (top_sum / area_p as f64).clamp(0.0, 1.0);
     let top_rec = (top_sum / area_g as f64).clamp(0.0, 1.0);
-    let grits_top = if top_prec + top_rec > 0.0 {
-        (2.0 * top_prec * top_rec) / (top_prec + top_rec)
+    let grits_top = if area_sum > 0.0 {
+        ((2.0 * top_sum) / area_sum).clamp(0.0, 1.0)
     } else {
         0.0
     };
 
     let cont_prec = (cont_sum / area_p as f64).clamp(0.0, 1.0);
     let cont_rec = (cont_sum / area_g as f64).clamp(0.0, 1.0);
-    let grits_cont = if cont_prec + cont_rec > 0.0 {
-        (2.0 * cont_prec * cont_rec) / (cont_prec + cont_rec)
+    let grits_cont = if area_sum > 0.0 {
+        ((2.0 * cont_sum) / area_sum).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -637,5 +699,89 @@ mod tests {
         let over_budget = compute_bounded_teds(&gold_tree, &gold_tree, 3);
         assert!(over_budget.node_budget_exceeded);
         assert_eq!(over_budget.teds, 0.0);
+    }
+
+    fn cell(
+        row: usize,
+        col: usize,
+        rowspan: usize,
+        colspan: usize,
+        is_header: bool,
+        text: &str,
+    ) -> GridCellSpec {
+        GridCellSpec {
+            row,
+            col,
+            rowspan,
+            colspan,
+            is_header,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn structural_span_holes_score_distinctly_from_explicit_empty_cells() {
+        let ragged = TableSlotGrid::from_cells(
+            2,
+            2,
+            &[
+                cell(0, 0, 1, 1, true, "Header"),
+                cell(1, 0, 1, 1, false, "Left"),
+                cell(1, 1, 1, 1, false, "Right"),
+            ],
+        );
+        let explicit_empty = TableSlotGrid::from_cells(
+            2,
+            2,
+            &[
+                cell(0, 0, 1, 1, true, "Header"),
+                cell(0, 1, 1, 1, false, ""),
+                cell(1, 0, 1, 1, false, "Left"),
+                cell(1, 1, 1, 1, false, "Right"),
+            ],
+        );
+        assert!(!ragged.slot(0, 1).occupied);
+        assert_eq!(ragged.slot(0, 1).rowspan, 0);
+        assert!(explicit_empty.slot(0, 1).occupied);
+        assert_eq!(explicit_empty.slot(0, 1).rowspan, 1);
+
+        let same_ragged = compute_grits(&ragged, &ragged);
+        assert!((same_ragged.grits_top - 1.0).abs() < 1e-12);
+        assert!((same_ragged.grits_cont - 1.0).abs() < 1e-12);
+
+        let hole_vs_empty = compute_grits(&ragged, &explicit_empty);
+        assert!(
+            hole_vs_empty.grits_top < 1.0 && hole_vs_empty.grits_cont < 1.0,
+            "structural hole must score distinctly from explicit empty <td></td>: {hole_vs_empty:?}"
+        );
+    }
+
+    #[test]
+    fn grits_is_strictly_symmetric_on_ragged_and_rectangular_grids() {
+        let ragged_a = TableSlotGrid::from_cells(
+            2,
+            3,
+            &[
+                cell(0, 0, 1, 2, true, "Group"),
+                cell(1, 0, 1, 1, false, "A1"),
+                cell(1, 2, 1, 1, false, "A3"),
+            ],
+        );
+        let rect_b = TableSlotGrid::from_cells(
+            3,
+            2,
+            &[
+                cell(0, 0, 1, 1, true, "Group"),
+                cell(0, 1, 1, 1, true, "Extra"),
+                cell(1, 0, 1, 1, false, "A1"),
+                cell(1, 1, 1, 1, false, "B2"),
+                cell(2, 0, 1, 2, false, "A3"),
+            ],
+        );
+
+        let ab = compute_grits(&ragged_a, &rect_b);
+        let ba = compute_grits(&rect_b, &ragged_a);
+        assert_eq!(ab.grits_top, ba.grits_top);
+        assert_eq!(ab.grits_cont, ba.grits_cont);
     }
 }

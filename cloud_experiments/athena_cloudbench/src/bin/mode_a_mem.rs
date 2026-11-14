@@ -1,21 +1,27 @@
 //! Mode A-Mem: Single-Thread Exact Memory Twin.
-//! Combines Rust `#[global_allocator] MeteredAlloc`, C `lexbor_memory_setup` (16-byte aligned size header),
-//! and OS kernel `mach task_vm_info.phys_footprint` / Linux `/proc/self/smaps_rollup` (`#forbid(unsafe_code)` untouched in `athena-core-v2`).
+//! Combines Rust `#[global_allocator] MeteredAlloc`, C `lexbor_memory_setup` growth hooks
+//! (`athena_lxb_set_growth_hook` + `athena_lxb_current_live_bytes`) for true simultaneous
+//! $\sup_t (R(t) + C(t))$, and OS kernel `mach task_vm_info.phys_footprint` /
+//! Linux `/proc/self/smaps_rollup` (`Pss`, `RssAnon`).
 
+use athena_cloudbench::bench_common::{
+    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, build_parse_limits, decode_html_bytes,
+    effective_limits, validate_real_url,
+};
 use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile, read_os_memory_snapshot};
-use athena_core_v2::projection::{
-    BoilerplatePolicy, ParseLimits, parse_html_breakthrough, parse_html_with_limits,
-};
+use athena_core_v2::projection::{ParseLimits, parse_html_breakthrough, parse_html_with_limits};
 use athena_lexbor_adapter_research::{
-    LexborAttrProfile, Limits as LexborLimits, lexbor_shim_heap_counters,
-    lexbor_shim_reset_and_enable_metering, parse_and_project_pure, parse_tree_with_profile,
+    LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits, lexbor_current_live_bytes,
+    lexbor_set_growth_hook, lexbor_shim_heap_counters, lexbor_shim_reset_and_enable_metering,
+    parse_and_project_pure_with_charset, parse_tree_with_limits_profile_and_charset,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::env;
 use std::fs;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use url::Url;
 
 struct MeteredAlloc;
@@ -26,18 +32,72 @@ static RUST_REALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
 static RUST_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static RUST_PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 
+static TRACKING_PTHREAD: AtomicUsize = AtomicUsize::new(0);
+static TRACKING_BASE_RUST: AtomicUsize = AtomicUsize::new(0);
+static TRACKING_BASE_C: AtomicUsize = AtomicUsize::new(0);
+static COMBINED_PEAK_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static IN_GROWTH_SAMPLE: AtomicBool = AtomicBool::new(false);
+static MEASURE_LOCK: Mutex<()> = Mutex::new(());
+
 #[global_allocator]
 static GLOBAL_METERED_ALLOC: MeteredAlloc = MeteredAlloc;
 
 #[inline]
-fn update_peak(cur: usize) {
-    let mut prev = RUST_PEAK_BYTES.load(Ordering::Relaxed);
-    while cur > prev {
-        match RUST_PEAK_BYTES.compare_exchange_weak(prev, cur, Ordering::Relaxed, Ordering::Relaxed)
-        {
+fn current_pthread_token() -> usize {
+    #[cfg(unix)]
+    {
+        // SAFETY: `libc::pthread_self()` returns the calling thread handle without allocating.
+        let raw = unsafe { libc::pthread_self() } as usize;
+        if raw == 0 { 1 } else { raw }
+    }
+    #[cfg(not(unix))]
+    {
+        1
+    }
+}
+
+#[inline]
+fn update_atomic_max(target: &AtomicUsize, val: usize) {
+    let mut prev = target.load(Ordering::Relaxed);
+    while val > prev {
+        match target.compare_exchange_weak(prev, val, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => break,
             Err(actual) => prev = actual,
         }
+    }
+}
+
+#[inline]
+fn sample_combined_peak_from_rust(cur_rust_live: usize) {
+    let tracked = TRACKING_PTHREAD.load(Ordering::Relaxed);
+    if tracked != 0
+        && current_pthread_token() == tracked
+        && IN_GROWTH_SAMPLE
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+    {
+        let rust_delta = cur_rust_live.saturating_sub(TRACKING_BASE_RUST.load(Ordering::Relaxed));
+        let c_delta =
+            lexbor_current_live_bytes().saturating_sub(TRACKING_BASE_C.load(Ordering::Relaxed));
+        update_atomic_max(
+            &COMBINED_PEAK_LIVE_BYTES,
+            rust_delta.saturating_add(c_delta),
+        );
+        IN_GROWTH_SAMPLE.store(false, Ordering::Release);
+    }
+}
+
+extern "C" fn on_lexbor_growth(c_live: usize) {
+    let tracked = TRACKING_PTHREAD.load(Ordering::Relaxed);
+    if tracked != 0 && current_pthread_token() == tracked {
+        let rust_delta = RUST_LIVE_BYTES
+            .load(Ordering::Relaxed)
+            .saturating_sub(TRACKING_BASE_RUST.load(Ordering::Relaxed));
+        let c_delta = c_live.saturating_sub(TRACKING_BASE_C.load(Ordering::Relaxed));
+        update_atomic_max(
+            &COMBINED_PEAK_LIVE_BYTES,
+            rust_delta.saturating_add(c_delta),
+        );
     }
 }
 
@@ -48,7 +108,8 @@ unsafe impl GlobalAlloc for MeteredAlloc {
         if !ptr.is_null() {
             RUST_ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
             let cur = RUST_LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            update_peak(cur);
+            update_atomic_max(&RUST_PEAK_BYTES, cur);
+            sample_combined_peak_from_rust(cur);
         }
         ptr
     }
@@ -59,7 +120,8 @@ unsafe impl GlobalAlloc for MeteredAlloc {
         if !ptr.is_null() {
             RUST_ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
             let cur = RUST_LIVE_BYTES.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
-            update_peak(cur);
+            update_atomic_max(&RUST_PEAK_BYTES, cur);
+            sample_combined_peak_from_rust(cur);
         }
         ptr
     }
@@ -81,7 +143,8 @@ unsafe impl GlobalAlloc for MeteredAlloc {
             if new_size >= layout.size() {
                 let delta = new_size - layout.size();
                 let cur = RUST_LIVE_BYTES.fetch_add(delta, Ordering::Relaxed) + delta;
-                update_peak(cur);
+                update_atomic_max(&RUST_PEAK_BYTES, cur);
+                sample_combined_peak_from_rust(cur);
             } else {
                 let delta = layout.size() - new_size;
                 let _ = RUST_LIVE_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
@@ -90,6 +153,15 @@ unsafe impl GlobalAlloc for MeteredAlloc {
             }
         }
         new_ptr
+    }
+}
+
+struct HookResetGuard;
+
+impl Drop for HookResetGuard {
+    fn drop(&mut self) {
+        TRACKING_PTHREAD.store(0, Ordering::SeqCst);
+        lexbor_set_growth_hook(None);
     }
 }
 
@@ -102,26 +174,54 @@ struct RustHeapSnapshot {
     peak_delta_bytes: usize,
     retained_while_alive_bytes: usize,
     live_after_drop_delta_bytes: usize,
+    peak_combined_live_bytes: u64,
 }
 
-fn measure_arm<T, F: FnOnce() -> T>(f: F) -> Result<(serde_json::Value, RustHeapSnapshot), String> {
+fn measure_arm<T, E, F>(f: F) -> Result<(Value, RustHeapSnapshot), String>
+where
+    E: std::fmt::Display,
+    F: FnOnce() -> Result<T, E>,
+{
+    let _serial = MEASURE_LOCK
+        .lock()
+        .map_err(|_| "mode_a_mem measurement mutex poisoned".to_owned())?;
     let _ = lexbor_shim_reset_and_enable_metering();
+    // Pre-materialize thread-local state on this thread before enabling global-allocator C sampling.
+    let base_c = lexbor_current_live_bytes();
+    lexbor_set_growth_hook(Some(on_lexbor_growth));
+    let _hook_guard = HookResetGuard;
+
     let base_live = RUST_LIVE_BYTES.load(Ordering::SeqCst);
     RUST_PEAK_BYTES.store(base_live, Ordering::SeqCst);
+    TRACKING_BASE_RUST.store(base_live, Ordering::SeqCst);
+    TRACKING_BASE_C.store(base_c, Ordering::SeqCst);
+    COMBINED_PEAK_LIVE_BYTES.store(0, Ordering::SeqCst);
+    TRACKING_PTHREAD.store(current_pthread_token(), Ordering::SeqCst);
+
     let base_alloc = RUST_ALLOC_CALLS.load(Ordering::SeqCst);
     let base_dealloc = RUST_DEALLOC_CALLS.load(Ordering::SeqCst);
     let base_realloc = RUST_REALLOC_CALLS.load(Ordering::SeqCst);
     let os_before = read_os_memory_snapshot();
 
-    let value = black_box(f());
+    let value = black_box(f().map_err(|e| format!("contender arm failed: {e}"))?);
     let live_while_held = RUST_LIVE_BYTES.load(Ordering::SeqCst);
+    sample_combined_peak_from_rust(live_while_held);
     let peak_while_held = RUST_PEAK_BYTES.load(Ordering::SeqCst);
     let os_during = read_os_memory_snapshot();
     drop(value);
 
     let live_after_drop = RUST_LIVE_BYTES.load(Ordering::SeqCst);
+    TRACKING_PTHREAD.store(0, Ordering::SeqCst);
+    lexbor_set_growth_hook(None);
+
     let c_counters = lexbor_shim_heap_counters();
     let os_after = read_os_memory_snapshot();
+
+    let peak_delta_bytes = peak_while_held.saturating_sub(base_live);
+    let simultaneous_peak = COMBINED_PEAK_LIVE_BYTES
+        .load(Ordering::SeqCst)
+        .max(peak_delta_bytes)
+        .max(c_counters.peak_bytes) as u64;
 
     let rust_snap = RustHeapSnapshot {
         alloc_calls: RUST_ALLOC_CALLS
@@ -134,12 +234,11 @@ fn measure_arm<T, F: FnOnce() -> T>(f: F) -> Result<(serde_json::Value, RustHeap
             .load(Ordering::SeqCst)
             .saturating_sub(base_realloc),
         baseline_live_bytes: base_live,
-        peak_delta_bytes: peak_while_held.saturating_sub(base_live),
+        peak_delta_bytes,
         retained_while_alive_bytes: live_while_held.saturating_sub(base_live),
         live_after_drop_delta_bytes: live_after_drop.saturating_sub(base_live),
+        peak_combined_live_bytes: simultaneous_peak,
     };
-    let combined_peak =
-        (rust_snap.peak_delta_bytes as u64).saturating_add(c_counters.peak_bytes as u64);
 
     let val = json!({
         "rust_baseline_live_bytes": rust_snap.baseline_live_bytes,
@@ -152,7 +251,8 @@ fn measure_arm<T, F: FnOnce() -> T>(f: F) -> Result<(serde_json::Value, RustHeap
         "c_lexbor_alloc_calls": c_counters.alloc_calls,
         "c_lexbor_peak_heap_bytes": c_counters.peak_bytes,
         "c_lexbor_live_after_destroy_bytes": c_counters.live_bytes,
-        "combined_rust_plus_c_peak_heap_bytes": combined_peak,
+        "peak_combined_live_bytes": rust_snap.peak_combined_live_bytes,
+        "combined_rust_plus_c_peak_heap_bytes": rust_snap.peak_combined_live_bytes,
         "os_before": os_before,
         "os_during": os_during,
         "os_after": os_after,
@@ -160,27 +260,85 @@ fn measure_arm<T, F: FnOnce() -> T>(f: F) -> Result<(serde_json::Value, RustHeap
     Ok((val, rust_snap))
 }
 
-fn default_1000_node_fixture() -> Vec<u8> {
-    let mut html = String::from(
-        "<!doctype html><html><head><title>Mode A-Mem 1000-Node Fixture</title></head><body><main>",
-    );
-    for i in 0..340 {
-        html.push_str(&format!(
-            "<div class=\"card-{i}\" data-bloat=\"long-attribute-payload-{i}-0123456789abcdef\" style=\"color: #222; font-size: 14px;\"><p>Paragraph {i} with <a href=\"https://bench.invalid/item/{i}\">anchor {i}</a>.</p></div>"
-        ));
-    }
-    html.push_str("</main></body></html>");
-    html.into_bytes()
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MemCliConfig {
+    contender: Option<Contender>,
+    url: Option<String>,
+    charset_mode: CharsetMode,
+    max_input_bytes: usize,
+    threads: usize,
+    pin_cpu: Option<usize>,
+    qos: QosProfile,
+    html_path: Option<String>,
+    self_test: bool,
 }
 
-fn main() -> Result<(), String> {
+fn parse_pin_cpu(raw: &str) -> Result<Option<usize>, String> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("none") || trimmed.eq_ignore_ascii_case("off") {
+        Ok(None)
+    } else {
+        trimmed
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|e| format!("invalid --pin-cpu '{trimmed}': {e}"))
+    }
+}
+
+fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
+    let mut contender: Option<Contender> = None;
+    let mut url: Option<String> = None;
+    let mut charset_mode = CharsetMode::Utf8Assumed;
+    let mut max_input_bytes = DEFAULT_MAX_INPUT_BYTES;
+    let mut threads = 1usize;
+    let mut pin_cpu: Option<usize> = Some(0);
+    let mut qos = QosProfile::Interactive;
     let mut html_path: Option<String> = None;
     let mut self_test = false;
-    let args: Vec<String> = env::args().collect();
+
     let mut i = 1usize;
     while i < args.len() {
         match args[i].as_str() {
             "--self-test" => self_test = true,
+            "--contender" => {
+                i += 1;
+                contender = Some(Contender::parse(
+                    args.get(i).ok_or("missing --contender value")?,
+                )?);
+            }
+            "--url" => {
+                i += 1;
+                url = Some(args.get(i).ok_or("missing --url value")?.clone());
+            }
+            "--charset-mode" => {
+                i += 1;
+                charset_mode =
+                    CharsetMode::parse(args.get(i).ok_or("missing --charset-mode value")?)?;
+            }
+            "--max-input-bytes" => {
+                i += 1;
+                max_input_bytes = args
+                    .get(i)
+                    .ok_or("missing --max-input-bytes value")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --max-input-bytes: {e}"))?;
+            }
+            "--threads" => {
+                i += 1;
+                threads = args
+                    .get(i)
+                    .ok_or("missing --threads value")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --threads: {e}"))?;
+            }
+            "--cpu" | "--pin-cpu" => {
+                i += 1;
+                pin_cpu = parse_pin_cpu(args.get(i).ok_or("missing --cpu/--pin-cpu value")?)?;
+            }
+            "--qos" => {
+                i += 1;
+                qos = QosProfile::parse(args.get(i).ok_or("missing --qos value")?)?;
+            }
             "--html-file" => {
                 i += 1;
                 html_path = Some(args.get(i).ok_or("missing --html-file")?.clone());
@@ -190,79 +348,310 @@ fn main() -> Result<(), String> {
         i += 1;
     }
 
-    let qos = apply_qos_profile(QosProfile::Interactive, Some(0));
-    let html_bytes = if let Some(path) = &html_path {
+    if threads != 1 {
+        return Err(format!(
+            "mode_a_mem enforces single-thread execution (--threads 1), got {threads}"
+        ));
+    }
+    let _ = build_parse_limits(max_input_bytes)?;
+
+    if !self_test {
+        let raw_url = url
+            .as_deref()
+            .ok_or("missing required --url <real_url> (forbidden placeholder defaults)")?;
+        let _ = validate_real_url(raw_url)?;
+    } else if let Some(raw_url) = url.as_deref() {
+        let _ = validate_real_url(raw_url)?;
+    }
+
+    Ok(MemCliConfig {
+        contender,
+        url,
+        charset_mode,
+        max_input_bytes,
+        threads,
+        pin_cpu,
+        qos,
+        html_path,
+        self_test,
+    })
+}
+
+fn default_1000_node_fixture() -> Vec<u8> {
+    let mut html = String::from(
+        "<!doctype html><html><head><title>Mode A-Mem 1000-Node Fixture</title></head><body><main>",
+    );
+    for i in 0..340 {
+        html.push_str(&format!(
+            "<div class=\"card-{i}\" data-bloat=\"long-attribute-payload-{i}-0123456789abcdef\" style=\"color: #222; font-size: 14px;\"><p>Paragraph {i} with <a href=\"https://en.wikipedia.org/wiki/Item_{i}\">anchor {i}</a>.</p></div>"
+        ));
+    }
+    html.push_str("</main></body></html>");
+    html.into_bytes()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_contender(
+    contender: Contender,
+    html_str: &str,
+    html_bytes: &[u8],
+    url: &Url,
+    url_str: &str,
+    core_limits: ParseLimits,
+    lxb_limits: LexborLimits,
+    lxb_charset: LexborCharsetMode,
+) -> Result<(Value, RustHeapSnapshot), String> {
+    match contender {
+        Contender::Legacy => measure_arm(|| parse_html_with_limits(html_str, url, core_limits)),
+        Contender::Breakthrough => {
+            measure_arm(|| parse_html_breakthrough(html_str, url, core_limits))
+        }
+        Contender::LexborPure => measure_arm(|| {
+            parse_and_project_pure_with_charset(html_bytes, &[], url_str, lxb_limits, lxb_charset)
+                .map_err(|e| format!("{e:?}"))
+        }),
+        Contender::LexborMinimal => measure_arm(|| {
+            parse_tree_with_limits_profile_and_charset(
+                html_bytes,
+                &[],
+                lxb_limits,
+                LexborAttrProfile::Minimal,
+                lxb_charset,
+            )
+        }),
+        Contender::LexborStageIr => measure_arm(|| {
+            parse_tree_with_limits_profile_and_charset(
+                html_bytes,
+                &[],
+                lxb_limits,
+                LexborAttrProfile::StageIr,
+                lxb_charset,
+            )
+        }),
+    }
+}
+
+fn contender_report_key(c: Contender) -> &'static str {
+    match c {
+        Contender::Legacy => "legacy_html5ever",
+        Contender::Breakthrough => "breakthrough_html5ever",
+        Contender::LexborPure => "lexbor_pure_minimal",
+        Contender::LexborMinimal => "lexbor_tree_minimal",
+        Contender::LexborStageIr => "lexbor_tree_stage_ir",
+    }
+}
+
+fn main() -> Result<(), String> {
+    let args: Vec<String> = env::args().collect();
+    let cfg = parse_cli_args(&args)?;
+
+    let qos = apply_qos_profile(cfg.qos, cfg.pin_cpu);
+    let html_bytes = if let Some(path) = &cfg.html_path {
         fs::read(path).map_err(|e| format!("failed to read {path}: {e}"))?
-    } else {
+    } else if cfg.self_test {
         default_1000_node_fixture()
+    } else {
+        return Err("missing required --html-file <path> outside --self-test".to_owned());
     };
-    let html_str = String::from_utf8_lossy(&html_bytes).into_owned();
-    let url_str = "https://bench.invalid/mem";
-    let url = Url::parse(url_str).map_err(|e| e.to_string())?;
-    let core_limits = ParseLimits {
-        boilerplate: BoilerplatePolicy::MainContentV1,
-        ..ParseLimits::default()
+
+    let url_str = cfg
+        .url
+        .as_deref()
+        .unwrap_or("https://en.wikipedia.org/wiki/Mode_a_mem");
+    let url = validate_real_url(url_str)?;
+
+    let base_limits = build_parse_limits(cfg.max_input_bytes)?;
+    let html_decoded = decode_html_bytes(&html_bytes, &[], cfg.max_input_bytes, cfg.charset_mode)?;
+    let html_str = html_decoded.as_ref();
+    let core_limits = effective_limits(base_limits, html_str.len());
+    let lxb_limits = base_limits;
+    let lxb_charset = cfg.charset_mode.to_lexbor_charset_mode();
+
+    let selected: &[Contender] = match &cfg.contender {
+        Some(c) => std::slice::from_ref(c),
+        None => &Contender::ALL,
     };
-    let lxb_limits = LexborLimits::default();
 
-    let (leg_json, leg_rust) =
-        measure_arm(|| parse_html_with_limits(&html_str, &url, core_limits).unwrap())?;
-    let (bt_json, bt_rust) =
-        measure_arm(|| parse_html_breakthrough(&html_str, &url, core_limits).unwrap())?;
-    let (lxb_pure_json, _) =
-        measure_arm(|| parse_and_project_pure(&html_bytes, url_str, lxb_limits).unwrap())?;
-    let (lxb_min_json, lxb_min_rust) =
-        measure_arm(|| parse_tree_with_profile(&html_bytes, LexborAttrProfile::Minimal).unwrap())?;
-    let (lxb_ir_json, lxb_ir_rust) =
-        measure_arm(|| parse_tree_with_profile(&html_bytes, LexborAttrProfile::StageIr).unwrap())?;
+    let mut arms_map = serde_json::Map::new();
+    let mut leg_rust_opt: Option<RustHeapSnapshot> = None;
+    let mut bt_rust_opt: Option<RustHeapSnapshot> = None;
+    let mut lxb_pure_opt: Option<Value> = None;
+    let mut lxb_min_opt: Option<RustHeapSnapshot> = None;
+    let mut lxb_ir_opt: Option<RustHeapSnapshot> = None;
 
-    if self_test {
-        if leg_rust.peak_delta_bytes == 0 || bt_rust.peak_delta_bytes == 0 {
+    for &arm in selected {
+        let (val, rust_snap) = measure_contender(
+            arm,
+            html_str,
+            &html_bytes,
+            &url,
+            url_str,
+            core_limits,
+            lxb_limits,
+            lxb_charset,
+        )?;
+        match arm {
+            Contender::Legacy => leg_rust_opt = Some(rust_snap),
+            Contender::Breakthrough => bt_rust_opt = Some(rust_snap),
+            Contender::LexborPure => lxb_pure_opt = Some(val.clone()),
+            Contender::LexborMinimal => lxb_min_opt = Some(rust_snap),
+            Contender::LexborStageIr => lxb_ir_opt = Some(rust_snap),
+        }
+        arms_map.insert(contender_report_key(arm).to_owned(), val);
+    }
+
+    if cfg.self_test {
+        if let (Some(leg_rust), Some(bt_rust)) = (leg_rust_opt, bt_rust_opt)
+            && (leg_rust.peak_delta_bytes == 0 || bt_rust.peak_delta_bytes == 0)
+        {
             return Err("MeteredAlloc failed to record positive Rust peak_bytes".into());
         }
-        let c_peak = lxb_pure_json["c_lexbor_peak_heap_bytes"]
-            .as_u64()
-            .unwrap_or(0);
-        let c_live = lxb_pure_json["c_lexbor_live_after_destroy_bytes"]
-            .as_u64()
-            .unwrap_or(u64::MAX);
-        if c_peak == 0 {
-            return Err("lexbor_memory_setup failed to record positive C peak_bytes".into());
+        if let Some(lxb_pure_json) = &lxb_pure_opt {
+            let c_peak = lxb_pure_json["c_lexbor_peak_heap_bytes"]
+                .as_u64()
+                .unwrap_or(0);
+            let c_live = lxb_pure_json["c_lexbor_live_after_destroy_bytes"]
+                .as_u64()
+                .unwrap_or(u64::MAX);
+            let r_peak = lxb_pure_json["rust_peak_heap_bytes"].as_u64().unwrap_or(0);
+            let comb = lxb_pure_json["peak_combined_live_bytes"]
+                .as_u64()
+                .unwrap_or(0);
+            if c_peak == 0 || comb == 0 || comb > r_peak.saturating_add(c_peak) {
+                return Err(format!(
+                    "simultaneous peak invariant failed: c_peak={c_peak}, r_peak={r_peak}, combined={comb}"
+                ));
+            }
+            if c_live != 0 {
+                return Err(format!(
+                    "Lexbor C heap leaked {c_live} live_bytes after lxb_html_document_destroy"
+                ));
+            }
+            let phys = lxb_pure_json["os_after"]["phys_footprint_bytes"]
+                .as_u64()
+                .unwrap_or(0);
+            if phys == 0 {
+                return Err("OS memory snapshot reported 0 phys_footprint_bytes".into());
+            }
         }
-        if c_live != 0 {
-            return Err(format!(
-                "Lexbor C heap leaked {c_live} live_bytes after lxb_html_document_destroy"
-            ));
-        }
-        if lxb_min_rust.retained_while_alive_bytes >= lxb_ir_rust.retained_while_alive_bytes {
+        if let (Some(lxb_min_rust), Some(lxb_ir_rust)) = (lxb_min_opt, lxb_ir_opt)
+            && lxb_min_rust.retained_while_alive_bytes >= lxb_ir_rust.retained_while_alive_bytes
+        {
             return Err(format!(
                 "LexborAttrProfile::Minimal ({}) should retain strictly fewer Rust attribute bytes than StageIr ({})",
                 lxb_min_rust.retained_while_alive_bytes, lxb_ir_rust.retained_while_alive_bytes
             ));
-        }
-        let phys = lxb_pure_json["os_after"]["phys_footprint_bytes"]
-            .as_u64()
-            .unwrap_or(0);
-        if phys == 0 {
-            return Err("OS memory snapshot reported 0 phys_footprint_bytes".into());
         }
     }
 
     let report = json!({
         "schema": "AthenaCloudBenchModeAMem/1",
         "qos": qos,
+        "boilerplate_policy": "MainContentV1",
+        "contender": cfg.contender.map(Contender::as_str),
+        "url": url_str,
+        "charset_mode": cfg.charset_mode.as_str(),
+        "max_input_bytes": cfg.max_input_bytes,
+        "threads": cfg.threads,
+        "pin_cpu": cfg.pin_cpu,
         "html_bytes": html_bytes.len(),
-        "arms": {
-            "legacy_html5ever": leg_json,
-            "breakthrough_html5ever": bt_json,
-            "lexbor_pure_minimal": lxb_pure_json,
-            "lexbor_tree_minimal": lxb_min_json,
-            "lexbor_tree_stage_ir": lxb_ir_json,
-        }
+        "arms": arms_map,
     });
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    #[test]
+    fn simultaneous_combined_peak_is_less_than_sum_of_staggered_rust_and_c_peaks() {
+        let html = default_1000_node_fixture();
+        let limits = build_parse_limits(DEFAULT_MAX_INPUT_BYTES).expect("limits");
+        let (val, rust_snap) = measure_arm(|| -> Result<usize, String> {
+            let proj = parse_and_project_pure_with_charset(
+                &html,
+                &[],
+                "https://en.wikipedia.org/wiki/Staggered_mem",
+                limits,
+                LexborCharsetMode::StrictUtf8,
+            )
+            .map_err(|e| format!("{e:?}"))?;
+            let chunk_count = proj.chunks.len();
+            drop(proj);
+
+            let mut rust_spike = vec![7u8; 4 * 1024 * 1024];
+            black_box(&mut rust_spike);
+            let len = rust_spike.len();
+            drop(rust_spike);
+            Ok(chunk_count + len)
+        })
+        .expect("staggered measurement succeeds");
+
+        let c_peak = val["c_lexbor_peak_heap_bytes"].as_u64().expect("c_peak");
+        let c_live_end = val["c_lexbor_live_after_destroy_bytes"]
+            .as_u64()
+            .expect("c_live");
+        let r_peak = rust_snap.peak_delta_bytes as u64;
+        let combined = rust_snap.peak_combined_live_bytes;
+
+        assert!(c_peak > 0, "expected positive C peak: {val}");
+        assert_eq!(c_live_end, 0, "expected 0 leaked C bytes");
+        assert!(
+            r_peak >= 4 * 1024 * 1024,
+            "expected >= 4 MiB Rust peak, got {r_peak}"
+        );
+        assert!(
+            combined <= r_peak + c_peak,
+            "combined {combined} must not exceed r_peak {r_peak} + c_peak {c_peak}"
+        );
+        assert!(
+            combined < r_peak + c_peak,
+            "staggered peaks must yield simultaneous sup(R+C)={combined} strictly < R_max + C_max ({})",
+            r_peak + c_peak
+        );
+    }
+
+    #[test]
+    fn mem_cli_rejects_missing_or_placeholder_url_and_non_unit_threads() {
+        assert!(parse_cli_args(&s(&["mode_a_mem"])).is_err());
+        assert!(parse_cli_args(&s(&["mode_a_mem", "--url", "https://bench.invalid/mem"])).is_err());
+        assert!(parse_cli_args(&s(&["mode_a_mem", "--url", "https://example.org/mem"])).is_err());
+        assert!(
+            parse_cli_args(&s(&[
+                "mode_a_mem",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--threads",
+                "4"
+            ]))
+            .is_err()
+        );
+        let cfg = parse_cli_args(&s(&[
+            "mode_a_mem",
+            "--contender",
+            "lexbor_pure",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--charset-mode",
+            "sniffing_enabled",
+            "--max-input-bytes",
+            "33554432",
+            "--pin-cpu",
+            "2",
+        ]))
+        .expect("valid args");
+        assert_eq!(cfg.contender, Some(Contender::LexborPure));
+        assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
+        assert_eq!(cfg.max_input_bytes, 33_554_432);
+        assert_eq!(cfg.pin_cpu, Some(2));
+    }
 }

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UntruncatedLcsMetrics {
@@ -20,48 +21,51 @@ pub struct UntruncatedLcsMetrics {
 
 #[inline]
 fn is_combining_or_extend(ch: char) -> bool {
+    if unicode_normalization::char::canonical_combining_class(ch) > 0 {
+        return true;
+    }
     let u = ch as u32;
     matches!(
         u,
-        0x0300..=0x036F // Combining Diacritical Marks
-        | 0x0483..=0x0489 // Cyrillic combining
-        | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7 // Hebrew niqqud
-        | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06ED // Arabic harakat
-        | 0x0900..=0x0903 | 0x093A..=0x094F | 0x0951..=0x0957 | 0x0962..=0x0963 // Devanagari matras/virama
-        | 0x0981..=0x0983 | 0x09BC | 0x09BE..=0x09CD | 0x09D7 | 0x09E2..=0x09E3 // Bengali
-        | 0x0B82 | 0x0BBE..=0x0BCD | 0x0BD7 // Tamil
-        | 0x0C00..=0x0C04 | 0x0C3E..=0x0C56 | 0x0C81..=0x0C83 | 0x0CBC..=0x0CD6 // Telugu/Kannada
-        | 0x0D00..=0x0D03 | 0x0D3B..=0x0D4D | 0x0D57 // Malayalam
-        | 0x0E31 | 0x0E34..=0x0E3A | 0x0E47..=0x0E4E // Thai combining
-        | 0x0EB1 | 0x0EB4..=0x0EBC | 0x0EC8..=0x0ECD // Lao combining
-        | 0x102B..=0x103E | 0x1056..=0x1059 | 0x105E..=0x1060 | 0x1062..=0x1064 | 0x1067..=0x106D | 0x1071..=0x1074 | 0x1082..=0x108D | 0x108F | 0x109A..=0x109D // Myanmar combining
-        | 0x135D..=0x135F // Ethiopic combining
-        | 0x17B4..=0x17D3 | 0x17DD // Khmer combining
-        | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200C..=0x200D | 0x20D0..=0x20FF | 0x3099..=0x309A | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F
+        0x0300..=0x036F
+        | 0x0483..=0x0489
+        | 0x0591..=0x05BD | 0x05BF | 0x05C1..=0x05C2 | 0x05C4..=0x05C5 | 0x05C7
+        | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06ED
+        | 0x0900..=0x0903 | 0x093A..=0x094F | 0x0951..=0x0957 | 0x0962..=0x0963
+        | 0x0981..=0x0983 | 0x09BC | 0x09BE..=0x09CD | 0x09D7 | 0x09E2..=0x09E3
+        | 0x0B82 | 0x0BBE..=0x0BCD | 0x0BD7
+        | 0x0C00..=0x0C04 | 0x0C3E..=0x0C56 | 0x0C81..=0x0C83 | 0x0CBC..=0x0CD6
+        | 0x0D00..=0x0D03 | 0x0D3B..=0x0D4D | 0x0D57
+        | 0x0E31 | 0x0E34..=0x0E3A | 0x0E47..=0x0E4E
+        | 0x0EB1 | 0x0EB4..=0x0EBC | 0x0EC8..=0x0ECD
+        | 0x0F18..=0x0F19 | 0x0F35 | 0x0F37 | 0x0F39 | 0x0F3E..=0x0F3F | 0x0F71..=0x0F84 | 0x0F86..=0x0F87 | 0x0F8D..=0x0F97 | 0x0F99..=0x0FBC | 0x0FC6
+        | 0x102B..=0x103E | 0x1056..=0x1059 | 0x105E..=0x1060 | 0x1062..=0x1064 | 0x1067..=0x106D | 0x1071..=0x1074 | 0x1082..=0x108D | 0x108F | 0x109A..=0x109D
+        | 0x135D..=0x135F
+        | 0x17B4..=0x17D3 | 0x17DD
+        | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x200C..=0x200D | 0x20D0..=0x20FF | 0x302E..=0x302F | 0x3099..=0x309A | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0xFF9E..=0xFF9F
     )
 }
 
 #[inline]
-fn is_single_cluster_script_base(ch: char) -> bool {
+fn is_scriptio_continua_base(ch: char) -> bool {
     let u = ch as u32;
     matches!(
         u,
-        0x3040..=0x3096 // Hiragana
-        | 0x3400..=0x4DBF // CJK Ext A
-        | 0x4E00..=0x9FFF // CJK Unified
-        | 0xF900..=0xFAFF // CJK Compatibility
-        | 0x20000..=0x2FA1F // CJK Ext B..F
-        | 0x0E01..=0x0E30 | 0x0E32..=0x0E33 | 0x0E40..=0x0E46 // Thai base
-        | 0x0E81..=0x0EB0 | 0x0EB2..=0x0EB3 | 0x0EC0..=0x0EC6 // Lao base
-        | 0x1000..=0x102A | 0x103F | 0x1050..=0x1055 // Myanmar base
-        | 0x1780..=0x17B3 // Khmer base
+        0x3005..=0x3007
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xF900..=0xFAFF
+        | 0x20000..=0x2FA1F
+        | 0x30000..=0x323AF
+        | 0x3041..=0x3096 | 0x309D..=0x309F
+        | 0x30A1..=0x30FA | 0x30FC..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9D
+        | 0x1100..=0x11FF | 0x3131..=0x318E | 0xA960..=0xA97C | 0xAC00..=0xD7A3 | 0xD7B0..=0xD7FB
+        | 0x0E01..=0x0E30 | 0x0E32..=0x0E33 | 0x0E40..=0x0E46
+        | 0x0E81..=0x0EB0 | 0x0EB2..=0x0EB3 | 0x0EC0..=0x0EC6 | 0x0EDC..=0x0EDF
+        | 0x0F00 | 0x0F40..=0x0F47 | 0x0F49..=0x0F6C | 0x0F88..=0x0F8C
+        | 0x1000..=0x102A | 0x103F | 0x1050..=0x1055 | 0x105A..=0x105D | 0x1061 | 0x1065..=0x1066 | 0x106E..=0x1070 | 0x1075..=0x1081 | 0x108E
+        | 0x1780..=0x17B3 | 0x17D7 | 0x17DC
     )
-}
-
-#[inline]
-fn is_katakana_word_char(ch: char) -> bool {
-    let u = ch as u32;
-    matches!(u, 0x30A0..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F)
 }
 
 #[inline]
@@ -69,74 +73,110 @@ fn is_mid_word_connector(ch: char) -> bool {
     matches!(ch, '\'' | '\u{2019}' | '_')
 }
 
-/// Multilingual UAX #29-aligned word tokenizer covering all 12 world script families:
-/// - Contiguous `ALetter`/`Numeric`/`ExtendNumLet` words with attached Indic/Semitic/Latin combining marks (`Extend`/`ZWJ`)
-/// - Contiguous `Katakana` runs (`WB13`)
-/// - Orthographic base+combining cluster units for unspaced CJK Han, Hiragana, Thai, Lao, Khmer, and Myanmar (`WB14`/SA)
+fn push_lowercase(dst: &mut String, ch: char) {
+    for lc in ch.to_lowercase() {
+        dst.push(lc);
+    }
+}
+
+/// Multilingual UAX #29-aligned word tokenizer with Unicode NFC normalization and scriptio-continua
+/// overlapping cluster bigrams + cluster unigrams matching `oracles_v5.py`.
 pub fn uax29_word_tokens(text: &str) -> Vec<String> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum RunKind {
         None,
         AlphaNum,
-        Katakana,
-        SingleCluster,
+        ScriptioContinua,
     }
 
-    let chars: Vec<char> = text.chars().collect();
+    let chars: Vec<char> = text.nfc().collect();
     let mut tokens = Vec::new();
-    let mut cur = String::new();
+    let mut cur_word = String::new();
+    let mut scriptio_clusters: Vec<String> = Vec::new();
     let mut kind = RunKind::None;
 
-    let flush = |tokens: &mut Vec<String>, cur: &mut String, kind: &mut RunKind| {
-        if !cur.is_empty() {
-            tokens.push(std::mem::take(cur));
+    let flush = |tokens: &mut Vec<String>,
+                 cur_word: &mut String,
+                 scriptio_clusters: &mut Vec<String>,
+                 kind: &mut RunKind| {
+        match *kind {
+            RunKind::None => {}
+            RunKind::AlphaNum => {
+                if !cur_word.is_empty() {
+                    tokens.push(std::mem::take(cur_word));
+                }
+            }
+            RunKind::ScriptioContinua => {
+                if scriptio_clusters.len() == 1 {
+                    if let Some(only) = scriptio_clusters.pop() {
+                        tokens.push(only);
+                    }
+                } else if scriptio_clusters.len() >= 2 {
+                    for win in scriptio_clusters.windows(2) {
+                        let mut bigram = String::with_capacity(win[0].len() + win[1].len());
+                        bigram.push_str(&win[0]);
+                        bigram.push_str(&win[1]);
+                        tokens.push(bigram);
+                    }
+                    tokens.append(scriptio_clusters);
+                }
+            }
         }
         *kind = RunKind::None;
     };
 
     for (idx, &ch) in chars.iter().enumerate() {
         if is_combining_or_extend(ch) {
-            if kind != RunKind::None {
-                for lc in ch.to_lowercase() {
-                    cur.push(lc);
+            match kind {
+                RunKind::None => {}
+                RunKind::AlphaNum => push_lowercase(&mut cur_word, ch),
+                RunKind::ScriptioContinua => {
+                    if let Some(last) = scriptio_clusters.last_mut() {
+                        push_lowercase(last, ch);
+                    }
                 }
             }
             continue;
         }
-        if is_single_cluster_script_base(ch) {
-            flush(&mut tokens, &mut cur, &mut kind);
-            for lc in ch.to_lowercase() {
-                cur.push(lc);
+        if is_scriptio_continua_base(ch) {
+            if kind != RunKind::ScriptioContinua {
+                flush(
+                    &mut tokens,
+                    &mut cur_word,
+                    &mut scriptio_clusters,
+                    &mut kind,
+                );
+                kind = RunKind::ScriptioContinua;
             }
-            kind = RunKind::SingleCluster;
-            continue;
-        }
-        if is_katakana_word_char(ch) {
-            if kind != RunKind::Katakana {
-                flush(&mut tokens, &mut cur, &mut kind);
-                kind = RunKind::Katakana;
-            }
-            for lc in ch.to_lowercase() {
-                cur.push(lc);
-            }
+            let mut cluster = String::new();
+            push_lowercase(&mut cluster, ch);
+            scriptio_clusters.push(cluster);
             continue;
         }
         if ch.is_alphanumeric() {
             if kind != RunKind::AlphaNum {
-                flush(&mut tokens, &mut cur, &mut kind);
+                flush(
+                    &mut tokens,
+                    &mut cur_word,
+                    &mut scriptio_clusters,
+                    &mut kind,
+                );
                 kind = RunKind::AlphaNum;
             }
-            for lc in ch.to_lowercase() {
-                cur.push(lc);
-            }
+            push_lowercase(&mut cur_word, ch);
             continue;
         }
         if ch == '_' {
             if kind != RunKind::AlphaNum {
-                flush(&mut tokens, &mut cur, &mut kind);
+                flush(
+                    &mut tokens,
+                    &mut cur_word,
+                    &mut scriptio_clusters,
+                    &mut kind,
+                );
                 kind = RunKind::AlphaNum;
             }
-            cur.push('_');
+            cur_word.push('_');
             continue;
         }
         if is_mid_word_connector(ch)
@@ -145,12 +185,22 @@ pub fn uax29_word_tokens(text: &str) -> Vec<String> {
                 .get(idx + 1)
                 .is_some_and(|next| next.is_alphanumeric())
         {
-            cur.push('\'');
+            cur_word.push('\'');
             continue;
         }
-        flush(&mut tokens, &mut cur, &mut kind);
+        flush(
+            &mut tokens,
+            &mut cur_word,
+            &mut scriptio_clusters,
+            &mut kind,
+        );
     }
-    flush(&mut tokens, &mut cur, &mut kind);
+    flush(
+        &mut tokens,
+        &mut cur_word,
+        &mut scriptio_clusters,
+        &mut kind,
+    );
     tokens
 }
 
@@ -262,20 +312,6 @@ pub fn compute_untruncated_uax29_metrics(
     let p_toks = uax29_word_tokens(pred_text);
     let g_toks = uax29_word_tokens(gold_text);
 
-    if p_toks.is_empty() && g_toks.is_empty() {
-        return UntruncatedLcsMetrics {
-            pred_tokens: 0,
-            gold_tokens: 0,
-            token_lcs_len: 0,
-            uax29_precision: 1.0,
-            uax29_recall: 1.0,
-            uax29_f1: 1.0,
-            rouge_l_precision: 1.0,
-            rouge_l_recall: 1.0,
-            rouge_l_f1: 1.0,
-            line_break_f1: 1.0,
-        };
-    }
     if p_toks.is_empty() || g_toks.is_empty() {
         return UntruncatedLcsMetrics {
             pred_tokens: p_toks.len(),
@@ -337,7 +373,7 @@ pub fn compute_untruncated_uax29_metrics(
     }
 }
 
-fn compute_line_break_f1(pred_text: &str, gold_text: &str) -> f64 {
+pub fn compute_line_break_f1(pred_text: &str, gold_text: &str) -> f64 {
     fn boundary_pairs(txt: &str) -> Vec<(String, String)> {
         let non_empty_lines: Vec<Vec<String>> = txt
             .lines()
@@ -355,9 +391,6 @@ fn compute_line_break_f1(pred_text: &str, gold_text: &str) -> f64 {
 
     let p_pairs = boundary_pairs(pred_text);
     let g_pairs = boundary_pairs(gold_text);
-    if p_pairs.is_empty() && g_pairs.is_empty() {
-        return 1.0;
-    }
     if p_pairs.is_empty() || g_pairs.is_empty() {
         return 0.0;
     }
@@ -457,9 +490,8 @@ mod tests {
     }
 
     #[test]
-    fn uax29_tokenizer_segments_12_script_families_including_cjk_indic_and_thai() {
-        // Devanagari combining matras stay attached to base akshara; CJK & Thai segment cleanly
-        let sample = "Hello мир विज्ञान 東京タワー カタカナ ภาษาไทย 인공지능";
+    fn uax29_tokenizer_segments_12_script_families_and_scriptio_continua_bigrams_unigrams() {
+        let sample = "Hello мир विज्ञान 東京タワー カタカナ ภาษาไทย 인공지능 བོད་ཡིག ខ្មែរ မြန်မာ ລາວ";
         let toks = uax29_word_tokens(sample);
         assert!(toks.contains(&"hello".to_owned()));
         assert!(toks.contains(&"мир".to_owned()));
@@ -467,12 +499,83 @@ mod tests {
             toks.contains(&"विज्ञान".to_owned()),
             "Devanagari matras must stay attached: {toks:?}"
         );
-        assert!(toks.contains(&"東".to_owned()) && toks.contains(&"京".to_owned()));
-        assert!(toks.contains(&"タワー".to_owned()) && toks.contains(&"カタカナ".to_owned()));
-        assert!(toks.contains(&"인공지능".to_owned()));
+        for expected in ["東京", "京タ", "タワ", "ワー", "東", "京", "タ", "ワ", "ー"]
+        {
+            assert!(
+                toks.contains(&expected.to_owned()),
+                "missing {expected} in {toks:?}"
+            );
+        }
+        for expected in ["カタ", "タカ", "カナ", "カ", "ナ"] {
+            assert!(
+                toks.contains(&expected.to_owned()),
+                "missing {expected} in {toks:?}"
+            );
+        }
+        for expected in ["인공", "공지", "지능", "인", "공", "지", "능"] {
+            assert!(
+                toks.contains(&expected.to_owned()),
+                "missing {expected} in {toks:?}"
+            );
+        }
         assert!(
-            toks.len() >= 10,
-            "Thai/CJK must not collapse into 1 giant space-delimited blob: {toks:?}"
+            toks.contains(&"ภา".to_owned())
+                && toks.contains(&"ไท".to_owned())
+                && toks.contains(&"ย".to_owned())
         );
+        assert!(
+            toks.contains(&"བོད".to_owned())
+                && toks.contains(&"བོ".to_owned())
+                && toks.contains(&"ད".to_owned())
+        );
+        assert!(
+            toks.contains(&"ລາ".to_owned())
+                && toks.contains(&"າວ".to_owned())
+                && toks.contains(&"ລ".to_owned())
+        );
+        assert!(toks.iter().any(|t| t.contains('ខ')) && toks.iter().any(|t| t.contains('ម')));
+        assert!(toks.iter().any(|t| t.contains('မ')) && toks.iter().any(|t| t.contains('ာ')));
+        assert_eq!(uax29_word_tokens("東"), vec!["東".to_owned()]);
+    }
+
+    #[test]
+    fn nfc_normalization_makes_nfd_and_nfc_identical() {
+        let nfd_latin = "cafe\u{0301} re\u{0301}sume\u{0301}";
+        let nfc_latin = "café résumé";
+        assert_eq!(uax29_word_tokens(nfd_latin), uax29_word_tokens(nfc_latin));
+
+        let nfd_hiragana = "か\u{3099}き";
+        let nfc_hiragana = "がき";
+        assert_eq!(
+            uax29_word_tokens(nfd_hiragana),
+            uax29_word_tokens(nfc_hiragana)
+        );
+
+        let nfd_hangul = "\u{110B}\u{1175}\u{11AB}\u{1100}\u{1169}\u{11BC}";
+        let nfc_hangul = "인공";
+        assert_eq!(uax29_word_tokens(nfd_hangul), uax29_word_tokens(nfc_hangul));
+
+        let m = compute_untruncated_uax29_metrics(nfd_latin, nfc_latin);
+        assert!((m.uax29_f1 - 1.0).abs() < 1e-12);
+        assert!((m.rouge_l_f1 - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn empty_vs_empty_and_empty_line_break_pairs_score_zero() {
+        for (p, g) in [("", ""), ("   \n\t  ", "--- ...")] {
+            let m = compute_untruncated_uax29_metrics(p, g);
+            assert_eq!(m.pred_tokens, 0);
+            assert_eq!(m.gold_tokens, 0);
+            assert_eq!(m.uax29_precision, 0.0);
+            assert_eq!(m.uax29_recall, 0.0);
+            assert_eq!(m.uax29_f1, 0.0);
+            assert_eq!(m.rouge_l_precision, 0.0);
+            assert_eq!(m.rouge_l_recall, 0.0);
+            assert_eq!(m.rouge_l_f1, 0.0);
+            assert_eq!(m.line_break_f1, 0.0);
+        }
+        assert_eq!(compute_line_break_f1("", ""), 0.0);
+        assert_eq!(compute_line_break_f1("single line", "single line"), 0.0);
+        assert!((compute_line_break_f1("alpha\nbeta", "alpha\nbeta") - 1.0).abs() < 1e-12);
     }
 }

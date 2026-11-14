@@ -320,4 +320,19 @@ mod tests {
             Err(FrameError::TotalLengthMismatch { .. })
         ));
     }
+
+    #[test]
+    fn roundtrips_frame_exceeding_4_mib_payload_under_64_mib_cap() {
+        let mut payload = vec![b'x'; 5 * 1024 * 1024 + 123];
+        payload[0..6].copy_from_slice(b"<html>");
+        let uri = b"https://en.wikipedia.org/wiki/Archive";
+        let headers = b"Content-Type: text/html; charset=utf-8\r\n";
+        let encoded =
+            encode_raw_warc_frame(uri, headers, &payload).expect("5 MiB frame fits 64 MiB cap");
+        assert!(encoded.len() > 4 * 1024 * 1024);
+        let decoded = decode_raw_warc_frame(&encoded, DEFAULT_MAX_FRAME_BYTES).expect("decode ok");
+        assert_eq!(decoded.uri, uri);
+        assert_eq!(decoded.headers, headers);
+        assert_eq!(decoded.raw_body_bytes.len(), payload.len());
+    }
 }
