@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn rejects_truncated_oversized_and_mismatched_frames() {
-        let wire = encode_raw_warc_frame(b"https://a.example/", b"K: V\r\n", b"hello").unwrap();
+        let wire = encode_raw_warc_frame(b"https://www.w3.org/", b"K: V\r\n", b"hello").unwrap();
         assert!(matches!(
             decode_raw_warc_frame(&wire[..wire.len() - 1], DEFAULT_MAX_FRAME_BYTES),
             Err(FrameError::TruncatedFrame { .. })

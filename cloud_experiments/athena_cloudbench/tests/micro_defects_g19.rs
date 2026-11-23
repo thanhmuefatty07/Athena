@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 fn test_url() -> Url {
-    Url::parse("https://bench.invalid/g19").unwrap()
+    Url::parse("https://www.w3.org/TR/html52/").unwrap()
 }
 
 #[test]
@@ -34,7 +34,7 @@ fn g19_01_custom_element_markdown_body_and_astro_island_wipeout() {
 
 #[test]
 fn g19_02_block_in_inline_anchor_heading_wipeout() {
-    let html = "<html><body><main><div><a href=\"https://example.org/post\"><h3>Card Headline Inside Anchor</h3><p>Detailed summary paragraph nested inside anchor wrapper.</p></a></div></main></body></html>";
+    let html = "<html><body><main><div><a href=\"https://www.w3.org/TR/post\"><h3>Card Headline Inside Anchor</h3><p>Detailed summary paragraph nested inside anchor wrapper.</p></a></div></main></body></html>";
     let bt = parse_html_breakthrough(html, &test_url(), ParseLimits::default()).unwrap();
     assert!(
         bt.projection.chunks.is_empty(),
@@ -162,7 +162,7 @@ fn g19_06_form_h5_h6_dl_drops_and_cetd_entropy_overwrite() {
 
 #[test]
 fn g19_07_cetd_entropy_utf8_byte_entropy_and_1_link_cjk_deletion() {
-    let cjk_html = "<html><body><h1>研究概要</h1><p>本研究では分散トランザクション処理における厳密な直列化可能性と低遅延合意プロトコルの設計を検証し<a href=\"https://example.jp/paper\">先行研究</a>と比較する。</p></body></html>";
+    let cjk_html = "<html><body><h1>研究概要</h1><p>本研究では分散トランザクション処理における厳密な直列化可能性と低遅延合意プロトコルの設計を検証し<a href=\"https://www.jstage.jst.go.jp/paper\">先行研究</a>と比較する。</p></body></html>";
     let main_v1 = parse_html_with_limits(
         cjk_html,
         &test_url(),

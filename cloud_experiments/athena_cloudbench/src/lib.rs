@@ -65,10 +65,10 @@ pub mod bench_common {
     impl CharsetMode {
         pub fn parse(raw: &str) -> Result<Self, String> {
             match raw.trim().to_ascii_lowercase().as_str() {
-                "utf8_assumed" => Ok(Self::Utf8Assumed),
-                "sniffing_enabled" => Ok(Self::SniffingEnabled),
+                "utf8_assumed" | "strict_utf8" => Ok(Self::Utf8Assumed),
+                "sniffing_enabled" | "transcode_whatwg" => Ok(Self::SniffingEnabled),
                 other => Err(format!(
-                    "unknown charset mode '{other}' (expected utf8_assumed or sniffing_enabled)"
+                    "unknown charset mode '{other}' (expected strict_utf8, transcode_whatwg, utf8_assumed, or sniffing_enabled)"
                 )),
             }
         }
@@ -124,7 +124,37 @@ pub mod bench_common {
         Ok(parsed)
     }
 
-    pub fn build_parse_limits(max_input_bytes: usize) -> Result<ParseLimits, String> {
+    pub fn parse_boilerplate_policy(raw: &str) -> Result<BoilerplatePolicy, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "main_content_v1" | "maincontentv1" => Ok(BoilerplatePolicy::MainContentV1),
+            "full_dom" | "fulldom" | "none" => Ok(BoilerplatePolicy::FullDom),
+            "cetd_entropy_v1" | "cetdentropyv1" => Ok(BoilerplatePolicy::CetdEntropyV1),
+            other => Err(format!(
+                "unknown --boilerplate-policy '{other}' (expected main_content_v1, full_dom, or cetd_entropy_v1)"
+            )),
+        }
+    }
+
+    pub fn boilerplate_policy_str(policy: BoilerplatePolicy) -> &'static str {
+        match policy {
+            BoilerplatePolicy::MainContentV1 => "MainContentV1",
+            BoilerplatePolicy::FullDom => "FullDom",
+            BoilerplatePolicy::CetdEntropyV1 => "CetdEntropyV1",
+        }
+    }
+
+    pub fn boilerplate_policy_cli_str(policy: BoilerplatePolicy) -> &'static str {
+        match policy {
+            BoilerplatePolicy::MainContentV1 => "main_content_v1",
+            BoilerplatePolicy::FullDom => "full_dom",
+            BoilerplatePolicy::CetdEntropyV1 => "cetd_entropy_v1",
+        }
+    }
+
+    pub fn build_parse_limits_with_policy(
+        max_input_bytes: usize,
+        boilerplate: BoilerplatePolicy,
+    ) -> Result<ParseLimits, String> {
         if max_input_bytes == 0 || max_input_bytes > DEFAULT_MAX_FRAME_BYTES {
             return Err(format!(
                 "invalid --max-input-bytes {max_input_bytes}: expected 1..={DEFAULT_MAX_FRAME_BYTES}"
@@ -134,9 +164,13 @@ pub mod bench_common {
             max_html_bytes: max_input_bytes,
             max_text_bytes: max_input_bytes,
             max_link_bytes: max_input_bytes,
-            boilerplate: BoilerplatePolicy::MainContentV1,
+            boilerplate,
             ..ParseLimits::default()
         })
+    }
+
+    pub fn build_parse_limits(max_input_bytes: usize) -> Result<ParseLimits, String> {
+        build_parse_limits_with_policy(max_input_bytes, BoilerplatePolicy::MainContentV1)
     }
 
     fn has_utf16_bom(bytes: &[u8]) -> bool {
@@ -243,5 +277,34 @@ mod bench_common_tests {
         )
         .expect("Shift_JIS decodes in sniffing_enabled mode");
         assert!(dec.contains("日本語"), "decoded={dec}");
+    }
+
+    #[test]
+    fn charset_and_boilerplate_cli_aliases_parse_cleanly() {
+        assert_eq!(
+            CharsetMode::parse("strict_utf8").unwrap(),
+            CharsetMode::Utf8Assumed
+        );
+        assert_eq!(
+            CharsetMode::parse("transcode_whatwg").unwrap(),
+            CharsetMode::SniffingEnabled
+        );
+        assert_eq!(
+            parse_boilerplate_policy("main_content_v1").unwrap(),
+            BoilerplatePolicy::MainContentV1
+        );
+        assert_eq!(
+            parse_boilerplate_policy("full_dom").unwrap(),
+            BoilerplatePolicy::FullDom
+        );
+        assert_eq!(
+            parse_boilerplate_policy("cetd_entropy_v1").unwrap(),
+            BoilerplatePolicy::CetdEntropyV1
+        );
+        assert!(parse_boilerplate_policy("bogus").is_err());
+        let full =
+            build_parse_limits_with_policy(DEFAULT_MAX_INPUT_BYTES, BoilerplatePolicy::FullDom)
+                .expect("full_dom limits");
+        assert_eq!(full.boilerplate, BoilerplatePolicy::FullDom);
     }
 }

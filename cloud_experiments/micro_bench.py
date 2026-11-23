@@ -1323,6 +1323,7 @@ def run_l1_2_dom_shadow_foster_landmark_oracle(
     bt_us_list = []
     pass2_us_list = []
     cetd_noop_count = 0
+    leg_cetd_active_count = 0
     total_real = 0
     if os.path.exists(webmainbench_path):
         with open(webmainbench_path, "r", encoding="utf-8") as f:
@@ -1354,9 +1355,7 @@ def run_l1_2_dom_shadow_foster_landmark_oracle(
                 if s5_prune.get("bt_cetd_entropy_identical_to_s4", False):
                     cetd_noop_count += 1
                 if not s5_prune.get("leg_cetd_entropy_identical_to_s4", True):
-                    locals().setdefault("_leg_cetd_active", [0])[0] += 1
-
-    leg_cetd_active_count = locals().get("_leg_cetd_active", [0])[0]
+                    leg_cetd_active_count += 1
     return {
         "micro_cases": case_results,
         "real_50_page_double_parse_and_cetd_audit": {
@@ -2900,8 +2899,6 @@ def compute_order_and_linebreak_metrics(pred_text: str, gold_text: str) -> dict[
     word_re = re.compile(r"\w+")
     p_toks = word_re.findall(pred_text.lower())
     g_toks = word_re.findall(gold_text.lower())
-    if not g_toks and not p_toks:
-        return {"bag_of_words_f1": 1.0, "rouge_l_token_lcs_f1": 1.0, "line_break_f1": 1.0, "gold_recall": 1.0}
     if not g_toks or not p_toks:
         return {"bag_of_words_f1": 0.0, "rouge_l_token_lcs_f1": 0.0, "line_break_f1": 0.0, "gold_recall": 0.0}
 
@@ -2931,9 +2928,7 @@ def compute_order_and_linebreak_metrics(pred_text: str, gold_text: str) -> dict[
     g_lb = line_boundary_pairs(gold_text)
     tot_p_lb = sum(p_lb.values())
     tot_g_lb = sum(g_lb.values())
-    if tot_g_lb == 0 and tot_p_lb == 0:
-        lb_f1 = 1.0
-    elif tot_g_lb == 0 or tot_p_lb == 0:
+    if tot_g_lb == 0 or tot_p_lb == 0:
         lb_f1 = 0.0
     else:
         lb_ov = sum((p_lb & g_lb).values())
@@ -3580,8 +3575,10 @@ def run_self_tests() -> None:
     assert "Q2" in q2_cell["sub_headers_r1plus"]
     assert "Lat" in q2_cell["row_headers"]
     # Verify Token-LCS catches word-order permutation while Bag-of-Words F1 is 1.0
+    m_empty = compute_order_and_linebreak_metrics("", "")
+    assert m_empty["bag_of_words_f1"] == 0.0 and m_empty["rouge_l_token_lcs_f1"] == 0.0 and m_empty["line_break_f1"] == 0.0
     m_perm = compute_order_and_linebreak_metrics("d c b a", "a b c d")
-    assert m_perm["bag_of_words_f1"] == 1.0 and m_perm["rouge_l_token_lcs_f1"] < 0.5
+    assert m_perm["bag_of_words_f1"] == 1.0 and m_perm["rouge_l_token_lcs_f1"] < 0.5 and m_perm["line_break_f1"] == 0.0
     # Verify untruncated LCS beyond word 1,200 (0 truncation cap)
     long_doc = " ".join(f"tok_{i}" for i in range(2500))
     m_long = compute_order_and_linebreak_metrics(long_doc, long_doc)

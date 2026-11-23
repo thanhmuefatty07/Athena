@@ -501,7 +501,7 @@ fn factored_2d_lcs_sum(r1: usize, c1: usize, r2: usize, c2: usize, sim_matrix: &
     let sum_b_to_a = factored_2d_directional_best(r2, c2, r1, c1, |i2, j2, i1, j1| {
         sim_matrix[(((i1 * c1 + j1) * r2) + i2) * c2 + j2]
     });
-    0.5 * (sum_a_to_b + sum_b_to_a)
+    sum_a_to_b.max(sum_b_to_a)
 }
 
 /// Computes Smock et al. (CVPR 2023) `GriTS_Top` (2D relative-span IoU) and `GriTS_Cont` (2D UAX #29 Token-LCS) over WHATWG slot grids.
@@ -783,5 +783,106 @@ mod tests {
         let ba = compute_grits(&rect_b, &ragged_a);
         assert_eq!(ab.grits_top, ba.grits_top);
         assert_eq!(ab.grits_cont, ba.grits_cont);
+    }
+
+    #[test]
+    fn grits_property_symmetry_bounds_and_reflexivity_across_128_random_grids() {
+        fn next_u64(state: &mut u64) -> u64 {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *state
+        }
+
+        fn gen_grid(state: &mut u64) -> TableSlotGrid {
+            const VOCAB: &[&str] = &[
+                "",
+                "Alpha",
+                "Beta 42",
+                "Revenue USD",
+                "日本語データ",
+                "Café résumé",
+                "Q1 120.5%",
+                "Δp50 -14.2%",
+            ];
+            let rows = (next_u64(state) % 5 + 1) as usize;
+            let cols = (next_u64(state) % 5 + 1) as usize;
+            let mut covered = vec![false; rows * cols];
+            let mut specs = Vec::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    if covered[r * cols + c] {
+                        continue;
+                    }
+                    if next_u64(state) % 11 < 2 {
+                        continue;
+                    }
+                    let max_rs = (rows - r).min(3);
+                    let max_cs = (cols - c).min(3);
+                    let rs = (next_u64(state) as usize % max_rs) + 1;
+                    let mut cs = (next_u64(state) as usize % max_cs) + 1;
+                    for dc in 0..cs {
+                        for dr in 0..rs {
+                            if covered[(r + dr) * cols + (c + dc)] {
+                                cs = dc.max(1);
+                                break;
+                            }
+                        }
+                    }
+                    for dr in 0..rs {
+                        for dc in 0..cs {
+                            if !covered[(r + dr) * cols + (c + dc)] {
+                                covered[(r + dr) * cols + (c + dc)] = true;
+                            }
+                        }
+                    }
+                    let text = VOCAB[(next_u64(state) as usize) % VOCAB.len()].to_owned();
+                    let is_header = r == 0 || next_u64(state).is_multiple_of(7);
+                    specs.push(GridCellSpec {
+                        row: r,
+                        col: c,
+                        rowspan: rs,
+                        colspan: cs,
+                        is_header,
+                        text,
+                    });
+                }
+            }
+            TableSlotGrid::from_cells(rows, cols, &specs)
+        }
+
+        let mut rng_state = 0xA74E_4A1E_2026_1124u64;
+        let num_cases = if cfg!(miri) { 8 } else { 128 };
+        for case_idx in 0..num_cases {
+            let a = gen_grid(&mut rng_state);
+            let b = gen_grid(&mut rng_state);
+
+            let aa = compute_grits(&a, &a);
+            assert!(
+                (aa.grits_top - 1.0).abs() <= 1e-12 && (aa.grits_cont - 1.0).abs() <= 1e-12,
+                "reflexivity failed at case {case_idx}: {aa:?}"
+            );
+
+            let ab = compute_grits(&a, &b);
+            let ba = compute_grits(&b, &a);
+            assert!(
+                (0.0..=1.0).contains(&ab.grits_top) && (0.0..=1.0).contains(&ab.grits_cont),
+                "bounds violated at case {case_idx}: {ab:?}"
+            );
+            assert!(
+                (ab.grits_top - ba.grits_top).abs() <= 1e-12,
+                "grits_top asymmetry at case {case_idx}: ab={} vs ba={}",
+                ab.grits_top,
+                ba.grits_top
+            );
+            assert!(
+                (ab.grits_cont - ba.grits_cont).abs() <= 1e-12,
+                "grits_cont asymmetry at case {case_idx}: ab={} vs ba={}",
+                ab.grits_cont,
+                ba.grits_cont
+            );
+            assert!((ab.grits_top_precision - ba.grits_top_recall).abs() <= 1e-12);
+            assert!((ab.grits_cont_precision - ba.grits_cont_recall).abs() <= 1e-12);
+        }
     }
 }

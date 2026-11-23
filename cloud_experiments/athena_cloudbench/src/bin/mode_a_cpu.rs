@@ -2,11 +2,14 @@
 //! Strictly ZERO `#[global_allocator]` wrapper and zero harness heap allocations inside the timed loop.
 
 use athena_cloudbench::bench_common::{
-    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, build_parse_limits, decode_html_bytes,
-    effective_limits, validate_real_url,
+    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, boilerplate_policy_str,
+    build_parse_limits_with_policy, decode_html_bytes, effective_limits, parse_boilerplate_policy,
+    validate_real_url,
 };
 use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile};
-use athena_core_v2::projection::{ParseLimits, parse_html_breakthrough, parse_html_with_limits};
+use athena_core_v2::projection::{
+    BoilerplatePolicy, ParseLimits, parse_html_breakthrough, parse_html_with_limits,
+};
 use athena_lexbor_adapter_research::{
     LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits,
     parse_and_project_pure_with_charset, parse_tree_with_limits_profile_and_charset,
@@ -24,6 +27,7 @@ struct CpuCliConfig {
     arm_b: Contender,
     contender: Option<Contender>,
     url: Option<String>,
+    boilerplate_policy: BoilerplatePolicy,
     charset_mode: CharsetMode,
     max_input_bytes: usize,
     threads: usize,
@@ -55,6 +59,7 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
     let mut saw_arm_b = false;
     let mut contender: Option<Contender> = None;
     let mut url: Option<String> = None;
+    let mut boilerplate_policy = BoilerplatePolicy::MainContentV1;
     let mut charset_mode = CharsetMode::Utf8Assumed;
     let mut max_input_bytes = DEFAULT_MAX_INPUT_BYTES;
     let mut threads = 1usize;
@@ -89,6 +94,12 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
             "--url" => {
                 i += 1;
                 url = Some(args.get(i).ok_or("missing --url value")?.clone());
+            }
+            "--boilerplate-policy" => {
+                i += 1;
+                boilerplate_policy = parse_boilerplate_policy(
+                    args.get(i).ok_or("missing --boilerplate-policy value")?,
+                )?;
             }
             "--charset-mode" => {
                 i += 1;
@@ -159,7 +170,7 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
             "mode_a_cpu enforces single-thread execution (--threads 1), got {threads}"
         ));
     }
-    let _ = build_parse_limits(max_input_bytes)?;
+    let _ = build_parse_limits_with_policy(max_input_bytes, boilerplate_policy)?;
 
     if let Some(c) = contender {
         if !saw_arm_a && !saw_arm_b {
@@ -184,6 +195,7 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
         arm_b,
         contender,
         url,
+        boilerplate_policy,
         charset_mode,
         max_input_bytes,
         threads,
@@ -302,7 +314,7 @@ fn main() -> Result<(), String> {
         .unwrap_or("https://en.wikipedia.org/wiki/Mode_a_cpu");
     let base_url = validate_real_url(url_str)?;
 
-    let base_limits = build_parse_limits(cfg.max_input_bytes)?;
+    let base_limits = build_parse_limits_with_policy(cfg.max_input_bytes, cfg.boilerplate_policy)?;
     let html_decoded = decode_html_bytes(&html_bytes, &[], cfg.max_input_bytes, cfg.charset_mode)?;
     let html_str = html_decoded.as_ref();
     let core_limits = effective_limits(base_limits, html_str.len());
@@ -464,7 +476,7 @@ fn main() -> Result<(), String> {
         "schema": "AthenaCloudBenchModeACpu/1",
         "global_alloc_wrapped": false,
         "qos": qos,
-        "boilerplate_policy": "MainContentV1",
+        "boilerplate_policy": boilerplate_policy_str(cfg.boilerplate_policy),
         "contender": cfg.contender.map(Contender::as_str),
         "url": url_str,
         "charset_mode": cfg.charset_mode.as_str(),
@@ -544,8 +556,22 @@ mod tests {
         assert_eq!(cfg.contender, Some(Contender::LexborStageIr));
         assert_eq!(cfg.arm_a, Contender::LexborStageIr);
         assert_eq!(cfg.arm_b, Contender::LexborStageIr);
+        assert_eq!(cfg.boilerplate_policy, BoilerplatePolicy::MainContentV1);
         assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
         assert_eq!(cfg.max_input_bytes, 33_554_432);
         assert_eq!(cfg.pin_cpu, Some(3));
+
+        let cfg2 = parse_cli_args(&s(&[
+            "mode_a_cpu",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--boilerplate-policy",
+            "full_dom",
+            "--charset-mode",
+            "transcode_whatwg",
+        ]))
+        .expect("full_dom + transcode_whatwg");
+        assert_eq!(cfg2.boilerplate_policy, BoilerplatePolicy::FullDom);
+        assert_eq!(cfg2.charset_mode, CharsetMode::SniffingEnabled);
     }
 }

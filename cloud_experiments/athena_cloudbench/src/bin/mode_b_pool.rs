@@ -3,15 +3,16 @@
 //! binary frames (`0` fallback URLs, `0` lossy UTF-8 distortion, `MainContentV1` policy parity).
 
 use athena_cloudbench::bench_common::{
-    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, DEFAULT_SOFT_BUDGET_MS, build_parse_limits,
-    decode_html_bytes, effective_limits, validate_real_url,
+    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, DEFAULT_SOFT_BUDGET_MS,
+    boilerplate_policy_cli_str, boilerplate_policy_str, build_parse_limits_with_policy,
+    decode_html_bytes, effective_limits, parse_boilerplate_policy, validate_real_url,
 };
 use athena_cloudbench::framing::{
     DEFAULT_MAX_FRAME_BYTES, RawWarcFrame, encode_raw_warc_frame, read_raw_warc_frame,
 };
 use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile};
 use athena_core_v2::projection::{
-    ParseLimits, Projection, parse_html_breakthrough, parse_html_with_limits,
+    BoilerplatePolicy, ParseLimits, Projection, parse_html_breakthrough, parse_html_with_limits,
 };
 use athena_lexbor_adapter_research::{
     LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits,
@@ -39,6 +40,7 @@ struct PoolConfig {
     watchdog_ms: u64,
     soft_budget_ms: u64,
     contender: Option<Contender>,
+    boilerplate_policy: BoilerplatePolicy,
     charset_mode: CharsetMode,
     max_input_bytes: usize,
     cli_url: Option<String>,
@@ -94,6 +96,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
     let mut watchdog_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
     let mut soft_budget_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
     let mut contender: Option<Contender> = None;
+    let mut boilerplate_policy = BoilerplatePolicy::MainContentV1;
     let mut charset_mode = CharsetMode::Utf8Assumed;
     let mut max_input_bytes = DEFAULT_MAX_INPUT_BYTES;
     let mut cli_url: Option<String> = None;
@@ -159,6 +162,12 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
                 i += 1;
                 contender = parse_contender_arg(args.get(i).ok_or("missing --contender value")?)?;
             }
+            "--boilerplate-policy" => {
+                i += 1;
+                boilerplate_policy = parse_boilerplate_policy(
+                    args.get(i).ok_or("missing --boilerplate-policy value")?,
+                )?;
+            }
             "--charset-mode" => {
                 i += 1;
                 charset_mode =
@@ -196,7 +205,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
         i += 1;
     }
 
-    let _ = build_parse_limits(max_input_bytes)?;
+    let _ = build_parse_limits_with_policy(max_input_bytes, boilerplate_policy)?;
     if !self_test && internal_slot.is_none() && cli_url.is_none() && frames_in.is_none() {
         return Err(
             "missing required --url <real_url> or --frames-in <path> (or pass --self-test)"
@@ -212,6 +221,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
         watchdog_ms,
         soft_budget_ms,
         contender,
+        boilerplate_policy,
         charset_mode,
         max_input_bytes,
         cli_url,
@@ -334,7 +344,7 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
         .and_then(|()| writer.flush())
         .map_err(|e| e.to_string())?;
 
-    let base_limits = build_parse_limits(cfg.max_input_bytes)?;
+    let base_limits = build_parse_limits_with_policy(cfg.max_input_bytes, cfg.boilerplate_policy)?;
     let lxb_charset = cfg.charset_mode.to_lexbor_charset_mode();
 
     while let Some(frame) =
@@ -456,7 +466,7 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
             "status": "OK",
             "worker_slot": slot,
             "qos": qos_status.profile,
-            "boilerplate_policy": "MainContentV1",
+            "boilerplate_policy": boilerplate_policy_str(cfg.boilerplate_policy),
             "charset_mode": cfg.charset_mode.as_str(),
             "contender": cfg.contender.map(Contender::as_str).unwrap_or("all"),
             "max_input_bytes": cfg.max_input_bytes,
@@ -554,7 +564,7 @@ fn summarize_pool_records(records: &[Value], cfg: &PoolConfig) -> PoolAccounting
         worker_respawns,
         soft_budget_ms: cfg.soft_budget_ms,
         watchdog_ms: cfg.watchdog_ms,
-        boilerplate_policy: "MainContentV1",
+        boilerplate_policy: boilerplate_policy_str(cfg.boilerplate_policy),
         charset_mode: cfg.charset_mode.as_str(),
         contender: cfg.contender.map(Contender::as_str).unwrap_or("all"),
         max_input_bytes: cfg.max_input_bytes,
@@ -594,6 +604,8 @@ impl ManagedWorker {
             .arg(cfg.soft_budget_ms.to_string())
             .arg("--contender")
             .arg(cfg.contender.map(Contender::as_str).unwrap_or("all"))
+            .arg("--boilerplate-policy")
+            .arg(boilerplate_policy_cli_str(cfg.boilerplate_policy))
             .arg("--charset-mode")
             .arg(cfg.charset_mode.as_str())
             .arg("--max-input-bytes")
@@ -890,6 +902,7 @@ fn run_self_test() -> Result<(), String> {
         watchdog_ms: 50,
         soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
         contender: None,
+        boilerplate_policy: BoilerplatePolicy::MainContentV1,
         charset_mode: CharsetMode::Utf8Assumed,
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         cli_url: Some(url_ok.to_owned()),
@@ -975,6 +988,7 @@ fn run_self_test() -> Result<(), String> {
         watchdog_ms: 500,
         soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
         contender: None,
+        boilerplate_policy: BoilerplatePolicy::MainContentV1,
         charset_mode: CharsetMode::SniffingEnabled,
         max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         cli_url: Some(url_sjis.to_owned()),
@@ -1021,11 +1035,13 @@ fn run_self_test() -> Result<(), String> {
         ));
     }
 
+    let all_records: Vec<Value> = results1.iter().chain(results2.iter()).cloned().collect();
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "schema": "AthenaCloudBenchModeBPoolSelfTest/2",
             "status": "PASS",
+            "records": all_records,
             "stream1_accounting": accounting1,
             "stream1_records": results1,
             "stream2_accounting": accounting2,
@@ -1183,5 +1199,20 @@ mod tests {
             .is_err()
         );
         assert!(parse_cli_args(&s(&["mode_b_pool", "--self-test"])).is_ok());
+        let cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--boilerplate-policy",
+            "full_dom",
+            "--charset-mode",
+            "transcode_whatwg",
+            "--contender",
+            "breakthrough",
+        ]))
+        .expect("pool full_dom + transcode_whatwg");
+        assert_eq!(cfg.boilerplate_policy, BoilerplatePolicy::FullDom);
+        assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
+        assert_eq!(cfg.contender, Some(Contender::Breakthrough));
     }
 }

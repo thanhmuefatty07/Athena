@@ -5,11 +5,14 @@
 //! Linux `/proc/self/smaps_rollup` (`Pss`, `RssAnon`).
 
 use athena_cloudbench::bench_common::{
-    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, build_parse_limits, decode_html_bytes,
-    effective_limits, validate_real_url,
+    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, boilerplate_policy_str,
+    build_parse_limits_with_policy, decode_html_bytes, effective_limits, parse_boilerplate_policy,
+    validate_real_url,
 };
 use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile, read_os_memory_snapshot};
-use athena_core_v2::projection::{ParseLimits, parse_html_breakthrough, parse_html_with_limits};
+use athena_core_v2::projection::{
+    BoilerplatePolicy, ParseLimits, parse_html_breakthrough, parse_html_with_limits,
+};
 use athena_lexbor_adapter_research::{
     LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits, lexbor_current_live_bytes,
     lexbor_set_growth_hook, lexbor_shim_heap_counters, lexbor_shim_reset_and_enable_metering,
@@ -264,6 +267,7 @@ where
 struct MemCliConfig {
     contender: Option<Contender>,
     url: Option<String>,
+    boilerplate_policy: BoilerplatePolicy,
     charset_mode: CharsetMode,
     max_input_bytes: usize,
     threads: usize,
@@ -288,6 +292,7 @@ fn parse_pin_cpu(raw: &str) -> Result<Option<usize>, String> {
 fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
     let mut contender: Option<Contender> = None;
     let mut url: Option<String> = None;
+    let mut boilerplate_policy = BoilerplatePolicy::MainContentV1;
     let mut charset_mode = CharsetMode::Utf8Assumed;
     let mut max_input_bytes = DEFAULT_MAX_INPUT_BYTES;
     let mut threads = 1usize;
@@ -309,6 +314,12 @@ fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
             "--url" => {
                 i += 1;
                 url = Some(args.get(i).ok_or("missing --url value")?.clone());
+            }
+            "--boilerplate-policy" => {
+                i += 1;
+                boilerplate_policy = parse_boilerplate_policy(
+                    args.get(i).ok_or("missing --boilerplate-policy value")?,
+                )?;
             }
             "--charset-mode" => {
                 i += 1;
@@ -353,7 +364,7 @@ fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
             "mode_a_mem enforces single-thread execution (--threads 1), got {threads}"
         ));
     }
-    let _ = build_parse_limits(max_input_bytes)?;
+    let _ = build_parse_limits_with_policy(max_input_bytes, boilerplate_policy)?;
 
     if !self_test {
         let raw_url = url
@@ -367,6 +378,7 @@ fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
     Ok(MemCliConfig {
         contender,
         url,
+        boilerplate_policy,
         charset_mode,
         max_input_bytes,
         threads,
@@ -460,7 +472,7 @@ fn main() -> Result<(), String> {
         .unwrap_or("https://en.wikipedia.org/wiki/Mode_a_mem");
     let url = validate_real_url(url_str)?;
 
-    let base_limits = build_parse_limits(cfg.max_input_bytes)?;
+    let base_limits = build_parse_limits_with_policy(cfg.max_input_bytes, cfg.boilerplate_policy)?;
     let html_decoded = decode_html_bytes(&html_bytes, &[], cfg.max_input_bytes, cfg.charset_mode)?;
     let html_str = html_decoded.as_ref();
     let core_limits = effective_limits(base_limits, html_str.len());
@@ -547,7 +559,7 @@ fn main() -> Result<(), String> {
     let report = json!({
         "schema": "AthenaCloudBenchModeAMem/1",
         "qos": qos,
-        "boilerplate_policy": "MainContentV1",
+        "boilerplate_policy": boilerplate_policy_str(cfg.boilerplate_policy),
         "contender": cfg.contender.map(Contender::as_str),
         "url": url_str,
         "charset_mode": cfg.charset_mode.as_str(),
@@ -575,7 +587,11 @@ mod tests {
     #[test]
     fn simultaneous_combined_peak_is_less_than_sum_of_staggered_rust_and_c_peaks() {
         let html = default_1000_node_fixture();
-        let limits = build_parse_limits(DEFAULT_MAX_INPUT_BYTES).expect("limits");
+        let limits = build_parse_limits_with_policy(
+            DEFAULT_MAX_INPUT_BYTES,
+            BoilerplatePolicy::MainContentV1,
+        )
+        .expect("limits");
         let (val, rust_snap) = measure_arm(|| -> Result<usize, String> {
             let proj = parse_and_project_pure_with_charset(
                 &html,
@@ -650,8 +666,22 @@ mod tests {
         ]))
         .expect("valid args");
         assert_eq!(cfg.contender, Some(Contender::LexborPure));
+        assert_eq!(cfg.boilerplate_policy, BoilerplatePolicy::MainContentV1);
         assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
         assert_eq!(cfg.max_input_bytes, 33_554_432);
         assert_eq!(cfg.pin_cpu, Some(2));
+
+        let cfg2 = parse_cli_args(&s(&[
+            "mode_a_mem",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--boilerplate-policy",
+            "full_dom",
+            "--charset-mode",
+            "strict_utf8",
+        ]))
+        .expect("full_dom + strict_utf8");
+        assert_eq!(cfg2.boilerplate_policy, BoilerplatePolicy::FullDom);
+        assert_eq!(cfg2.charset_mode, CharsetMode::Utf8Assumed);
     }
 }

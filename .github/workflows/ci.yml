@@ -220,11 +220,23 @@ jobs:
             --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
             --no-default-features \
             --lib
+      - name: Run C + Rust ASAN/UBSAN and TSAN smoke on Lexbor shim
+        shell: bash
+        env:
+          CC: clang
+          CARGO_BUILD_JOBS: '3'
+        run: |
+          set -euo pipefail
+          ATHENA_LEXBOR_SANITIZER=address_undefined bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-asan
+          ATHENA_LEXBOR_SANITIZER=thread bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-tsan
       - name: Run AddressSanitizer + LeakSanitizer on Lexbor FFI adapter and CloudBench
         shell: bash
         env:
+          CC: clang
+          ATHENA_LEXBOR_SANITIZER: address_undefined
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=address
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           set -euo pipefail
           cargo test --locked --target x86_64-unknown-linux-gnu \
