@@ -67,11 +67,14 @@ fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
         env::var("RUSTFLAGS").unwrap_or_default(),
         env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default()
     );
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match sanitizer {
         SanitizerMode::None => {}
         SanitizerMode::AddressUndefined => {
             if rustflags.contains("sanitizer=address") {
-                println!("cargo:rustc-link-arg=-fsanitize=undefined");
+                if target_os == "macos" {
+                    println!("cargo:rustc-link-arg=-fsanitize=undefined");
+                }
             } else {
                 println!("cargo:rustc-link-arg=-fsanitize=address,undefined");
             }
@@ -82,8 +85,6 @@ fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
             }
         }
     }
-
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "macos" {
         let cc_bin = env::var("CC").unwrap_or_else(|_| "cc".to_owned());
         if let Ok(output) = Command::new(&cc_bin).arg("--print-runtime-dir").output()

@@ -122,6 +122,7 @@ jobs:
             echo "ATHENA_LEXBOR_INCLUDE_DIR=${inc_dir}"
             echo "ATHENA_LEXBOR_ARCHIVE=${archive}"
           } >> "$GITHUB_ENV"
+          timeout --kill-after=15s 300s cargo fetch --locked
           timeout --kill-after=15s 600s cargo build --locked --release --features research-probes --bin core_probe
           timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml --locked --release
           timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml --locked --release
@@ -214,7 +215,6 @@ jobs:
             cargo-metadata.json
 
   linux-arm64-gate:
-    if: vars.ENABLE_GITHUB_ARM64_RUNNERS != '0' && (!github.event.repository.private || vars.ENABLE_PRIVATE_ARM64_RUNNERS == '1')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -259,6 +259,8 @@ jobs:
   nightly-sanitizers:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-10-24
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -314,7 +316,7 @@ jobs:
         env:
           CC: clang
           ATHENA_LEXBOR_SANITIZER: address_undefined
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=address
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C linker=clang -Zsanitizer=address
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
@@ -332,7 +334,7 @@ jobs:
           ATHENA_LEXBOR_INCLUDE_DIR: ${{ env.ATHENA_LEXBOR_TSAN_INCLUDE_DIR }}
           ATHENA_LEXBOR_ARCHIVE: ${{ env.ATHENA_LEXBOR_ARCHIVE }}
           ATHENA_LEXBOR_SANITIZER: thread
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=thread
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C linker=clang -Zsanitizer=thread
           TSAN_OPTIONS: halt_on_error=1
         run: |
           set -euo pipefail
