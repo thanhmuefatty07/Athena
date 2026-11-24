@@ -4314,7 +4314,7 @@ raise SystemExit(research.main())
                 path.write_bytes(b"staged")
             lexbor_commit = "2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe"
             lexbor_src = cache / "lexbor-v3.0.0" / f"lexbor-{lexbor_commit}" / "CMakeLists.txt"
-            lexbor_lib = cache / "lexbor-v3.0.0" / "build" / "liblexbor_static.a"
+            lexbor_lib = cache / "lexbor-v3.0.0" / "install-none" / "lib" / "liblexbor_static.a"
             for path in (lexbor_src, lexbor_lib):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"lexbor")
@@ -4349,6 +4349,7 @@ raise SystemExit(research.main())
                         "ATHENA_LEXBOR_SOURCE_DIR",
                         "ATHENA_LEXBOR_BUILD_DIR",
                         "ATHENA_LEXBOR_LIB_DIR",
+                        "ATHENA_LEXBOR_INCLUDE_DIR",
                         "ATHENA_LEXBOR_ADAPTER_TARGET_DIR",
                         "ATHENA_LEXBOR_WORK_ROOT",
                     )

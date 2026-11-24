@@ -405,12 +405,26 @@ fn read_bounded_worker_payload<R: Read>(
     max_frame_bytes: usize,
 ) -> Result<Option<Vec<u8>>, String> {
     let mut len_buf = [0u8; 4];
-    match rdr.read_exact(&mut len_buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.to_string()),
+    let mut header_read = 0usize;
+    while header_read < 4 {
+        match rdr.read(&mut len_buf[header_read..]) {
+            Ok(0) => {
+                if header_read == 0 {
+                    return Ok(None);
+                }
+                return Err(format!(
+                    "truncated worker response frame header: expected 4 bytes, got {header_read}"
+                ));
+            }
+            Ok(k) => header_read += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.to_string()),
+        }
     }
     let n = u32::from_be_bytes(len_buf) as usize;
+    if n == 0 {
+        return Err("worker response frame length must be >= 1".to_owned());
+    }
     if n > max_frame_bytes {
         return Err(format!(
             "worker response frame length {n} exceeds max {max_frame_bytes}"
@@ -443,233 +457,7 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
     while let Some(frame) =
         read_raw_warc_frame(&mut reader, DEFAULT_MAX_FRAME_BYTES).map_err(|e| e.to_string())?
     {
-        let common_stall_ms =
-            parse_header_u64(&frame.headers, b"x-athena-test-stall-ms").unwrap_or(0);
-        let track_a_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-tracka-stall-ms")
-            .unwrap_or(common_stall_ms);
-        let lexbor_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-lexbor-stall-ms")
-            .unwrap_or(common_stall_ms);
-
-        let uri_utf8 = std::str::from_utf8(&frame.uri).ok();
-        let parsed_url = uri_utf8.and_then(|u| validate_real_url(u).ok());
-        let within_input_cap = frame.raw_body_bytes.len() <= cfg.max_input_bytes;
-
-        let mut contender_timings_us = serde_json::Map::new();
-        let mut track_a_elapsed_us: Option<u64> = None;
-        let mut lexbor_pure_elapsed_us: Option<u64> = None;
-        let mut contender_elapsed_us: Option<u64> = None;
-        let mut worker_elapsed_us: Option<u64> = None;
-        let mut track_a_utf8_valid = false;
-
-        let (
-            track_a_status,
-            track_a_chunks,
-            track_a_blake3,
-            lexbor_status,
-            lexbor_chunks,
-            contender_status,
-            contender_chunks,
-            contender_blake3,
-        ) = match (uri_utf8, &parsed_url) {
-            (_, None) | (None, _) => {
-                if common_stall_ms > 0 {
-                    thread::sleep(Duration::from_millis(common_stall_ms));
-                }
-                (
-                    "INVALID_RAW_URI",
-                    0usize,
-                    String::new(),
-                    "INVALID_RAW_URI",
-                    0usize,
-                    "INVALID_RAW_URI",
-                    0usize,
-                    String::new(),
-                )
-            }
-            (Some(_), Some(url)) => {
-                if !within_input_cap {
-                    if common_stall_ms > 0 {
-                        thread::sleep(Duration::from_millis(common_stall_ms));
-                    }
-                    (
-                        "INPUT_EXCEEDS_MAX_BYTES",
-                        0,
-                        String::new(),
-                        "INPUT_EXCEEDS_MAX_BYTES",
-                        0,
-                        "INPUT_EXCEEDS_MAX_BYTES",
-                        0,
-                        String::new(),
-                    )
-                } else {
-                    match cfg.contender {
-                        None => {
-                            let ta = run_timed_rust_arm(
-                                false,
-                                &frame.raw_body_bytes,
-                                &frame.headers,
-                                url,
-                                base_limits,
-                                cfg.max_input_bytes,
-                                cfg.charset_mode,
-                                track_a_stall_ms,
-                            );
-                            let lx = run_timed_lexbor_arm(
-                                Contender::LexborPure,
-                                &frame.raw_body_bytes,
-                                &frame.headers,
-                                url,
-                                base_limits,
-                                cfg.max_input_bytes,
-                                cfg.charset_mode,
-                                lexbor_stall_ms,
-                            );
-                            track_a_utf8_valid = ta.utf8_valid;
-                            track_a_elapsed_us = Some(ta.elapsed_us);
-                            lexbor_pure_elapsed_us = Some(lx.elapsed_us);
-                            contender_timings_us.insert(
-                                Contender::Legacy.as_str().to_owned(),
-                                json!(ta.elapsed_us),
-                            );
-                            contender_timings_us.insert(
-                                Contender::LexborPure.as_str().to_owned(),
-                                json!(lx.elapsed_us),
-                            );
-                            contender_elapsed_us = None;
-                            worker_elapsed_us = None;
-                            (
-                                ta.status,
-                                ta.units,
-                                ta.blake3.clone(),
-                                lx.status,
-                                lx.units,
-                                ta.status,
-                                ta.units,
-                                ta.blake3,
-                            )
-                        }
-                        Some(Contender::Legacy) => {
-                            let ta = run_timed_rust_arm(
-                                false,
-                                &frame.raw_body_bytes,
-                                &frame.headers,
-                                url,
-                                base_limits,
-                                cfg.max_input_bytes,
-                                cfg.charset_mode,
-                                track_a_stall_ms,
-                            );
-                            track_a_utf8_valid = ta.utf8_valid;
-                            track_a_elapsed_us = Some(ta.elapsed_us);
-                            contender_elapsed_us = Some(ta.elapsed_us);
-                            worker_elapsed_us = Some(ta.elapsed_us);
-                            contender_timings_us.insert(
-                                Contender::Legacy.as_str().to_owned(),
-                                json!(ta.elapsed_us),
-                            );
-                            (
-                                ta.status,
-                                ta.units,
-                                ta.blake3.clone(),
-                                "SKIPPED",
-                                0,
-                                ta.status,
-                                ta.units,
-                                ta.blake3,
-                            )
-                        }
-                        Some(Contender::Breakthrough) => {
-                            let bt = run_timed_rust_arm(
-                                true,
-                                &frame.raw_body_bytes,
-                                &frame.headers,
-                                url,
-                                base_limits,
-                                cfg.max_input_bytes,
-                                cfg.charset_mode,
-                                track_a_stall_ms,
-                            );
-                            track_a_utf8_valid = bt.utf8_valid;
-                            track_a_elapsed_us = Some(bt.elapsed_us);
-                            contender_elapsed_us = Some(bt.elapsed_us);
-                            worker_elapsed_us = Some(bt.elapsed_us);
-                            contender_timings_us.insert(
-                                Contender::Breakthrough.as_str().to_owned(),
-                                json!(bt.elapsed_us),
-                            );
-                            (
-                                bt.status,
-                                bt.units,
-                                bt.blake3.clone(),
-                                "SKIPPED",
-                                0,
-                                bt.status,
-                                bt.units,
-                                bt.blake3,
-                            )
-                        }
-                        Some(c) => {
-                            let lx = run_timed_lexbor_arm(
-                                c,
-                                &frame.raw_body_bytes,
-                                &frame.headers,
-                                url,
-                                base_limits,
-                                cfg.max_input_bytes,
-                                cfg.charset_mode,
-                                lexbor_stall_ms,
-                            );
-                            track_a_utf8_valid = lx.utf8_valid;
-                            if c == Contender::LexborPure {
-                                lexbor_pure_elapsed_us = Some(lx.elapsed_us);
-                            }
-                            contender_elapsed_us = Some(lx.elapsed_us);
-                            worker_elapsed_us = Some(lx.elapsed_us);
-                            contender_timings_us
-                                .insert(c.as_str().to_owned(), json!(lx.elapsed_us));
-                            (
-                                "SKIPPED",
-                                0,
-                                String::new(),
-                                lx.status,
-                                lx.units,
-                                lx.status,
-                                lx.units,
-                                lx.blake3,
-                            )
-                        }
-                    }
-                }
-            }
-        };
-
-        let resp = json!({
-            "status": "OK",
-            "worker_slot": slot,
-            "qos": qos_status.profile,
-            "stage": pool_stage_str(cfg.contender),
-            "boilerplate_policy": pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
-            "charset_mode": cfg.charset_mode.as_str(),
-            "contender": cfg.contender.map(Contender::as_str).unwrap_or("all"),
-            "max_input_bytes": cfg.max_input_bytes,
-            "uri_lossy": String::from_utf8_lossy(&frame.uri),
-            "raw_header_bytes": frame.headers.len(),
-            "raw_body_bytes": frame.raw_body_bytes.len(),
-            "track_a_utf8_valid": track_a_utf8_valid,
-            "track_a_status": track_a_status,
-            "track_a_chunks": track_a_chunks,
-            "track_a_blake3": track_a_blake3,
-            "track_a_elapsed_us": track_a_elapsed_us,
-            "lexbor_pure_status": lexbor_status,
-            "lexbor_pure_chunks": lexbor_chunks,
-            "lexbor_pure_elapsed_us": lexbor_pure_elapsed_us,
-            "contender_status": contender_status,
-            "contender_chunks": contender_chunks,
-            "contender_blake3": contender_blake3,
-            "contender_elapsed_us": contender_elapsed_us,
-            "contender_timings_us": contender_timings_us,
-            "worker_elapsed_us": worker_elapsed_us,
-        });
+        let resp = evaluate_worker_frame(&frame, cfg, slot, qos_status.profile, base_limits);
         let resp_bytes = serde_json::to_vec(&resp).map_err(|e| e.to_string())?;
         if resp_bytes.len() > DEFAULT_MAX_FRAME_BYTES {
             return Err(format!(
@@ -685,6 +473,297 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn evaluate_worker_frame(
+    frame: &RawWarcFrame,
+    cfg: &PoolConfig,
+    slot: usize,
+    qos_profile: &'static str,
+    base_limits: ParseLimits,
+) -> Value {
+    let common_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-stall-ms").unwrap_or(0);
+    let track_a_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-tracka-stall-ms")
+        .unwrap_or(common_stall_ms);
+    let lexbor_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-lexbor-stall-ms")
+        .unwrap_or(common_stall_ms);
+
+    let uri_utf8 = std::str::from_utf8(&frame.uri).ok();
+    let parsed_url = uri_utf8.and_then(|u| validate_real_url(u).ok());
+    let within_input_cap = frame.raw_body_bytes.len() <= cfg.max_input_bytes;
+
+    let mut contender_timings_us = serde_json::Map::new();
+    let mut track_a_elapsed_us: Option<u64> = None;
+    let mut lexbor_pure_elapsed_us: Option<u64> = None;
+    let mut contender_elapsed_us: Option<u64> = None;
+    let mut worker_elapsed_us: Option<u64> = None;
+    let mut contender_dom_nodes: Option<usize> = None;
+    let mut track_a_utf8_valid = false;
+
+    let (
+        track_a_status,
+        track_a_chunks,
+        track_a_blake3,
+        lexbor_status,
+        lexbor_chunks,
+        contender_status,
+        contender_chunks,
+        contender_blake3,
+    ) = match (uri_utf8, &parsed_url) {
+        (_, None) | (None, _) => {
+            if common_stall_ms > 0 {
+                thread::sleep(Duration::from_millis(common_stall_ms));
+            }
+            (
+                "INVALID_RAW_URI",
+                0usize,
+                String::new(),
+                "INVALID_RAW_URI",
+                0usize,
+                "INVALID_RAW_URI",
+                Some(0usize),
+                String::new(),
+            )
+        }
+        (Some(_), Some(url)) => {
+            if !within_input_cap {
+                if common_stall_ms > 0 {
+                    thread::sleep(Duration::from_millis(common_stall_ms));
+                }
+                (
+                    "INPUT_EXCEEDS_MAX_BYTES",
+                    0,
+                    String::new(),
+                    "INPUT_EXCEEDS_MAX_BYTES",
+                    0,
+                    "INPUT_EXCEEDS_MAX_BYTES",
+                    Some(0usize),
+                    String::new(),
+                )
+            } else {
+                match cfg.contender {
+                    None => {
+                        let ta = run_timed_rust_arm(
+                            false,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            track_a_stall_ms,
+                        );
+                        let lx = run_timed_lexbor_arm(
+                            Contender::LexborPure,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            lexbor_stall_ms,
+                        );
+                        track_a_utf8_valid = ta.utf8_valid;
+                        track_a_elapsed_us = Some(ta.elapsed_us);
+                        lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                        contender_timings_us
+                            .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
+                        contender_timings_us.insert(
+                            Contender::LexborPure.as_str().to_owned(),
+                            json!(lx.elapsed_us),
+                        );
+                        contender_elapsed_us = None;
+                        worker_elapsed_us = None;
+                        (
+                            ta.status,
+                            ta.units,
+                            ta.blake3.clone(),
+                            lx.status,
+                            lx.units,
+                            ta.status,
+                            Some(ta.units),
+                            ta.blake3,
+                        )
+                    }
+                    Some(Contender::Legacy) => {
+                        let ta = run_timed_rust_arm(
+                            false,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            track_a_stall_ms,
+                        );
+                        track_a_utf8_valid = ta.utf8_valid;
+                        track_a_elapsed_us = Some(ta.elapsed_us);
+                        contender_elapsed_us = Some(ta.elapsed_us);
+                        worker_elapsed_us = Some(ta.elapsed_us);
+                        contender_timings_us
+                            .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
+                        (
+                            ta.status,
+                            ta.units,
+                            ta.blake3.clone(),
+                            "SKIPPED",
+                            0,
+                            ta.status,
+                            Some(ta.units),
+                            ta.blake3,
+                        )
+                    }
+                    Some(Contender::Breakthrough) => {
+                        let bt = run_timed_rust_arm(
+                            true,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            track_a_stall_ms,
+                        );
+                        track_a_utf8_valid = bt.utf8_valid;
+                        contender_elapsed_us = Some(bt.elapsed_us);
+                        worker_elapsed_us = Some(bt.elapsed_us);
+                        contender_timings_us.insert(
+                            Contender::Breakthrough.as_str().to_owned(),
+                            json!(bt.elapsed_us),
+                        );
+                        (
+                            "SKIPPED",
+                            0,
+                            String::new(),
+                            "SKIPPED",
+                            0,
+                            bt.status,
+                            Some(bt.units),
+                            bt.blake3,
+                        )
+                    }
+                    Some(Contender::LexborPure) => {
+                        let lx = run_timed_lexbor_arm(
+                            Contender::LexborPure,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            lexbor_stall_ms,
+                        );
+                        track_a_utf8_valid = lx.utf8_valid;
+                        lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                        contender_elapsed_us = Some(lx.elapsed_us);
+                        worker_elapsed_us = Some(lx.elapsed_us);
+                        contender_timings_us.insert(
+                            Contender::LexborPure.as_str().to_owned(),
+                            json!(lx.elapsed_us),
+                        );
+                        (
+                            "SKIPPED",
+                            0,
+                            String::new(),
+                            lx.status,
+                            lx.units,
+                            lx.status,
+                            Some(lx.units),
+                            lx.blake3,
+                        )
+                    }
+                    Some(Contender::LexborStageIr) => {
+                        let lx = run_timed_lexbor_arm(
+                            Contender::LexborStageIr,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            lexbor_stall_ms,
+                        );
+                        track_a_utf8_valid = lx.utf8_valid;
+                        contender_elapsed_us = Some(lx.elapsed_us);
+                        worker_elapsed_us = Some(lx.elapsed_us);
+                        contender_timings_us.insert(
+                            Contender::LexborStageIr.as_str().to_owned(),
+                            json!(lx.elapsed_us),
+                        );
+                        (
+                            "SKIPPED",
+                            0,
+                            String::new(),
+                            "SKIPPED",
+                            0,
+                            lx.status,
+                            Some(lx.units),
+                            lx.blake3,
+                        )
+                    }
+                    Some(Contender::LexborMinimal) => {
+                        let lx = run_timed_lexbor_arm(
+                            Contender::LexborMinimal,
+                            &frame.raw_body_bytes,
+                            &frame.headers,
+                            url,
+                            base_limits,
+                            cfg.max_input_bytes,
+                            cfg.charset_mode,
+                            lexbor_stall_ms,
+                        );
+                        track_a_utf8_valid = lx.utf8_valid;
+                        contender_dom_nodes = Some(lx.units);
+                        contender_elapsed_us = Some(lx.elapsed_us);
+                        worker_elapsed_us = Some(lx.elapsed_us);
+                        contender_timings_us.insert(
+                            Contender::LexborMinimal.as_str().to_owned(),
+                            json!(lx.elapsed_us),
+                        );
+                        (
+                            "SKIPPED",
+                            0,
+                            String::new(),
+                            "SKIPPED",
+                            0,
+                            lx.status,
+                            None,
+                            String::new(),
+                        )
+                    }
+                }
+            }
+        }
+    };
+
+    json!({
+        "status": "OK",
+        "worker_slot": slot,
+        "qos": qos_profile,
+        "stage": pool_stage_str(cfg.contender),
+        "boilerplate_policy": pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
+        "charset_mode": cfg.charset_mode.as_str(),
+        "contender": cfg.contender.map(Contender::as_str).unwrap_or("all"),
+        "max_input_bytes": cfg.max_input_bytes,
+        "uri_lossy": String::from_utf8_lossy(&frame.uri),
+        "raw_header_bytes": frame.headers.len(),
+        "raw_body_bytes": frame.raw_body_bytes.len(),
+        "track_a_utf8_valid": track_a_utf8_valid,
+        "track_a_status": track_a_status,
+        "track_a_chunks": track_a_chunks,
+        "track_a_blake3": track_a_blake3,
+        "track_a_elapsed_us": track_a_elapsed_us,
+        "lexbor_pure_status": lexbor_status,
+        "lexbor_pure_chunks": lexbor_chunks,
+        "lexbor_pure_elapsed_us": lexbor_pure_elapsed_us,
+        "contender_status": contender_status,
+        "contender_chunks": contender_chunks,
+        "contender_dom_nodes": contender_dom_nodes,
+        "contender_blake3": contender_blake3,
+        "contender_elapsed_us": contender_elapsed_us,
+        "contender_timings_us": contender_timings_us,
+        "worker_elapsed_us": worker_elapsed_us,
+    })
 }
 
 fn apply_soft_budget_to_response(val: &mut Value, wall_us: u64, soft_budget_ms: u64) {
@@ -805,7 +884,7 @@ struct ManagedWorker {
     cfg: PoolConfig,
     exe_path: std::path::PathBuf,
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     rx: Receiver<Result<Vec<u8>, String>>,
     reader_thread: Option<JoinHandle<()>>,
 }
@@ -882,13 +961,14 @@ impl ManagedWorker {
             cfg: cfg.clone(),
             exe_path,
             child,
-            stdin,
+            stdin: Some(stdin),
             rx,
             reader_thread: Some(reader_thread),
         })
     }
 
     fn kill_and_respawn(&mut self) -> Result<(), String> {
+        drop(self.stdin.take());
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(handle) = self.reader_thread.take() {
@@ -909,12 +989,11 @@ impl ManagedWorker {
         let soft_budget_us = self.cfg.soft_budget_ms.saturating_mul(1_000);
         let wire = encode_raw_warc_frame(&frame.uri, &frame.headers, &frame.raw_body_bytes)
             .map_err(|e| e.to_string())?;
-        if self
-            .stdin
-            .write_all(&wire)
-            .and_then(|()| self.stdin.flush())
-            .is_err()
-        {
+        let write_failed = match self.stdin.as_mut() {
+            Some(pipe) => pipe.write_all(&wire).and_then(|()| pipe.flush()).is_err(),
+            None => true,
+        };
+        if write_failed {
             self.kill_and_respawn()?;
             let wall_us = t0.elapsed().as_micros() as u64;
             return Ok(json!({
@@ -1012,7 +1091,20 @@ impl ManagedWorker {
     }
 
     fn shutdown(mut self) {
-        drop(self.stdin);
+        drop(self.stdin.take());
+        let _ = self.child.wait();
+        if let Some(handle) = self.reader_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for ManagedWorker {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
         let _ = self.child.wait();
         if let Some(handle) = self.reader_thread.take() {
             let _ = handle.join();
@@ -1406,6 +1498,99 @@ mod tests {
             read_bounded_worker_payload(&mut empty, DEFAULT_MAX_FRAME_BYTES).unwrap(),
             None
         );
+
+        for partial in [&b"x"[..], &b"xy"[..], &b"OOM"[..]] {
+            let mut cur = Cursor::new(partial);
+            let err = read_bounded_worker_payload(&mut cur, DEFAULT_MAX_FRAME_BYTES)
+                .expect_err("1-3 byte partial stdout fragment must fail as truncated header");
+            assert!(
+                err.contains("truncated worker response frame header"),
+                "err={err}"
+            );
+        }
+
+        let zero_len = [0u8, 0, 0, 0];
+        let mut cur_zero = Cursor::new(&zero_len[..]);
+        let err_zero = read_bounded_worker_payload(&mut cur_zero, DEFAULT_MAX_FRAME_BYTES)
+            .expect_err("zero-length worker payload must be rejected");
+        assert!(err_zero.contains("must be >= 1"), "err={err_zero}");
+
+        let over_by_one = ((DEFAULT_MAX_FRAME_BYTES as u32) + 1).to_be_bytes();
+        let mut cur_over = Cursor::new(&over_by_one[..]);
+        let err_over = read_bounded_worker_payload(&mut cur_over, DEFAULT_MAX_FRAME_BYTES)
+            .expect_err("DEFAULT_MAX_FRAME_BYTES + 1 must fail before allocation");
+        assert!(err_over.contains("exceeds max"), "err={err_over}");
+    }
+
+    #[test]
+    fn single_contender_pool_arms_do_not_cross_contaminate_track_a_or_lexbor_pure_fields() {
+        let url = "https://en.wikipedia.org/wiki/Contender_isolation";
+        let frame = RawWarcFrame {
+            uri: url.as_bytes().to_vec(),
+            headers: b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n".to_vec(),
+            raw_body_bytes: b"<html><body><main><article><h1>Isolation</h1><p>Substantive article body paragraph for MainContentV1 projection parity verification.</p></article></main></body></html>".to_vec(),
+        };
+        let base_limits = build_parse_limits_with_policy(
+            DEFAULT_MAX_INPUT_BYTES,
+            BoilerplatePolicy::MainContentV1,
+        )
+        .unwrap();
+
+        let run_one = |contender: Contender| -> Value {
+            let cfg = PoolConfig {
+                internal_slot: None,
+                qos: QosProfile::Worker,
+                workers: 1,
+                pin_cpu: None,
+                watchdog_ms: 500,
+                soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
+                contender: Some(contender),
+                boilerplate_policy: BoilerplatePolicy::MainContentV1,
+                charset_mode: CharsetMode::Utf8Assumed,
+                max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
+                cli_url: Some(url.to_owned()),
+                frames_in: None,
+                jsonl_out: None,
+                summary_out: None,
+                self_test: false,
+            };
+            let mut v = evaluate_worker_frame(&frame, &cfg, 0, "worker", base_limits);
+            apply_soft_budget_to_response(&mut v, 1_500, cfg.soft_budget_ms);
+            v
+        };
+
+        let bt = run_one(Contender::Breakthrough);
+        assert_eq!(bt["status"], "OK");
+        assert_eq!(bt["stage"], "full_projection");
+        assert_eq!(bt["track_a_status"], "SKIPPED");
+        assert_eq!(bt["track_a_chunks"], 0);
+        assert!(bt["track_a_elapsed_us"].is_null());
+        assert_eq!(bt["lexbor_pure_status"], "SKIPPED");
+        assert!(bt["lexbor_pure_elapsed_us"].is_null());
+        assert!(bt["contender_elapsed_us"].as_u64().is_some());
+        assert_eq!(bt["worker_elapsed_us"], bt["contender_elapsed_us"]);
+
+        let ir = run_one(Contender::LexborStageIr);
+        assert_eq!(ir["status"], "OK");
+        assert_eq!(ir["stage"], "full_projection");
+        assert_eq!(ir["boilerplate_policy"], "MainContentV1");
+        assert_eq!(ir["track_a_status"], "SKIPPED");
+        assert_eq!(ir["lexbor_pure_status"], "SKIPPED");
+        assert_eq!(ir["lexbor_pure_chunks"], 0);
+        assert!(ir["lexbor_pure_elapsed_us"].is_null());
+        assert!(ir["contender_chunks"].as_u64().unwrap_or(0) > 0);
+        assert!(ir["contender_dom_nodes"].is_null());
+
+        let min = run_one(Contender::LexborMinimal);
+        assert_eq!(min["status"], "OK");
+        assert_eq!(min["stage"], "dom_parse_only");
+        assert!(min["boilerplate_policy"].is_null());
+        assert_eq!(min["track_a_status"], "SKIPPED");
+        assert_eq!(min["lexbor_pure_status"], "SKIPPED");
+        assert_eq!(min["lexbor_pure_chunks"], 0);
+        assert!(min["lexbor_pure_elapsed_us"].is_null());
+        assert!(min["contender_chunks"].is_null());
+        assert!(min["contender_dom_nodes"].as_u64().unwrap_or(0) > 0);
     }
 
     #[test]

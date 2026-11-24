@@ -276,7 +276,24 @@ fn g19_10_zero_score_contrastive_negative_admission() {
     );
 }
 
-fn find_rlib(deps_dir: &Path, prefix: &str) -> PathBuf {
+fn find_rlibs_for_current_test(deps_dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(exe) = std::env::current_exe()
+        && let Ok(text) = fs::read_to_string(exe.with_extension("d"))
+    {
+        for token in text.split_whitespace() {
+            let candidate = Path::new(token.trim_end_matches(':'));
+            if candidate
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(prefix) && n.ends_with(".rlib"))
+                && candidate.is_file()
+                && !out.iter().any(|p: &PathBuf| p == candidate)
+            {
+                out.push(candidate.to_path_buf());
+            }
+        }
+    }
     let mut matches: Vec<PathBuf> = fs::read_dir(deps_dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|x| x.path()))
@@ -286,10 +303,22 @@ fn find_rlib(deps_dir: &Path, prefix: &str) -> PathBuf {
                 .is_some_and(|n| n.starts_with(prefix) && n.ends_with(".rlib"))
         })
         .collect();
-    matches.sort();
-    matches
-        .pop()
-        .unwrap_or_else(|| panic!("missing {prefix}*.rlib in {}", deps_dir.display()))
+    matches.sort_by(|a, b| {
+        let ma = a.metadata().and_then(|m| m.modified()).ok();
+        let mb = b.metadata().and_then(|m| m.modified()).ok();
+        mb.cmp(&ma).then_with(|| b.cmp(a))
+    });
+    for m in matches {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    assert!(
+        !out.is_empty(),
+        "missing {prefix}*.rlib in {}",
+        deps_dir.display()
+    );
+    out
 }
 
 #[test]
@@ -346,8 +375,8 @@ fn g19_11_exp3_floor_collapse_and_cli_invalid_url_panic_exit_101() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let core_rlib = find_rlib(&deps_dir, "libathena_core_v2-");
-    let url_rlib = find_rlib(&deps_dir, "liburl-");
+    let core_rlibs = find_rlibs_for_current_test(&deps_dir, "libathena_core_v2-");
+    let url_rlibs = find_rlibs_for_current_test(&deps_dir, "liburl-");
 
     let tmp_dir = std::env::temp_dir().join(format!("athena-g19-cli-{}", std::process::id()));
     let _ = fs::create_dir_all(&tmp_dir);
@@ -356,20 +385,31 @@ fn g19_11_exp3_floor_collapse_and_cli_invalid_url_panic_exit_101() {
     fs::write(&html_path, "<html><body><p>Hello</p></body></html>").unwrap();
 
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
-    let compile_status = Command::new(rustc)
-        .arg("--edition=2024")
-        .arg(&main_rs)
-        .arg("-o")
-        .arg(&bin_path)
-        .arg("-L")
-        .arg(format!("dependency={}", deps_dir.display()))
-        .arg("--extern")
-        .arg(format!("athena_core_v2={}", core_rlib.display()))
-        .arg("--extern")
-        .arg(format!("url={}", url_rlib.display()))
-        .status()
-        .expect("failed to invoke rustc on src/main.rs");
-    assert!(compile_status.success(), "rustc link of src/main.rs failed");
+    let mut linked = false;
+    let mut last_err = String::new();
+    'pairs: for core_rlib in &core_rlibs {
+        for url_rlib in &url_rlibs {
+            let out = Command::new(&rustc)
+                .arg("--edition=2024")
+                .arg(&main_rs)
+                .arg("-o")
+                .arg(&bin_path)
+                .arg("-L")
+                .arg(format!("dependency={}", deps_dir.display()))
+                .arg("--extern")
+                .arg(format!("athena_core_v2={}", core_rlib.display()))
+                .arg("--extern")
+                .arg(format!("url={}", url_rlib.display()))
+                .output()
+                .expect("failed to invoke rustc on src/main.rs");
+            if out.status.success() {
+                linked = true;
+                break 'pairs;
+            }
+            last_err = String::from_utf8_lossy(&out.stderr).into_owned();
+        }
+    }
+    assert!(linked, "rustc link of src/main.rs failed: {last_err}");
 
     let out = Command::new(&bin_path)
         .arg(&html_path)
@@ -409,5 +449,68 @@ fn three_mode_binaries_pass_self_tests() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    let bad_cpu = Command::new(env!("CARGO_BIN_EXE_mode_a_cpu"))
+        .args([
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--contender",
+            "lexbor_minimal",
+            "--arm-b",
+            "legacy",
+            "--self-test",
+        ])
+        .output()
+        .expect("run mode_a_cpu negative stage check");
+    assert!(
+        !bad_cpu.status.success(),
+        "mode_a_cpu --contender lexbor_minimal --arm-b legacy must fail closed"
+    );
+
+    use std::io::Write as _;
+    use std::process::Stdio;
+    for (contender, exp_stage, exp_dom_only) in [
+        ("breakthrough", "full_projection", false),
+        ("lexbor_stage_ir", "full_projection", false),
+        ("lexbor_minimal", "dom_parse_only", true),
+    ] {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_mode_b_pool"))
+            .args([
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--contender",
+                contender,
+                "--workers",
+                "1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn mode_b_pool");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"<html><body><main><article><h1>Title</h1><p>Substantive body paragraph for live pool IPC test.</p></article></main></body></html>")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "mode_b_pool {contender} failed");
+        let row: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(row["stage"], exp_stage);
+        assert_eq!(row["track_a_status"], "SKIPPED");
+        assert!(row["track_a_elapsed_us"].is_null());
+        assert_eq!(row["lexbor_pure_status"], "SKIPPED");
+        assert!(row["lexbor_pure_elapsed_us"].is_null());
+        if exp_dom_only {
+            assert!(row["boilerplate_policy"].is_null());
+            assert!(row["contender_chunks"].is_null());
+            assert!(row["contender_dom_nodes"].as_u64().unwrap_or(0) > 0);
+        } else {
+            assert_eq!(row["boilerplate_policy"], "MainContentV1");
+            assert!(row["contender_chunks"].as_u64().unwrap_or(0) > 0);
+            assert!(row["contender_dom_nodes"].is_null());
+        }
     }
 }

@@ -160,8 +160,7 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
                     .get(i)
                     .ok_or("missing --macroblocks")?
                     .parse::<usize>()
-                    .map_err(|e| e.to_string())?
-                    .max(64);
+                    .map_err(|e| format!("invalid --macroblocks: {e}"))?;
             }
             "--warmup-blocks" => {
                 i += 1;
@@ -194,14 +193,40 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
             "mode_a_cpu enforces single-thread execution (--threads 1), got {threads}"
         ));
     }
+    if macroblocks < 64 || !macroblocks.is_multiple_of(2) {
+        return Err(format!(
+            "mode_a_cpu requires an even --macroblocks >= 64 for 1:1 ABBA/BAAB counter-balancing, got {macroblocks}"
+        ));
+    }
+    if !warmup_blocks.is_multiple_of(2) {
+        return Err(format!(
+            "mode_a_cpu requires an even --warmup-blocks count for balanced ABBA/BAAB warmup, got {warmup_blocks}"
+        ));
+    }
     let _ = build_parse_limits_with_policy(max_input_bytes, boilerplate_policy)?;
 
     if let Some(c) = contender {
-        if !saw_arm_a && !saw_arm_b {
-            arm_a = c;
-            arm_b = c;
-        } else if !saw_arm_b {
-            arm_b = c;
+        match (saw_arm_a, saw_arm_b) {
+            (false, false) => {
+                arm_a = c;
+                arm_b = c;
+            }
+            (true, false) => {
+                arm_b = c;
+            }
+            (false, true) => {
+                arm_a = c;
+            }
+            (true, true) => {
+                if arm_a != c || arm_b != c {
+                    return Err(format!(
+                        "conflicting --contender '{}' with explicit --arm-a '{}' and --arm-b '{}'",
+                        c.as_str(),
+                        arm_a.as_str(),
+                        arm_b.as_str()
+                    ));
+                }
+            }
         }
     }
 
@@ -456,7 +481,10 @@ fn main() -> Result<(), String> {
         "boilerplate_policy": effective_policy,
         "utf8_decode_placement": "pre_decoded_outside_timed_region",
         "macroblock_schedule": "ABBA_BAAB_alternating",
-        "contender": cfg.contender.map(Contender::as_str),
+        "contender": cfg
+            .contender
+            .filter(|&c| cfg.arm_a == c && cfg.arm_b == c)
+            .map(Contender::as_str),
         "url": url_str,
         "charset_mode": cfg.charset_mode.as_str(),
         "max_input_bytes": cfg.max_input_bytes,
@@ -533,6 +561,54 @@ mod tests {
             ]))
             .is_err()
         );
+        for bad in [
+            &[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--contender",
+                "lexbor_minimal",
+                "--arm-b",
+                "legacy",
+            ][..],
+            &[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--contender",
+                "lexbor_stage_ir",
+                "--arm-a",
+                "legacy",
+                "--arm-b",
+                "lexbor_pure",
+            ][..],
+            &[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--macroblocks",
+                "65",
+            ][..],
+            &[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--macroblocks",
+                "32",
+            ][..],
+            &[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--warmup-blocks",
+                "3",
+            ][..],
+        ] {
+            assert!(
+                parse_cli_args(&s(bad)).is_err(),
+                "expected error for {bad:?}"
+            );
+        }
         let dom_only_cfg = parse_cli_args(&s(&[
             "mode_a_cpu",
             "--url",

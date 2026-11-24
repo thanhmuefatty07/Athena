@@ -224,15 +224,33 @@ pub fn write_raw_warc_frame<W: Write>(
 }
 
 /// Reads the next binary IPC frame from `reader`, returning `Ok(None)` on clean EOF at a frame boundary.
+fn read_exact_or_truncated<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize, FrameError> {
+    let mut read = 0usize;
+    while read < buf.len() {
+        match reader.read(&mut buf[read..]) {
+            Ok(0) => return Ok(read),
+            Ok(n) => read += n,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(FrameError::Io(err.to_string())),
+        }
+    }
+    Ok(read)
+}
+
 pub fn read_raw_warc_frame<R: Read>(
     reader: &mut R,
     max_bytes: usize,
 ) -> Result<Option<RawWarcFrame>, FrameError> {
     let mut len_prefix = [0u8; 4];
-    match reader.read_exact(&mut len_prefix) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(FrameError::Io(err.to_string())),
+    let prefix_read = read_exact_or_truncated(reader, &mut len_prefix)?;
+    if prefix_read == 0 {
+        return Ok(None);
+    }
+    if prefix_read < 4 {
+        return Err(FrameError::TruncatedFrame {
+            expected: 4,
+            actual: prefix_read,
+        });
     }
     let total_len = u32::from_be_bytes(len_prefix) as usize;
     if total_len > max_bytes {
@@ -241,17 +259,18 @@ pub fn read_raw_warc_frame<R: Read>(
             max_bytes,
         });
     }
-    let mut payload = vec![0u8; total_len];
-    reader.read_exact(&mut payload).map_err(|err| {
-        if err.kind() == io::ErrorKind::UnexpectedEof {
-            FrameError::TruncatedFrame {
-                expected: total_len,
-                actual: 0,
-            }
-        } else {
-            FrameError::Io(err.to_string())
-        }
-    })?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(total_len)
+        .map_err(|e| FrameError::Io(format!("frame allocation failed ({total_len} bytes): {e}")))?;
+    payload.resize(total_len, 0u8);
+    let body_read = read_exact_or_truncated(reader, &mut payload)?;
+    if body_read < total_len {
+        return Err(FrameError::TruncatedFrame {
+            expected: total_len,
+            actual: body_read,
+        });
+    }
     let view = decode_inner_payload(&payload, total_len)?;
     Ok(Some(RawWarcFrame {
         uri: view.uri.to_vec(),
@@ -319,6 +338,16 @@ mod tests {
             decode_raw_warc_frame(&corrupted, DEFAULT_MAX_FRAME_BYTES),
             Err(FrameError::TotalLengthMismatch { .. })
         ));
+        for partial_len in 1..=3usize {
+            let mut cur = Cursor::new(&wire[..partial_len]);
+            assert_eq!(
+                read_raw_warc_frame(&mut cur, DEFAULT_MAX_FRAME_BYTES),
+                Err(FrameError::TruncatedFrame {
+                    expected: 4,
+                    actual: partial_len,
+                })
+            );
+        }
     }
 
     #[test]

@@ -327,6 +327,7 @@ jobs:
       - name: Run ThreadSanitizer on SingleFlight, SourceCache, and Bandit concurrency primitives
         shell: bash
         env:
+          CC: clang
           ATHENA_LEXBOR_LIB_DIR: ${{ env.ATHENA_LEXBOR_TSAN_LIB_DIR }}
           ATHENA_LEXBOR_INCLUDE_DIR: ${{ env.ATHENA_LEXBOR_TSAN_INCLUDE_DIR }}
           ATHENA_LEXBOR_ARCHIVE: ${{ env.ATHENA_LEXBOR_ARCHIVE }}

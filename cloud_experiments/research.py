@@ -1540,9 +1540,18 @@ def warm_cargo_cache(source, spec_path, cache_root, *, variants=None, pilot_only
                      str(lexbor_root)],
                     cwd=source, timeout=max(timeout, 900),
                 )
-        lexbor_build_dir = lexbor_root / "build"
-        lexbor_libs = sorted(lexbor_build_dir.rglob("liblexbor_static.a")) if lexbor_build_dir.is_dir() else []
-        lexbor_lib_dir = lexbor_libs[0].parent if lexbor_libs else lexbor_build_dir
+        lexbor_build_dir = next(
+            (cand for cand in (lexbor_root / "build-none", lexbor_root / "build") if cand.is_dir()),
+            lexbor_root / "build-none",
+        )
+        lexbor_libs = []
+        for search_root in (lexbor_root / "install-none", lexbor_root / "build-none", lexbor_root / "build"):
+            if search_root.is_dir():
+                found = sorted(search_root.rglob("liblexbor_static.a"))
+                if found:
+                    lexbor_libs = found
+                    break
+        lexbor_lib_dir = lexbor_libs[0].parent if lexbor_libs else (lexbor_root / "install-none" / "lib")
         staged_sdk_artifacts = {
             "status": "SDK_ARTIFACTS_STAGED",
             "core_probe": str(cache / "release" / ("core_probe.exe" if os.name == "nt" else "core_probe")),
@@ -2803,9 +2812,17 @@ def _run_staged_language_panel_checks(run, source, output, cache, baseline_bin_d
     src_override = os.environ.get("ATHENA_LEXBOR_SOURCE_DIR", "").strip()
     build_override = os.environ.get("ATHENA_LEXBOR_BUILD_DIR", "").strip()
     lib_override = os.environ.get("ATHENA_LEXBOR_LIB_DIR", "").strip()
+    inc_override = os.environ.get("ATHENA_LEXBOR_INCLUDE_DIR", "").strip()
     adapter_target_override = os.environ.get("ATHENA_LEXBOR_ADAPTER_TARGET_DIR", "").strip()
     lexbor_source = Path(src_override) if src_override else (lexbor_root / f"lexbor-{lexbor_commit}")
-    lexbor_build = Path(build_override) if build_override else (lexbor_root / "build")
+    lexbor_build = (
+        Path(build_override)
+        if build_override
+        else next(
+            (cand for cand in (lexbor_root / "build-none", lexbor_root / "build") if cand.is_dir()),
+            lexbor_root / "build-none",
+        )
+    )
     lexbor_adapter_target = (
         Path(adapter_target_override)
         if adapter_target_override
@@ -2814,8 +2831,20 @@ def _run_staged_language_panel_checks(run, source, output, cache, baseline_bin_d
     if lib_override:
         lexbor_lib = Path(lib_override)
     else:
-        libs = sorted(lexbor_build.rglob("liblexbor_static.a")) if lexbor_build.is_dir() else []
+        search_dirs = (
+            [lexbor_build]
+            if build_override
+            else [lexbor_root / "install-none", lexbor_root / "build-none", lexbor_root / "build"]
+        )
+        libs = []
+        for sdir in search_dirs:
+            if sdir.is_dir():
+                found = sorted(sdir.rglob("liblexbor_static.a"))
+                if found:
+                    libs = found
+                    break
         lexbor_lib = libs[0].parent if libs else lexbor_build
+    lexbor_include = Path(inc_override) if inc_override else (lexbor_root / "install-none" / "include")
     if ((lexbor_source / "CMakeLists.txt").is_file()
             and not lexbor_source.is_symlink()
             and (lexbor_lib / "liblexbor_static.a").is_file()
@@ -2823,13 +2852,16 @@ def _run_staged_language_panel_checks(run, source, output, cache, baseline_bin_d
         l01_out = output / "l01-lexbor-semantic-parity.json"
 
         def run_l01():
+            l01_env = {
+                "ATHENA_LEXBOR_SOURCE_DIR": str(lexbor_source),
+                "ATHENA_LEXBOR_BUILD_DIR": str(lexbor_build),
+                "ATHENA_LEXBOR_LIB_DIR": str(lexbor_lib),
+                "ATHENA_LEXBOR_ADAPTER_TARGET_DIR": str(lexbor_adapter_target),
+            }
+            if (lexbor_include / "lexbor").is_dir() and not lexbor_include.is_symlink():
+                l01_env["ATHENA_LEXBOR_INCLUDE_DIR"] = str(lexbor_include)
             with _cargo_environment({
-                "env": {
-                    "ATHENA_LEXBOR_SOURCE_DIR": str(lexbor_source),
-                    "ATHENA_LEXBOR_BUILD_DIR": str(lexbor_build),
-                    "ATHENA_LEXBOR_LIB_DIR": str(lexbor_lib),
-                    "ATHENA_LEXBOR_ADAPTER_TARGET_DIR": str(lexbor_adapter_target),
-                },
+                "env": l01_env,
                 "rustflags": [],
             }, cache) as cargo_home:
                 lexbor_adapter_dir = source / "cloud_experiments" / "lexbor_adapter"

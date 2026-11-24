@@ -121,6 +121,27 @@ fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
     }
 }
 
+fn cc_supports_no_sanitize_function(out_dir: &Path) -> bool {
+    let cc_bin = non_empty_env("CC").unwrap_or_else(|| "cc".to_owned());
+    let probe = out_dir.join(format!("probe_nofn_{}.o", std::process::id()));
+    let ok = Command::new(&cc_bin)
+        .args([
+            "-fsanitize=undefined",
+            "-fno-sanitize=function",
+            "-x",
+            "c",
+            "-c",
+            "/dev/null",
+            "-o",
+        ])
+        .arg(&probe)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let _ = fs::remove_file(&probe);
+    ok
+}
+
 fn explicit_dir_conflicts_with_sanitizer(dir: &Path, sanitizer: SanitizerMode) -> bool {
     let s = dir.to_string_lossy();
     for mode in [
@@ -128,9 +149,11 @@ fn explicit_dir_conflicts_with_sanitizer(dir: &Path, sanitizer: SanitizerMode) -
         SanitizerMode::AddressUndefined,
         SanitizerMode::Thread,
     ] {
-        let marker = format!("install-{}", mode.slug());
-        if s.contains(&marker) && mode != sanitizer {
-            return true;
+        for prefix in ["install-", "build-"] {
+            let marker = format!("{prefix}{}", mode.slug());
+            if s.contains(&marker) && mode != sanitizer {
+                return true;
+            }
         }
     }
     false
@@ -191,7 +214,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_SOURCE_DIR");
     println!("cargo:rerun-if-env-changed=ATHENA_LEXBOR_SANITIZER");
     println!("cargo:rerun-if-env-changed=ATHENA_OFFLINE");
+    println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
     println!("cargo:rerun-if-changed=src/lexbor_shim.c");
 
     let manifest_dir =
@@ -212,6 +237,9 @@ fn main() {
         shim_build.opt_level(1);
         for flag in sanitizer.c_flags() {
             shim_build.flag(flag);
+        }
+        if sanitizer == SanitizerMode::AddressUndefined {
+            shim_build.flag_if_supported("-fno-sanitize=function");
         }
     }
     shim_build.compile("athena_lexbor_shim");
@@ -297,7 +325,13 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
             "-DLEXBOR_WITHOUT_THREADS=ON",
         ]);
         if sanitizer != SanitizerMode::None {
-            cfg_cmd.arg(format!("-DCMAKE_C_FLAGS={}", sanitizer.c_flags().join(" ")));
+            let mut flags: Vec<&str> = sanitizer.c_flags().to_vec();
+            if sanitizer == SanitizerMode::AddressUndefined
+                && cc_supports_no_sanitize_function(&auto_root)
+            {
+                flags.push("-fno-sanitize=function");
+            }
+            cfg_cmd.arg(format!("-DCMAKE_C_FLAGS={}", flags.join(" ")));
         }
         let cfg = cfg_cmd
             .status()
@@ -327,6 +361,7 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
         collect_c_sources(&source_root, &mut c_files);
         let mut build = cc::Build::new();
         build
+            .cargo_metadata(false)
             .include(&source_root)
             .define("LEXBOR_STATIC", None)
             .define("LEXBOR_WITHOUT_THREADS", None)
@@ -339,6 +374,9 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
             });
         for flag in sanitizer.c_flags() {
             build.flag(flag);
+        }
+        if sanitizer == SanitizerMode::AddressUndefined {
+            build.flag_if_supported("-fno-sanitize=function");
         }
         for f in &c_files {
             build.file(f);

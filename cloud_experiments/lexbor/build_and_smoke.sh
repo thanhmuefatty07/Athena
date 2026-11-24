@@ -158,18 +158,26 @@ src_dir="${scratch}/lexbor-${commit}"
 build_dir="${scratch}/build-${sanitizer}"
 install_dir="${scratch}/install-${sanitizer}"
 
+cc_bin="${CC:-cc}"
 san_cflags=()
 san_ldflags=()
 if [[ "$sanitizer" == "address_undefined" ]]; then
-    san_cflags=(-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+    san_cflags=(-fsanitize=address,undefined)
     san_ldflags=(-fsanitize=address,undefined)
+    probe_obj="${scratch}/probe_nofn.o"
+    if "$cc_bin" -fsanitize=undefined -fno-sanitize=function -x c -c /dev/null -o "$probe_obj" >/dev/null 2>&1; then
+        san_cflags+=(-fno-sanitize=function)
+        san_ldflags+=(-fno-sanitize=function)
+    fi
+    rm -f "$probe_obj"
+    san_cflags+=(-fno-omit-frame-pointer -g -O1)
 elif [[ "$sanitizer" == "thread" ]]; then
     san_cflags=(-fsanitize=thread -fno-omit-frame-pointer -g -O1)
     san_ldflags=(-fsanitize=thread)
 fi
 
 if [[ "$sanitizer" != "none" && "$(uname -s)" == "Darwin" ]]; then
-    clang_rt_dir="$(cc --print-runtime-dir 2>/dev/null || true)"
+    clang_rt_dir="$("$cc_bin" --print-runtime-dir 2>/dev/null || true)"
     if [[ -n "$clang_rt_dir" && -d "$clang_rt_dir" ]]; then
         san_ldflags+=("-Wl,-rpath,${clang_rt_dir}")
     fi
@@ -183,7 +191,7 @@ if command -v cmake >/dev/null 2>&1; then
     if [[ -n "$san_cflags_joined" ]]; then
         cmake_extra+=("-DCMAKE_C_FLAGS=${san_cflags_joined}")
     fi
-    run_step configure cmake -S "$src_dir" -B "$build_dir" \
+    run_step configure env CC="$cc_bin" cmake -S "$src_dir" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$install_dir" \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -277,7 +285,7 @@ if [[ "$sanitizer" != "none" ]]; then
     canary_opt="-O1"
 fi
 
-run_step canary-build cc "$canary_opt" -std=c99 -Wall -Wextra -Werror \
+run_step canary-build "$cc_bin" "$canary_opt" -std=c99 -Wall -Wextra -Werror \
     -DLEXBOR_STATIC \
     ${san_cflags[@]+"${san_cflags[@]}"} \
     -I"$include_dir" \
@@ -309,15 +317,26 @@ if [[ -n "${ATHENA_LEXBOR_ADAPTER_TARGET_DIR:-}" && "$sanitizer" != "none" ]]; t
     adapter_target_dir="${ATHENA_LEXBOR_ADAPTER_TARGET_DIR}-${sanitizer}"
 fi
 
+adapter_env=(
+    CC="$cc_bin"
+    ATHENA_LEXBOR_LIB_DIR="$lib_dir"
+    ATHENA_LEXBOR_INCLUDE_DIR="$include_dir"
+    ATHENA_LEXBOR_SANITIZER="$sanitizer"
+    CARGO_TARGET_DIR="$adapter_target_dir"
+    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
+    ASAN_OPTIONS="$asan_opts"
+    UBSAN_OPTIONS="$ubsan_opts"
+    TSAN_OPTIONS="$tsan_opts"
+)
+if [[ "$sanitizer" != "none" && -n "${CC:-}" ]]; then
+    cur_rf="${RUSTFLAGS:-}"
+    if [[ "$cur_rf" != *"linker="* && "$cur_rf" != *"sanitizer="* ]]; then
+        adapter_env+=(RUSTFLAGS="${cur_rf:+$cur_rf }-C linker=${cc_bin}")
+    fi
+fi
+
 run_step adapter-tests env \
-    ATHENA_LEXBOR_LIB_DIR="$lib_dir" \
-    ATHENA_LEXBOR_INCLUDE_DIR="$include_dir" \
-    ATHENA_LEXBOR_SANITIZER="$sanitizer" \
-    CARGO_TARGET_DIR="$adapter_target_dir" \
-    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
-    ASAN_OPTIONS="$asan_opts" \
-    UBSAN_OPTIONS="$ubsan_opts" \
-    TSAN_OPTIONS="$tsan_opts" \
+    "${adapter_env[@]}" \
     cargo test --manifest-path "$adapter_manifest" --locked ${cargo_offline_args[@]+"${cargo_offline_args[@]}"}
 
 python3 - "$commit" "$expected_sha256" "$actual_sha256" "$build_backend" "$lib_path" "$step_log" "$canary_json" "$sanitizer" <<'PY'
