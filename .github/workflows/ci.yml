@@ -269,15 +269,6 @@ jobs:
         with:
           toolchain: 'nightly-2026-10-24'
           components: miri, rust-src, llvm-tools-preview
-      - name: Run pure-Rust Miri undefined-behavior gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test \
-            --locked \
-            --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
-            --no-default-features \
-            --lib
       - name: Run C + Rust ASAN/UBSAN and TSAN smoke on Lexbor shim
         shell: bash
         env:
@@ -341,3 +332,12 @@ jobs:
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- singleflight
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- bandit
           cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu --lib -- orchestrator
+      - name: Run pure-Rust Miri undefined-behavior gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test \
+            --locked \
+            --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
+            --no-default-features \
+            --lib

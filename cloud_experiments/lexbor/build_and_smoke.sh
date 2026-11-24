@@ -328,7 +328,29 @@ adapter_env=(
     UBSAN_OPTIONS="$ubsan_opts"
     TSAN_OPTIONS="$tsan_opts"
 )
-if [[ "$sanitizer" != "none" && -n "${CC:-}" ]]; then
+adapter_cargo_args=(
+    --manifest-path "$adapter_manifest"
+    --locked
+)
+if [[ -n "${cargo_offline_args[0]+x}" ]]; then
+    adapter_cargo_args+=("${cargo_offline_args[@]}")
+fi
+
+if [[ "$sanitizer" == "thread" ]] && rustc -V 2>/dev/null | grep -q -- '-nightly'; then
+    host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+    upper_triple="$(printf '%s' "$host_triple" | tr 'a-z-' 'A-Z_')"
+    cur_target_rf_var="CARGO_TARGET_${upper_triple}_RUSTFLAGS"
+    cur_target_rf="${!cur_target_rf_var:-${RUSTFLAGS:-}}"
+    tsan_rf="$cur_target_rf"
+    if [[ -n "${CC:-}" && "$tsan_rf" != *"linker="* ]]; then
+        tsan_rf="${tsan_rf:+$tsan_rf }-C linker=${cc_bin}"
+    fi
+    if [[ "$tsan_rf" != *"sanitizer=thread"* ]]; then
+        tsan_rf="${tsan_rf:+$tsan_rf }-Zsanitizer=thread"
+    fi
+    adapter_env+=("${cur_target_rf_var}=${tsan_rf}")
+    adapter_cargo_args+=(-Zbuild-std --target "$host_triple")
+elif [[ "$sanitizer" != "none" && -n "${CC:-}" ]]; then
     cur_rf="${RUSTFLAGS:-}"
     if [[ "$cur_rf" != *"linker="* && "$cur_rf" != *"sanitizer="* ]]; then
         adapter_env+=(RUSTFLAGS="${cur_rf:+$cur_rf }-C linker=${cc_bin}")
@@ -337,7 +359,7 @@ fi
 
 run_step adapter-tests env \
     "${adapter_env[@]}" \
-    cargo test --manifest-path "$adapter_manifest" --locked ${cargo_offline_args[@]+"${cargo_offline_args[@]}"}
+    cargo test "${adapter_cargo_args[@]}"
 
 python3 - "$commit" "$expected_sha256" "$actual_sha256" "$build_backend" "$lib_path" "$step_log" "$canary_json" "$sanitizer" <<'PY'
 import json
