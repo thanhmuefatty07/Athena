@@ -15,8 +15,8 @@ use athena_core_v2::projection::{
     BoilerplatePolicy, ParseLimits, Projection, parse_html_breakthrough, parse_html_with_limits,
 };
 use athena_lexbor_adapter_research::{
-    LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits,
-    parse_and_project_pure_with_charset, parse_tree_with_limits_profile_and_charset,
+    LexborAttrProfile, parse_and_project_str_pure_with_profile,
+    parse_tree_str_with_limits_and_profile,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -60,7 +60,8 @@ struct PoolAccountingSummary {
     worker_respawns: usize,
     soft_budget_ms: u64,
     watchdog_ms: u64,
-    boilerplate_policy: &'static str,
+    stage: &'static str,
+    boilerplate_policy: Option<&'static str>,
     charset_mode: &'static str,
     contender: &'static str,
     max_input_bytes: usize,
@@ -232,12 +233,12 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
     })
 }
 
-fn parse_stall_injection_ms(headers: &[u8]) -> Option<u64> {
+fn parse_header_u64(headers: &[u8], target_header: &[u8]) -> Option<u64> {
     for line in headers.split(|&b| b == b'\n') {
         let trimmed = line.strip_suffix(b"\r").unwrap_or(line);
         if let Some(colon) = trimmed.iter().position(|&b| b == b':') {
             let name = &trimmed[..colon];
-            if name.eq_ignore_ascii_case(b"x-athena-test-stall-ms") {
+            if name.eq_ignore_ascii_case(target_header) {
                 let val_str = std::str::from_utf8(&trimmed[colon + 1..]).ok()?.trim();
                 return val_str.parse::<u64>().ok();
             }
@@ -257,78 +258,171 @@ fn hash_projection(proj: &Projection) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn run_rust_arm(
+struct ArmRunOutcome {
+    utf8_valid: bool,
+    status: &'static str,
+    units: usize,
+    blake3: String,
+    elapsed_us: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_timed_rust_arm(
     use_breakthrough: bool,
-    html_str: &str,
+    raw_body: &[u8],
+    raw_headers: &[u8],
     url: &url::Url,
-    limits: ParseLimits,
-) -> (&'static str, usize, String) {
-    let eff = effective_limits(limits, html_str.len());
+    base_limits: ParseLimits,
+    max_input_bytes: usize,
+    charset_mode: CharsetMode,
+    stall_ms: u64,
+) -> ArmRunOutcome {
+    let t_arm = Instant::now();
+    if stall_ms > 0 {
+        thread::sleep(Duration::from_millis(stall_ms));
+    }
+    let decoded = match decode_html_bytes(raw_body, raw_headers, max_input_bytes, charset_mode) {
+        Ok(s) => s,
+        Err(_) => {
+            return ArmRunOutcome {
+                utf8_valid: false,
+                status: "NON_UTF8_RAW_BODY_REJECTED",
+                units: 0,
+                blake3: String::new(),
+                elapsed_us: t_arm.elapsed().as_micros() as u64,
+            };
+        }
+    };
+    let html_str = decoded.as_ref();
+    let eff = effective_limits(base_limits, html_str.len());
     let res = if use_breakthrough {
         parse_html_breakthrough(html_str, url, eff).map(|p| p.projection)
     } else {
         parse_html_with_limits(html_str, url, eff)
     };
-    match res {
+    let (status, units, blake3) = match res {
         Ok(proj) => ("OK", proj.chunks.len(), hash_projection(&proj)),
         Err(_) => ("TRACK_A_PARSE_ERR", 0usize, String::new()),
+    };
+    ArmRunOutcome {
+        utf8_valid: true,
+        status,
+        units,
+        blake3,
+        elapsed_us: t_arm.elapsed().as_micros() as u64,
     }
 }
 
-fn run_lexbor_arm(
+#[allow(clippy::too_many_arguments)]
+fn run_timed_lexbor_arm(
     contender: Contender,
     raw_body: &[u8],
     raw_headers: &[u8],
-    url_str: &str,
-    limits: LexborLimits,
-    lxb_charset: LexborCharsetMode,
-) -> (&'static str, usize, String) {
-    match contender {
+    url: &url::Url,
+    base_limits: ParseLimits,
+    max_input_bytes: usize,
+    charset_mode: CharsetMode,
+    stall_ms: u64,
+) -> ArmRunOutcome {
+    let t_arm = Instant::now();
+    if stall_ms > 0 {
+        thread::sleep(Duration::from_millis(stall_ms));
+    }
+    let decoded = match decode_html_bytes(raw_body, raw_headers, max_input_bytes, charset_mode) {
+        Ok(s) => s,
+        Err(_) => {
+            return ArmRunOutcome {
+                utf8_valid: false,
+                status: "NON_UTF8_RAW_BODY_REJECTED",
+                units: 0,
+                blake3: String::new(),
+                elapsed_us: t_arm.elapsed().as_micros() as u64,
+            };
+        }
+    };
+    let html_str = decoded.as_ref();
+    let eff = effective_limits(base_limits, html_str.len());
+    let (status, units, blake3) = match contender {
         Contender::LexborPure => {
-            match parse_and_project_pure_with_charset(
-                raw_body,
-                raw_headers,
-                url_str,
-                limits,
-                lxb_charset,
+            match parse_and_project_str_pure_with_profile(
+                html_str,
+                url,
+                eff,
+                LexborAttrProfile::Minimal,
             ) {
                 Ok(proj) => ("OK", proj.chunks.len(), hash_projection(&proj)),
-                Err(err) => {
-                    let status = if format!("{err:?}").contains("InvalidUtf8") {
-                        "NON_UTF8_RAW_BODY_REJECTED"
-                    } else {
-                        "LEXBOR_PARSE_ERR"
-                    };
-                    (status, 0usize, String::new())
-                }
-            }
-        }
-        Contender::LexborMinimal => {
-            match parse_tree_with_limits_profile_and_charset(
-                raw_body,
-                raw_headers,
-                limits,
-                LexborAttrProfile::Minimal,
-                lxb_charset,
-            ) {
-                Ok(tree) => ("OK", tree.nodes.len(), String::new()),
                 Err(_) => ("LEXBOR_PARSE_ERR", 0usize, String::new()),
             }
         }
         Contender::LexborStageIr => {
-            match parse_tree_with_limits_profile_and_charset(
-                raw_body,
-                raw_headers,
-                limits,
+            match parse_and_project_str_pure_with_profile(
+                html_str,
+                url,
+                eff,
                 LexborAttrProfile::StageIr,
-                lxb_charset,
             ) {
+                Ok(proj) => ("OK", proj.chunks.len(), hash_projection(&proj)),
+                Err(_) => ("LEXBOR_PARSE_ERR", 0usize, String::new()),
+            }
+        }
+        Contender::LexborMinimal => {
+            match parse_tree_str_with_limits_and_profile(html_str, eff, LexborAttrProfile::Minimal)
+            {
                 Ok(tree) => ("OK", tree.nodes.len(), String::new()),
                 Err(_) => ("LEXBOR_PARSE_ERR", 0usize, String::new()),
             }
         }
         _ => ("INVALID_CONTENDER", 0usize, String::new()),
+    };
+    ArmRunOutcome {
+        utf8_valid: true,
+        status,
+        units,
+        blake3,
+        elapsed_us: t_arm.elapsed().as_micros() as u64,
     }
+}
+
+fn pool_stage_str(contender: Option<Contender>) -> &'static str {
+    match contender {
+        Some(c) => c.stage(),
+        None => "full_projection",
+    }
+}
+
+fn pool_boilerplate_policy_str(
+    contender: Option<Contender>,
+    policy: BoilerplatePolicy,
+) -> Option<&'static str> {
+    match contender {
+        Some(c) => c.effective_boilerplate_policy_str(policy),
+        None => Some(boilerplate_policy_str(policy)),
+    }
+}
+
+fn read_bounded_worker_payload<R: Read>(
+    rdr: &mut R,
+    max_frame_bytes: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    let mut len_buf = [0u8; 4];
+    match rdr.read_exact(&mut len_buf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+    let n = u32::from_be_bytes(len_buf) as usize;
+    if n > max_frame_bytes {
+        return Err(format!(
+            "worker response frame length {n} exceeds max {max_frame_bytes}"
+        ));
+    }
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(n)
+        .map_err(|e| format!("worker response frame allocation failed ({n} bytes): {e}"))?;
+    payload.resize(n, 0u8);
+    rdr.read_exact(&mut payload).map_err(|e| e.to_string())?;
+    Ok(Some(payload))
 }
 
 fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
@@ -345,33 +439,27 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let base_limits = build_parse_limits_with_policy(cfg.max_input_bytes, cfg.boilerplate_policy)?;
-    let lxb_charset = cfg.charset_mode.to_lexbor_charset_mode();
 
     while let Some(frame) =
         read_raw_warc_frame(&mut reader, DEFAULT_MAX_FRAME_BYTES).map_err(|e| e.to_string())?
     {
-        let t0 = Instant::now();
-        if let Some(stall_ms) = parse_stall_injection_ms(&frame.headers)
-            && stall_ms > 0
-        {
-            thread::sleep(Duration::from_millis(stall_ms));
-        }
+        let common_stall_ms =
+            parse_header_u64(&frame.headers, b"x-athena-test-stall-ms").unwrap_or(0);
+        let track_a_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-tracka-stall-ms")
+            .unwrap_or(common_stall_ms);
+        let lexbor_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-lexbor-stall-ms")
+            .unwrap_or(common_stall_ms);
 
         let uri_utf8 = std::str::from_utf8(&frame.uri).ok();
         let parsed_url = uri_utf8.and_then(|u| validate_real_url(u).ok());
         let within_input_cap = frame.raw_body_bytes.len() <= cfg.max_input_bytes;
 
-        let decoded_html = if within_input_cap && parsed_url.is_some() {
-            decode_html_bytes(
-                &frame.raw_body_bytes,
-                &frame.headers,
-                cfg.max_input_bytes,
-                cfg.charset_mode,
-            )
-            .ok()
-        } else {
-            None
-        };
+        let mut contender_timings_us = serde_json::Map::new();
+        let mut track_a_elapsed_us: Option<u64> = None;
+        let mut lexbor_pure_elapsed_us: Option<u64> = None;
+        let mut contender_elapsed_us: Option<u64> = None;
+        let mut worker_elapsed_us: Option<u64> = None;
+        let mut track_a_utf8_valid = false;
 
         let (
             track_a_status,
@@ -383,18 +471,26 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
             contender_chunks,
             contender_blake3,
         ) = match (uri_utf8, &parsed_url) {
-            (_, None) => (
-                "INVALID_RAW_URI",
-                0usize,
-                String::new(),
-                "INVALID_RAW_URI",
-                0usize,
-                "INVALID_RAW_URI",
-                0usize,
-                String::new(),
-            ),
-            (Some(u), Some(url)) => {
+            (_, None) | (None, _) => {
+                if common_stall_ms > 0 {
+                    thread::sleep(Duration::from_millis(common_stall_ms));
+                }
+                (
+                    "INVALID_RAW_URI",
+                    0usize,
+                    String::new(),
+                    "INVALID_RAW_URI",
+                    0usize,
+                    "INVALID_RAW_URI",
+                    0usize,
+                    String::new(),
+                )
+            }
+            (Some(_), Some(url)) => {
                 if !within_input_cap {
+                    if common_stall_ms > 0 {
+                        thread::sleep(Duration::from_millis(common_stall_ms));
+                    }
                     (
                         "INPUT_EXCEEDS_MAX_BYTES",
                         0,
@@ -408,83 +504,179 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
                 } else {
                     match cfg.contender {
                         None => {
-                            let (ta_st, ta_ch, ta_h) = match decoded_html.as_deref() {
-                                Some(s) => run_rust_arm(false, s, url, base_limits),
-                                None => ("NON_UTF8_RAW_BODY_REJECTED", 0, String::new()),
-                            };
-                            let (lx_st, lx_ch, _) = run_lexbor_arm(
+                            let ta = run_timed_rust_arm(
+                                false,
+                                &frame.raw_body_bytes,
+                                &frame.headers,
+                                url,
+                                base_limits,
+                                cfg.max_input_bytes,
+                                cfg.charset_mode,
+                                track_a_stall_ms,
+                            );
+                            let lx = run_timed_lexbor_arm(
                                 Contender::LexborPure,
                                 &frame.raw_body_bytes,
                                 &frame.headers,
-                                u,
+                                url,
                                 base_limits,
-                                lxb_charset,
+                                cfg.max_input_bytes,
+                                cfg.charset_mode,
+                                lexbor_stall_ms,
                             );
-                            (ta_st, ta_ch, ta_h.clone(), lx_st, lx_ch, ta_st, ta_ch, ta_h)
+                            track_a_utf8_valid = ta.utf8_valid;
+                            track_a_elapsed_us = Some(ta.elapsed_us);
+                            lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                            contender_timings_us.insert(
+                                Contender::Legacy.as_str().to_owned(),
+                                json!(ta.elapsed_us),
+                            );
+                            contender_timings_us.insert(
+                                Contender::LexborPure.as_str().to_owned(),
+                                json!(lx.elapsed_us),
+                            );
+                            contender_elapsed_us = None;
+                            worker_elapsed_us = None;
+                            (
+                                ta.status,
+                                ta.units,
+                                ta.blake3.clone(),
+                                lx.status,
+                                lx.units,
+                                ta.status,
+                                ta.units,
+                                ta.blake3,
+                            )
                         }
                         Some(Contender::Legacy) => {
-                            let (st, ch, h) = match decoded_html.as_deref() {
-                                Some(s) => run_rust_arm(false, s, url, base_limits),
-                                None => ("NON_UTF8_RAW_BODY_REJECTED", 0, String::new()),
-                            };
-                            (st, ch, h.clone(), "SKIPPED", 0, st, ch, h)
+                            let ta = run_timed_rust_arm(
+                                false,
+                                &frame.raw_body_bytes,
+                                &frame.headers,
+                                url,
+                                base_limits,
+                                cfg.max_input_bytes,
+                                cfg.charset_mode,
+                                track_a_stall_ms,
+                            );
+                            track_a_utf8_valid = ta.utf8_valid;
+                            track_a_elapsed_us = Some(ta.elapsed_us);
+                            contender_elapsed_us = Some(ta.elapsed_us);
+                            worker_elapsed_us = Some(ta.elapsed_us);
+                            contender_timings_us.insert(
+                                Contender::Legacy.as_str().to_owned(),
+                                json!(ta.elapsed_us),
+                            );
+                            (
+                                ta.status,
+                                ta.units,
+                                ta.blake3.clone(),
+                                "SKIPPED",
+                                0,
+                                ta.status,
+                                ta.units,
+                                ta.blake3,
+                            )
                         }
                         Some(Contender::Breakthrough) => {
-                            let (st, ch, h) = match decoded_html.as_deref() {
-                                Some(s) => run_rust_arm(true, s, url, base_limits),
-                                None => ("NON_UTF8_RAW_BODY_REJECTED", 0, String::new()),
-                            };
-                            (st, ch, h.clone(), "SKIPPED", 0, st, ch, h)
+                            let bt = run_timed_rust_arm(
+                                true,
+                                &frame.raw_body_bytes,
+                                &frame.headers,
+                                url,
+                                base_limits,
+                                cfg.max_input_bytes,
+                                cfg.charset_mode,
+                                track_a_stall_ms,
+                            );
+                            track_a_utf8_valid = bt.utf8_valid;
+                            track_a_elapsed_us = Some(bt.elapsed_us);
+                            contender_elapsed_us = Some(bt.elapsed_us);
+                            worker_elapsed_us = Some(bt.elapsed_us);
+                            contender_timings_us.insert(
+                                Contender::Breakthrough.as_str().to_owned(),
+                                json!(bt.elapsed_us),
+                            );
+                            (
+                                bt.status,
+                                bt.units,
+                                bt.blake3.clone(),
+                                "SKIPPED",
+                                0,
+                                bt.status,
+                                bt.units,
+                                bt.blake3,
+                            )
                         }
                         Some(c) => {
-                            let (st, ch, h) = run_lexbor_arm(
+                            let lx = run_timed_lexbor_arm(
                                 c,
                                 &frame.raw_body_bytes,
                                 &frame.headers,
-                                u,
+                                url,
                                 base_limits,
-                                lxb_charset,
+                                cfg.max_input_bytes,
+                                cfg.charset_mode,
+                                lexbor_stall_ms,
                             );
-                            ("SKIPPED", 0, String::new(), st, ch, st, ch, h)
+                            track_a_utf8_valid = lx.utf8_valid;
+                            if c == Contender::LexborPure {
+                                lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                            }
+                            contender_elapsed_us = Some(lx.elapsed_us);
+                            worker_elapsed_us = Some(lx.elapsed_us);
+                            contender_timings_us
+                                .insert(c.as_str().to_owned(), json!(lx.elapsed_us));
+                            (
+                                "SKIPPED",
+                                0,
+                                String::new(),
+                                lx.status,
+                                lx.units,
+                                lx.status,
+                                lx.units,
+                                lx.blake3,
+                            )
                         }
                     }
                 }
             }
-            (None, Some(_)) => (
-                "INVALID_RAW_URI",
-                0,
-                String::new(),
-                "INVALID_RAW_URI",
-                0,
-                "INVALID_RAW_URI",
-                0,
-                String::new(),
-            ),
         };
 
         let resp = json!({
             "status": "OK",
             "worker_slot": slot,
             "qos": qos_status.profile,
-            "boilerplate_policy": boilerplate_policy_str(cfg.boilerplate_policy),
+            "stage": pool_stage_str(cfg.contender),
+            "boilerplate_policy": pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
             "charset_mode": cfg.charset_mode.as_str(),
             "contender": cfg.contender.map(Contender::as_str).unwrap_or("all"),
             "max_input_bytes": cfg.max_input_bytes,
             "uri_lossy": String::from_utf8_lossy(&frame.uri),
             "raw_header_bytes": frame.headers.len(),
             "raw_body_bytes": frame.raw_body_bytes.len(),
-            "track_a_utf8_valid": decoded_html.is_some(),
+            "track_a_utf8_valid": track_a_utf8_valid,
             "track_a_status": track_a_status,
             "track_a_chunks": track_a_chunks,
             "track_a_blake3": track_a_blake3,
+            "track_a_elapsed_us": track_a_elapsed_us,
             "lexbor_pure_status": lexbor_status,
             "lexbor_pure_chunks": lexbor_chunks,
+            "lexbor_pure_elapsed_us": lexbor_pure_elapsed_us,
             "contender_status": contender_status,
             "contender_chunks": contender_chunks,
             "contender_blake3": contender_blake3,
-            "worker_elapsed_us": t0.elapsed().as_micros() as u64,
+            "contender_elapsed_us": contender_elapsed_us,
+            "contender_timings_us": contender_timings_us,
+            "worker_elapsed_us": worker_elapsed_us,
         });
         let resp_bytes = serde_json::to_vec(&resp).map_err(|e| e.to_string())?;
+        if resp_bytes.len() > DEFAULT_MAX_FRAME_BYTES {
+            return Err(format!(
+                "worker response length {} exceeds max {DEFAULT_MAX_FRAME_BYTES}",
+                resp_bytes.len()
+            ));
+        }
         let resp_len = u32::try_from(resp_bytes.len()).map_err(|_| "response too large")?;
         writer
             .write_all(&resp_len.to_be_bytes())
@@ -497,15 +689,49 @@ fn run_worker_loop(cfg: &PoolConfig, slot: usize) -> Result<(), String> {
 
 fn apply_soft_budget_to_response(val: &mut Value, wall_us: u64, soft_budget_ms: u64) {
     let soft_budget_us = soft_budget_ms.saturating_mul(1_000);
-    let worker_elapsed_us = val
-        .get("worker_elapsed_us")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
     let status_is_ok = val.get("status").and_then(Value::as_str) == Some("OK");
-    let exceeded = wall_us > soft_budget_us || worker_elapsed_us > soft_budget_us;
+
+    let mut per_arm_exceeded = serde_json::Map::new();
+    let exceeded = if let Some(timings) = val
+        .get("contender_timings_us")
+        .and_then(Value::as_object)
+        .filter(|m| !m.is_empty())
+    {
+        let mut any_arm_exceeded = false;
+        let mut sum_arm_us = 0u64;
+        for (name, v) in timings {
+            let us = v.as_u64().unwrap_or(0);
+            let over = us > soft_budget_us;
+            if over {
+                any_arm_exceeded = true;
+            }
+            sum_arm_us = sum_arm_us.saturating_add(us);
+            per_arm_exceeded.insert(name.clone(), json!(over));
+        }
+        if timings.len() >= 2 {
+            let ipc_overhead_us = wall_us.saturating_sub(sum_arm_us);
+            any_arm_exceeded || ipc_overhead_us > soft_budget_us
+        } else {
+            any_arm_exceeded || wall_us > soft_budget_us
+        }
+    } else {
+        let single_worker_us = val
+            .get("contender_elapsed_us")
+            .and_then(Value::as_u64)
+            .or_else(|| val.get("worker_elapsed_us").and_then(Value::as_u64))
+            .unwrap_or(0);
+        wall_us > soft_budget_us || single_worker_us > soft_budget_us
+    };
+
     if let Some(obj) = val.as_object_mut() {
         obj.insert("soft_budget_ms".into(), json!(soft_budget_ms));
         obj.insert("soft_budget_exceeded".into(), json!(exceeded));
+        if !per_arm_exceeded.is_empty() {
+            obj.insert(
+                "contender_soft_budget_exceeded".into(),
+                Value::Object(per_arm_exceeded),
+            );
+        }
         obj.entry("worker_respawned".to_owned())
             .or_insert_with(|| json!(false));
         if status_is_ok && exceeded {
@@ -564,7 +790,8 @@ fn summarize_pool_records(records: &[Value], cfg: &PoolConfig) -> PoolAccounting
         worker_respawns,
         soft_budget_ms: cfg.soft_budget_ms,
         watchdog_ms: cfg.watchdog_ms,
-        boilerplate_policy: boilerplate_policy_str(cfg.boilerplate_policy),
+        stage: pool_stage_str(cfg.contender),
+        boilerplate_policy: pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
         charset_mode: cfg.charset_mode.as_str(),
         contender: cfg.contender.map(Contender::as_str).unwrap_or("all"),
         max_input_bytes: cfg.max_input_bytes,
@@ -635,23 +862,17 @@ impl ManagedWorker {
         let reader_thread = thread::spawn(move || {
             let mut rdr = BufReader::new(stdout);
             loop {
-                let mut len_buf = [0u8; 4];
-                match rdr.read_exact(&mut len_buf) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => {
-                        let _ = tx.send(Err(e.to_string()));
+                match read_bounded_worker_payload(&mut rdr, DEFAULT_MAX_FRAME_BYTES) {
+                    Ok(Some(payload)) => {
+                        if tx.send(Ok(payload)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
                         break;
                     }
-                }
-                let n = u32::from_be_bytes(len_buf) as usize;
-                let mut payload = vec![0u8; n];
-                if let Err(e) = rdr.read_exact(&mut payload) {
-                    let _ = tx.send(Err(e.to_string()));
-                    break;
-                }
-                if tx.send(Ok(payload)).is_err() {
-                    break;
                 }
             }
         });
@@ -713,7 +934,24 @@ impl ManagedWorker {
         match self.rx.recv_timeout(watchdog) {
             Ok(Ok(bytes)) => {
                 let wall_us = t0.elapsed().as_micros() as u64;
-                let mut val: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                let mut val: Value = match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(v) if v.is_object() => v,
+                    Ok(_) | Err(_) => {
+                        self.kill_and_respawn()?;
+                        return Ok(json!({
+                            "record_index": record_index,
+                            "status": "PAGE_QUARANTINED",
+                            "quarantine_reason": "WORKER_PROTOCOL_CORRUPT",
+                            "worker_slot": self.slot,
+                            "worker_respawned": true,
+                            "soft_budget_ms": self.cfg.soft_budget_ms,
+                            "soft_budget_exceeded": wall_us > soft_budget_us,
+                            "uri_lossy": String::from_utf8_lossy(&frame.uri),
+                            "raw_body_bytes": frame.raw_body_bytes.len(),
+                            "wall_us": wall_us,
+                        }));
+                    }
+                };
                 if let Some(obj) = val.as_object_mut() {
                     obj.insert("record_index".into(), json!(record_index));
                     obj.insert("wall_us".into(), json!(wall_us));
@@ -844,6 +1082,7 @@ fn execute_pool_stream<R: Read + Send>(reader: R, cfg: &PoolConfig) -> Result<Ve
     results.sort_by_key(|v| v.get("record_index").and_then(Value::as_u64).unwrap_or(0));
     Ok(results)
 }
+
 fn run_self_test() -> Result<(), String> {
     let url_ok = "https://en.wikipedia.org/wiki/Article_1";
     let url_non_utf8 = "https://ja.wikipedia.org/wiki/Shift_JIS_fixture";
@@ -853,7 +1092,6 @@ fn run_self_test() -> Result<(), String> {
     let _ = validate_real_url(url_stall)?;
 
     let mut stream1 = Vec::new();
-    // Record 0: Clean UTF-8 HTML article.
     stream1.extend_from_slice(
         &encode_raw_warc_frame(
             url_ok.as_bytes(),
@@ -862,7 +1100,6 @@ fn run_self_test() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?,
     );
-    // Record 1: Raw non-UTF-8 bytes (strict Utf8Assumed parity -> both arms reject without lossy corruption).
     stream1.extend_from_slice(
         &encode_raw_warc_frame(
             url_non_utf8.as_bytes(),
@@ -871,7 +1108,6 @@ fn run_self_test() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?,
     );
-    // Record 2: Hard watchdog poison-pill (500ms stall exceeds 50ms watchdog -> kill & respawn).
     stream1.extend_from_slice(
         &encode_raw_warc_frame(
             url_stall.as_bytes(),
@@ -880,7 +1116,6 @@ fn run_self_test() -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?,
     );
-    // Records 3 & 4: Clean HTML proving respawned pool continues processing normally.
     for idx in 3..5 {
         let post_url = format!("https://en.wikipedia.org/wiki/Post_quarantine_{idx}");
         let _ = validate_real_url(&post_url)?;
@@ -923,6 +1158,9 @@ fn run_self_test() -> Result<(), String> {
         || results1[0]["track_a_status"] != "OK"
         || results1[0]["lexbor_pure_status"] != "OK"
         || results1[0]["boilerplate_policy"] != "MainContentV1"
+        || !results1[0]["worker_elapsed_us"].is_null()
+        || results1[0]["track_a_elapsed_us"].as_u64().is_none()
+        || results1[0]["lexbor_pure_elapsed_us"].as_u64().is_none()
     {
         return Err(format!("stream1 record 0 failed: {}", results1[0]));
     }
@@ -956,11 +1194,12 @@ fn run_self_test() -> Result<(), String> {
         return Err(format!("stream1 accounting mismatch: {:?}", accounting1));
     }
 
-    // Stream 2: SniffingEnabled Shift_JIS decoding + 50ms soft-budget PAGE_QUARANTINED accounting (without killing worker).
     let url_sjis = "https://ja.wikipedia.org/wiki/Shift_JIS_sniffing_test";
     let url_soft = "https://archive.mozilla.org/soft-budget-50ms-stall";
+    let url_isolated = "https://en.wikipedia.org/wiki/Isolated_arm_timing";
     let _ = validate_real_url(url_sjis)?;
     let _ = validate_real_url(url_soft)?;
+    let _ = validate_real_url(url_isolated)?;
 
     let mut stream2 = Vec::new();
     stream2.extend_from_slice(
@@ -976,6 +1215,14 @@ fn run_self_test() -> Result<(), String> {
             url_soft.as_bytes(),
             b"HTTP/1.1 200 OK\r\nX-Athena-Test-Stall-Ms: 75\r\nContent-Type: text/html; charset=utf-8\r\n\r\n",
             b"<html><body><main><p>Completes after 75ms inside 500ms watchdog, quarantined by 50ms soft budget.</p></main></body></html>",
+        )
+        .map_err(|e| e.to_string())?,
+    );
+    stream2.extend_from_slice(
+        &encode_raw_warc_frame(
+            url_isolated.as_bytes(),
+            b"HTTP/1.1 200 OK\r\nX-Athena-Test-TrackA-Stall-Ms: 30\r\nX-Athena-Test-Lexbor-Stall-Ms: 30\r\nContent-Type: text/html; charset=utf-8\r\n\r\n",
+            b"<html><body><main><article><h1>Isolated</h1><p>Each contender takes ~30ms (< 50ms); combined ~60ms must not sum into worker_elapsed_us or falsely quarantine.</p></article></main></body></html>",
         )
         .map_err(|e| e.to_string())?,
     );
@@ -999,9 +1246,9 @@ fn run_self_test() -> Result<(), String> {
     };
 
     let results2 = execute_pool_stream(Cursor::new(stream2), &cfg2)?;
-    if results2.len() != 2 {
+    if results2.len() != 3 {
         return Err(format!(
-            "stream2 expected 2 records, got {}",
+            "stream2 expected 3 records, got {}",
             results2.len()
         ));
     }
@@ -1026,9 +1273,23 @@ fn run_self_test() -> Result<(), String> {
             results2[1]
         ));
     }
+    if results2[2]["status"] != "OK"
+        || results2[2]["soft_budget_exceeded"] != false
+        || !results2[2]["worker_elapsed_us"].is_null()
+        || results2[2]["contender_soft_budget_exceeded"]["legacy"] != false
+        || results2[2]["contender_soft_budget_exceeded"]["lexbor_pure"] != false
+    {
+        return Err(format!(
+            "stream2 isolated 30ms+30ms arm timing failed: {}",
+            results2[2]
+        ));
+    }
 
     let accounting2 = summarize_pool_records(&results2, &cfg2);
-    if accounting2.soft_budget_exceeded_records != 1 || accounting2.hard_watchdog_timeouts != 0 {
+    if accounting2.soft_budget_exceeded_records != 1
+        || accounting2.ok_records != 2
+        || accounting2.hard_watchdog_timeouts != 0
+    {
         return Err(format!(
             "stream2 soft-budget accounting mismatch: {:?}",
             accounting2
@@ -1127,6 +1388,70 @@ mod tests {
     }
 
     #[test]
+    fn bounded_ipc_reader_rejects_child_panic_text_and_max_u32_before_allocation() {
+        let panic_stdout = b"thread 'main' panicked at worker.rs:42:9:\nexplicit panic\n";
+        let mut cur1 = Cursor::new(&panic_stdout[..]);
+        let err1 = read_bounded_worker_payload(&mut cur1, DEFAULT_MAX_FRAME_BYTES)
+            .expect_err("ASCII 'thre' (1.95 GiB) header must fail max_frame_bytes cap immediately");
+        assert!(err1.contains("exceeds max"), "unexpected error: {err1}");
+
+        let max_u32 = [0xff, 0xff, 0xff, 0xff];
+        let mut cur2 = Cursor::new(&max_u32[..]);
+        let err2 = read_bounded_worker_payload(&mut cur2, DEFAULT_MAX_FRAME_BYTES)
+            .expect_err("u32::MAX (4 GiB) header must fail max_frame_bytes cap immediately");
+        assert!(err2.contains("exceeds max"), "unexpected error: {err2}");
+
+        let mut empty = Cursor::new(&b""[..]);
+        assert_eq!(
+            read_bounded_worker_payload(&mut empty, DEFAULT_MAX_FRAME_BYTES).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn dual_arm_soft_budget_evaluates_isolated_contender_timings_without_summing() {
+        let mut dual_fast = json!({
+            "record_index": 0,
+            "status": "OK",
+            "worker_elapsed_us": Value::Null,
+            "track_a_elapsed_us": 36_000_u64,
+            "lexbor_pure_elapsed_us": 29_000_u64,
+            "contender_timings_us": {
+                "legacy": 36_000_u64,
+                "lexbor_pure": 29_000_u64,
+            },
+        });
+        apply_soft_budget_to_response(&mut dual_fast, 66_000, 50);
+        assert_eq!(dual_fast["status"], "OK");
+        assert_eq!(dual_fast["soft_budget_exceeded"], false);
+        assert_eq!(dual_fast["contender_soft_budget_exceeded"]["legacy"], false);
+        assert_eq!(
+            dual_fast["contender_soft_budget_exceeded"]["lexbor_pure"],
+            false
+        );
+
+        let mut one_slow = json!({
+            "record_index": 1,
+            "status": "OK",
+            "worker_elapsed_us": Value::Null,
+            "track_a_elapsed_us": 58_000_u64,
+            "lexbor_pure_elapsed_us": 8_000_u64,
+            "contender_timings_us": {
+                "legacy": 58_000_u64,
+                "lexbor_pure": 8_000_u64,
+            },
+        });
+        apply_soft_budget_to_response(&mut one_slow, 67_000, 50);
+        assert_eq!(one_slow["status"], "PAGE_QUARANTINED");
+        assert_eq!(one_slow["soft_budget_exceeded"], true);
+        assert_eq!(one_slow["contender_soft_budget_exceeded"]["legacy"], true);
+        assert_eq!(
+            one_slow["contender_soft_budget_exceeded"]["lexbor_pure"],
+            false
+        );
+    }
+
+    #[test]
     fn soft_budget_quarantines_slow_ok_record_and_updates_summary() {
         let cfg = parse_cli_args(&s(&[
             "mode_b_pool",
@@ -1175,12 +1500,25 @@ mod tests {
         assert_eq!(summary.quarantined_records, 1);
         assert_eq!(summary.soft_budget_exceeded_records, 1);
         assert_eq!(summary.hard_watchdog_timeouts, 0);
-        assert_eq!(summary.boilerplate_policy, "MainContentV1");
+        assert_eq!(summary.stage, "full_projection");
+        assert_eq!(summary.boilerplate_policy, Some("MainContentV1"));
         assert_eq!(summary.max_input_bytes, 33_554_432);
         assert_eq!(summary.threads, 4);
         assert_eq!(summary.pin_cpu, Some(2));
         assert_eq!(summary.contender, "lexbor_pure");
         assert_eq!(summary.charset_mode, "sniffing_enabled");
+
+        let dom_only_cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Latency_budget",
+            "--contender",
+            "lexbor_minimal",
+        ]))
+        .expect("dom only pool cli");
+        let dom_summary = summarize_pool_records(&[], &dom_only_cfg);
+        assert_eq!(dom_summary.stage, "dom_parse_only");
+        assert_eq!(dom_summary.boilerplate_policy, None);
     }
 
     #[test]

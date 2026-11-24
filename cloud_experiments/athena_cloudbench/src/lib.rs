@@ -39,7 +39,9 @@ pub mod bench_common {
                 "breakthrough" | "breakthrough_html5ever" => Ok(Self::Breakthrough),
                 "lexbor_pure" | "lexbor_pure_minimal" => Ok(Self::LexborPure),
                 "lexbor_minimal" | "lexbor_tree_minimal" => Ok(Self::LexborMinimal),
-                "lexbor_stage_ir" | "lexbor_tree_stage_ir" => Ok(Self::LexborStageIr),
+                "lexbor_stage_ir" | "lexbor_pure_stage_ir" | "lexbor_tree_stage_ir" => {
+                    Ok(Self::LexborStageIr)
+                }
                 other => Err(format!("unknown contender '{other}'")),
             }
         }
@@ -51,6 +53,27 @@ pub mod bench_common {
                 Self::LexborPure => "lexbor_pure",
                 Self::LexborMinimal => "lexbor_minimal",
                 Self::LexborStageIr => "lexbor_stage_ir",
+            }
+        }
+
+        pub fn stage(self) -> &'static str {
+            match self {
+                Self::Legacy | Self::Breakthrough | Self::LexborPure | Self::LexborStageIr => {
+                    "full_projection"
+                }
+                Self::LexborMinimal => "dom_parse_only",
+            }
+        }
+
+        pub fn effective_boilerplate_policy_str(
+            self,
+            policy: BoilerplatePolicy,
+        ) -> Option<&'static str> {
+            match self {
+                Self::LexborMinimal => None,
+                Self::Legacy | Self::Breakthrough | Self::LexborPure | Self::LexborStageIr => {
+                    Some(boilerplate_policy_str(policy))
+                }
             }
         }
     }

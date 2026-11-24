@@ -661,19 +661,12 @@ fn parse_tree_internal(
     ))
 }
 
-pub fn parse_tree_with_limits_profile_and_charset(
-    html: &[u8],
-    raw_headers: &[u8],
+pub fn parse_tree_str_with_limits_and_profile(
+    utf8_str: &str,
     limits: ParseLimits,
     profile: LexborAttrProfile,
-    charset_mode: LexborCharsetMode,
 ) -> Result<LexborTree, LexborError> {
-    if !validate_limits(html.len(), limits) {
-        return Err(LexborError::InvalidResourceBudget);
-    }
-    let decoded = prepare_utf8_input(html, raw_headers, limits.max_html_bytes, charset_mode)?;
-    let utf8_str = decoded.as_ref();
-    if utf8_str.len() > u32::MAX as usize {
+    if !validate_limits(utf8_str.len(), limits) {
         return Err(LexborError::InvalidResourceBudget);
     }
 
@@ -709,6 +702,25 @@ pub fn parse_tree_with_limits_profile_and_charset(
     })
 }
 
+pub fn parse_tree_with_limits_profile_and_charset(
+    html: &[u8],
+    raw_headers: &[u8],
+    limits: ParseLimits,
+    profile: LexborAttrProfile,
+    charset_mode: LexborCharsetMode,
+) -> Result<LexborTree, LexborError> {
+    if !validate_limits(html.len(), limits) {
+        return Err(LexborError::InvalidResourceBudget);
+    }
+    let decoded = prepare_utf8_input(html, raw_headers, limits.max_html_bytes, charset_mode)?;
+    let utf8_str = decoded.as_ref();
+    let effective_limits = ParseLimits {
+        max_html_bytes: limits.max_html_bytes.max(utf8_str.len()),
+        ..limits
+    };
+    parse_tree_str_with_limits_and_profile(utf8_str, effective_limits, profile)
+}
+
 pub fn parse_tree_with_limits_and_profile(
     html: &[u8],
     limits: ParseLimits,
@@ -729,11 +741,27 @@ pub fn parse_tree_with_profile(
     parse_tree_with_limits_and_profile(html, ParseLimits::default(), profile)
 }
 
-pub fn parse_and_project_pure_with_charset(
+pub fn parse_and_project_str_pure_with_profile(
+    utf8_html: &str,
+    base: &Url,
+    limits: ParseLimits,
+    profile: LexborAttrProfile,
+) -> Result<Projection, LexborError> {
+    let tree = parse_tree_str_with_limits_and_profile(utf8_html, limits, profile)?;
+    let warning_count = tree
+        .diagnostics
+        .tree_errors
+        .saturating_add(tree.diagnostics.tokenizer_errors);
+    project_research_nodes(utf8_html.len(), &tree.nodes, base, limits, warning_count)
+        .map_err(|err| LexborError::ProjectionFailed(err.to_owned()))
+}
+
+pub fn parse_and_project_pure_with_profile_and_charset(
     html: &[u8],
     raw_headers: &[u8],
     base_url: &str,
     limits: ParseLimits,
+    profile: LexborAttrProfile,
     charset_mode: LexborCharsetMode,
 ) -> Result<Projection, LexborError> {
     if !validate_limits(html.len(), limits) {
@@ -741,30 +769,31 @@ pub fn parse_and_project_pure_with_charset(
     }
     let base = Url::parse(base_url).map_err(|_| LexborError::InvalidBaseUrl)?;
     let decoded = prepare_utf8_input(html, raw_headers, limits.max_html_bytes, charset_mode)?;
-    let utf8_bytes = decoded.as_bytes();
+    let utf8_str = decoded.as_ref();
     let effective_limits = ParseLimits {
-        max_html_bytes: limits.max_html_bytes.max(utf8_bytes.len()),
+        max_html_bytes: limits.max_html_bytes.max(utf8_str.len()),
+        max_text_bytes: limits.max_text_bytes.max(utf8_str.len()),
+        max_link_bytes: limits.max_link_bytes.max(utf8_str.len()),
         ..limits
     };
-    let tree = parse_tree_with_limits_profile_and_charset(
-        utf8_bytes,
-        &[],
-        effective_limits,
+    parse_and_project_str_pure_with_profile(utf8_str, &base, effective_limits, profile)
+}
+
+pub fn parse_and_project_pure_with_charset(
+    html: &[u8],
+    raw_headers: &[u8],
+    base_url: &str,
+    limits: ParseLimits,
+    charset_mode: LexborCharsetMode,
+) -> Result<Projection, LexborError> {
+    parse_and_project_pure_with_profile_and_charset(
+        html,
+        raw_headers,
+        base_url,
+        limits,
         LexborAttrProfile::Minimal,
-        LexborCharsetMode::StrictUtf8,
-    )?;
-    let warning_count = tree
-        .diagnostics
-        .tree_errors
-        .saturating_add(tree.diagnostics.tokenizer_errors);
-    project_research_nodes(
-        utf8_bytes.len(),
-        &tree.nodes,
-        &base,
-        effective_limits,
-        warning_count,
+        charset_mode,
     )
-    .map_err(|err| LexborError::ProjectionFailed(err.to_owned()))
 }
 
 /// Pure Lexbor parse + Athena projection with zero `html5ever` invocations (`G5`, `T2b`).
@@ -1135,5 +1164,38 @@ mod tests {
                 .any(|c| c.text.contains("Alpha link omega."))
         );
         assert!(proj.links.iter().any(|l| l == "https://www.w3.org/next"));
+    }
+
+    #[test]
+    fn parse_and_project_str_pure_with_profile_projects_stage_ir_and_minimal_equivalently() {
+        let html = r#"<!doctype html><html><body><nav><a href="/nav">Nav</a></nav><main><article><h1>StageIR Parity</h1><p style="color:#222">Main article body text with enough words for MainContentV1 retention.</p></article></main><footer>Footer boilerplate</footer></body></html>"#;
+        let base = Url::parse("https://en.wikipedia.org/wiki/Parity").unwrap();
+        let limits = ParseLimits::default();
+        let p_min = parse_and_project_str_pure_with_profile(
+            html,
+            &base,
+            limits,
+            LexborAttrProfile::Minimal,
+        )
+        .expect("minimal projection");
+        let p_ir = parse_and_project_str_pure_with_profile(
+            html,
+            &base,
+            limits,
+            LexborAttrProfile::StageIr,
+        )
+        .expect("stage_ir projection");
+        assert_eq!(p_min.chunks, p_ir.chunks);
+        assert!(
+            p_ir.chunks
+                .iter()
+                .any(|c| c.text.contains("StageIR Parity"))
+        );
+        assert!(
+            !p_ir
+                .chunks
+                .iter()
+                .any(|c| c.text.contains("Footer boilerplate"))
+        );
     }
 }

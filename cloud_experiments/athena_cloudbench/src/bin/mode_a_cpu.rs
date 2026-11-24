@@ -2,17 +2,16 @@
 //! Strictly ZERO `#[global_allocator]` wrapper and zero harness heap allocations inside the timed loop.
 
 use athena_cloudbench::bench_common::{
-    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, boilerplate_policy_str,
-    build_parse_limits_with_policy, decode_html_bytes, effective_limits, parse_boilerplate_policy,
-    validate_real_url,
+    CharsetMode, Contender, DEFAULT_MAX_INPUT_BYTES, build_parse_limits_with_policy,
+    decode_html_bytes, effective_limits, parse_boilerplate_policy, validate_real_url,
 };
 use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile};
 use athena_core_v2::projection::{
     BoilerplatePolicy, ParseLimits, parse_html_breakthrough, parse_html_with_limits,
 };
 use athena_lexbor_adapter_research::{
-    LexborAttrProfile, LexborCharsetMode, Limits as LexborLimits,
-    parse_and_project_pure_with_charset, parse_tree_with_limits_profile_and_charset,
+    LexborAttrProfile, parse_and_project_str_pure_with_profile,
+    parse_tree_str_with_limits_and_profile,
 };
 use serde_json::json;
 use std::env;
@@ -38,6 +37,31 @@ struct CpuCliConfig {
     inner_iters: usize,
     html_path: Option<String>,
     self_test: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacroSlot {
+    ArmA,
+    ArmB,
+}
+
+#[inline]
+const fn macroblock_slots(mb: usize) -> [MacroSlot; 4] {
+    if mb.is_multiple_of(2) {
+        [
+            MacroSlot::ArmA,
+            MacroSlot::ArmB,
+            MacroSlot::ArmB,
+            MacroSlot::ArmA,
+        ]
+    } else {
+        [
+            MacroSlot::ArmB,
+            MacroSlot::ArmA,
+            MacroSlot::ArmA,
+            MacroSlot::ArmB,
+        ]
+    }
 }
 
 fn parse_pin_cpu(raw: &str) -> Result<Option<usize>, String> {
@@ -181,6 +205,16 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
         }
     }
 
+    if arm_a.stage() != arm_b.stage() {
+        return Err(format!(
+            "stage asymmetry forbidden in paired Mode A CPU comparison: arm_a '{}' is '{}', arm_b '{}' is '{}'",
+            arm_a.as_str(),
+            arm_a.stage(),
+            arm_b.as_str(),
+            arm_b.stage(),
+        ));
+    }
+
     if !self_test {
         let raw_url = url
             .as_deref()
@@ -210,16 +244,11 @@ fn parse_cli_args(args: &[String]) -> Result<CpuCliConfig, String> {
 }
 
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
 fn run_contender_once(
     contender: Contender,
     html_str: &str,
-    html_bytes: &[u8],
     base_url: &Url,
-    base_url_str: &str,
     core_limits: ParseLimits,
-    lxb_limits: LexborLimits,
-    lxb_charset: LexborCharsetMode,
 ) -> usize {
     match contender {
         Contender::Legacy => parse_html_with_limits(black_box(html_str), base_url, core_limits)
@@ -230,34 +259,62 @@ fn run_contender_once(
                 .map(|p| black_box(p.projection.chunks.len()))
                 .unwrap_or(0)
         }
-        Contender::LexborPure => parse_and_project_pure_with_charset(
-            black_box(html_bytes),
-            &[],
-            base_url_str,
-            lxb_limits,
-            lxb_charset,
+        Contender::LexborPure => parse_and_project_str_pure_with_profile(
+            black_box(html_str),
+            base_url,
+            core_limits,
+            LexborAttrProfile::Minimal,
         )
         .map(|p| black_box(p.chunks.len()))
         .unwrap_or(0),
-        Contender::LexborMinimal => parse_tree_with_limits_profile_and_charset(
-            black_box(html_bytes),
-            &[],
-            lxb_limits,
-            LexborAttrProfile::Minimal,
-            lxb_charset,
-        )
-        .map(|t| black_box(t.nodes.len()))
-        .unwrap_or(0),
-        Contender::LexborStageIr => parse_tree_with_limits_profile_and_charset(
-            black_box(html_bytes),
-            &[],
-            lxb_limits,
+        Contender::LexborStageIr => parse_and_project_str_pure_with_profile(
+            black_box(html_str),
+            base_url,
+            core_limits,
             LexborAttrProfile::StageIr,
-            lxb_charset,
+        )
+        .map(|p| black_box(p.chunks.len()))
+        .unwrap_or(0),
+        Contender::LexborMinimal => parse_tree_str_with_limits_and_profile(
+            black_box(html_str),
+            core_limits,
+            LexborAttrProfile::Minimal,
         )
         .map(|t| black_box(t.nodes.len()))
         .unwrap_or(0),
     }
+}
+
+#[inline(never)]
+fn execute_counter_balanced_macroblocks<F>(
+    macroblocks: usize,
+    inner_iters: usize,
+    ns_a: &mut [u64],
+    ns_b: &mut [u64],
+    mut run_slot_iter: F,
+) -> usize
+where
+    F: FnMut(MacroSlot) -> usize,
+{
+    let mut sink = 0usize;
+    for mb in 0..macroblocks {
+        let mut acc_a = 0u64;
+        let mut acc_b = 0u64;
+        for slot in macroblock_slots(mb) {
+            let t_slot = Instant::now();
+            for _ in 0..inner_iters {
+                sink ^= run_slot_iter(slot);
+            }
+            let elapsed_ns = t_slot.elapsed().as_nanos() as u64;
+            match slot {
+                MacroSlot::ArmA => acc_a = acc_a.saturating_add(elapsed_ns),
+                MacroSlot::ArmB => acc_b = acc_b.saturating_add(elapsed_ns),
+            }
+        }
+        ns_a[mb] = acc_a;
+        ns_b[mb] = acc_b;
+    }
+    sink
 }
 
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
@@ -288,7 +345,7 @@ fn self_test_fixture_html() -> String {
     );
     for i in 0..40 {
         s.push_str(&format!(
-            "<section><h2>Section {i}</h2><p>Firestorm P-core paired A-B-B-A macroblock evaluation paragraph {i} with <a href=\"https://en.wikipedia.org/wiki/Doc_{i}\">reference {i}</a>.</p></section>"
+            "<section><h2>Section {i}</h2><p>Firestorm P-core counter-balanced ABBA/BAAB macroblock evaluation paragraph {i} with <a href=\"https://en.wikipedia.org/wiki/Doc_{i}\">reference {i}</a>.</p></section>"
         ));
     }
     s.push_str("<table><thead><tr><th>Arm</th><th>p50</th><th>p99</th></tr></thead><tbody><tr><td>A</td><td>12.4</td><td>16.8</td></tr><tr><td>B</td><td>9.1</td><td>11.9</td></tr></tbody></table></article></main></body></html>");
@@ -318,129 +375,36 @@ fn main() -> Result<(), String> {
     let html_decoded = decode_html_bytes(&html_bytes, &[], cfg.max_input_bytes, cfg.charset_mode)?;
     let html_str = html_decoded.as_ref();
     let core_limits = effective_limits(base_limits, html_str.len());
-    let lxb_limits = base_limits;
-    let lxb_charset = cfg.charset_mode.to_lexbor_charset_mode();
 
-    // Pre-allocate fixed buffers outside the timed macroblock loop (zero harness heap allocations inside loop).
     let mut ns_a = vec![0u64; cfg.macroblocks];
     let mut ns_b = vec![0u64; cfg.macroblocks];
     let mut sink = 0usize;
 
     for wb in 0..cfg.warmup_blocks {
-        if wb % 2 == 0 {
+        for slot in macroblock_slots(wb) {
+            let contender = match slot {
+                MacroSlot::ArmA => cfg.arm_a,
+                MacroSlot::ArmB => cfg.arm_b,
+            };
             for _ in 0..cfg.inner_iters {
-                sink ^= run_contender_once(
-                    cfg.arm_a,
-                    html_str,
-                    &html_bytes,
-                    &base_url,
-                    url_str,
-                    core_limits,
-                    lxb_limits,
-                    lxb_charset,
-                );
-                sink ^= run_contender_once(
-                    cfg.arm_b,
-                    html_str,
-                    &html_bytes,
-                    &base_url,
-                    url_str,
-                    core_limits,
-                    lxb_limits,
-                    lxb_charset,
-                );
-            }
-        } else {
-            for _ in 0..cfg.inner_iters {
-                sink ^= run_contender_once(
-                    cfg.arm_b,
-                    html_str,
-                    &html_bytes,
-                    &base_url,
-                    url_str,
-                    core_limits,
-                    lxb_limits,
-                    lxb_charset,
-                );
-                sink ^= run_contender_once(
-                    cfg.arm_a,
-                    html_str,
-                    &html_bytes,
-                    &base_url,
-                    url_str,
-                    core_limits,
-                    lxb_limits,
-                    lxb_charset,
-                );
+                sink ^= run_contender_once(contender, html_str, &base_url, core_limits);
             }
         }
     }
 
-    // Paired A-B-B-A macroblocks (each macroblock executes A-B-B-A to cancel linear drift).
-    for mb in 0..cfg.macroblocks {
-        let t_a1 = Instant::now();
-        for _ in 0..cfg.inner_iters {
-            sink ^= run_contender_once(
-                cfg.arm_a,
-                html_str,
-                &html_bytes,
-                &base_url,
-                url_str,
-                core_limits,
-                lxb_limits,
-                lxb_charset,
-            );
-        }
-        let d_a1 = t_a1.elapsed().as_nanos() as u64;
-
-        let t_b1 = Instant::now();
-        for _ in 0..cfg.inner_iters {
-            sink ^= run_contender_once(
-                cfg.arm_b,
-                html_str,
-                &html_bytes,
-                &base_url,
-                url_str,
-                core_limits,
-                lxb_limits,
-                lxb_charset,
-            );
-        }
-        let d_b1 = t_b1.elapsed().as_nanos() as u64;
-
-        let t_b2 = Instant::now();
-        for _ in 0..cfg.inner_iters {
-            sink ^= run_contender_once(
-                cfg.arm_b,
-                html_str,
-                &html_bytes,
-                &base_url,
-                url_str,
-                core_limits,
-                lxb_limits,
-                lxb_charset,
-            );
-        }
-        let d_b2 = t_b2.elapsed().as_nanos() as u64;
-
-        let t_a2 = Instant::now();
-        for _ in 0..cfg.inner_iters {
-            sink ^= run_contender_once(
-                cfg.arm_a,
-                html_str,
-                &html_bytes,
-                &base_url,
-                url_str,
-                core_limits,
-                lxb_limits,
-                lxb_charset,
-            );
-        }
-        let d_a2 = t_a2.elapsed().as_nanos() as u64;
-
-        ns_a[mb] = d_a1.saturating_add(d_a2);
-        ns_b[mb] = d_b1.saturating_add(d_b2);
-    }
+    sink ^= execute_counter_balanced_macroblocks(
+        cfg.macroblocks,
+        cfg.inner_iters,
+        &mut ns_a,
+        &mut ns_b,
+        |slot| {
+            let contender = match slot {
+                MacroSlot::ArmA => cfg.arm_a,
+                MacroSlot::ArmB => cfg.arm_b,
+            };
+            run_contender_once(contender, html_str, &base_url, core_limits)
+        },
+    );
     black_box(sink);
 
     let kib = (html_bytes.len().max(1) as f64) / 1024.0;
@@ -465,18 +429,33 @@ fn main() -> Result<(), String> {
 
     if cfg.self_test {
         if cfg.macroblocks < 64 {
-            return Err("Mode A requires >= 64 A-B-B-A macroblocks".into());
+            return Err("Mode A requires >= 64 counter-balanced ABBA/BAAB macroblocks".into());
         }
         if us_kib_a[0] <= 0.0 || us_kib_b[0] <= 0.0 {
             return Err("Mode A measured non-positive latency".into());
         }
+        let stage_ir_chunks =
+            run_contender_once(Contender::LexborStageIr, html_str, &base_url, core_limits);
+        let pure_chunks =
+            run_contender_once(Contender::LexborPure, html_str, &base_url, core_limits);
+        if stage_ir_chunks == 0 || stage_ir_chunks != pure_chunks {
+            return Err(format!(
+                "LexborStageIr full projection chunk mismatch vs LexborPure: stage_ir={stage_ir_chunks}, pure={pure_chunks}"
+            ));
+        }
     }
 
+    let effective_policy = cfg
+        .arm_a
+        .effective_boilerplate_policy_str(cfg.boilerplate_policy);
     let report = json!({
         "schema": "AthenaCloudBenchModeACpu/1",
         "global_alloc_wrapped": false,
         "qos": qos,
-        "boilerplate_policy": boilerplate_policy_str(cfg.boilerplate_policy),
+        "stage": cfg.arm_a.stage(),
+        "boilerplate_policy": effective_policy,
+        "utf8_decode_placement": "pre_decoded_outside_timed_region",
+        "macroblock_schedule": "ABBA_BAAB_alternating",
         "contender": cfg.contender.map(Contender::as_str),
         "url": url_str,
         "charset_mode": cfg.charset_mode.as_str(),
@@ -484,17 +463,22 @@ fn main() -> Result<(), String> {
         "threads": cfg.threads,
         "pin_cpu": cfg.pin_cpu,
         "html_bytes": html_bytes.len(),
+        "decoded_utf8_bytes": html_str.len(),
         "macroblocks": cfg.macroblocks,
         "warmup_blocks": cfg.warmup_blocks,
         "inner_iters": cfg.inner_iters,
         "arm_a": {
             "name": cfg.arm_a.as_str(),
+            "stage": cfg.arm_a.stage(),
+            "boilerplate_policy": cfg.arm_a.effective_boilerplate_policy_str(cfg.boilerplate_policy),
             "us_per_kib_p50": quantile_sorted(&us_kib_a, 0.50),
             "us_per_kib_p95": quantile_sorted(&us_kib_a, 0.95),
             "us_per_kib_p99": quantile_sorted(&us_kib_a, 0.99),
         },
         "arm_b": {
             "name": cfg.arm_b.as_str(),
+            "stage": cfg.arm_b.stage(),
+            "boilerplate_policy": cfg.arm_b.effective_boilerplate_policy_str(cfg.boilerplate_policy),
             "us_per_kib_p50": quantile_sorted(&us_kib_b, 0.50),
             "us_per_kib_p95": quantile_sorted(&us_kib_b, 0.95),
             "us_per_kib_p99": quantile_sorted(&us_kib_b, 0.99),
@@ -536,6 +520,126 @@ mod tests {
     }
 
     #[test]
+    fn cli_rejects_cross_stage_arm_asymmetry_and_labels_dom_only_without_main_content() {
+        assert!(
+            parse_cli_args(&s(&[
+                "mode_a_cpu",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--arm-a",
+                "legacy",
+                "--arm-b",
+                "lexbor_minimal",
+            ]))
+            .is_err()
+        );
+        let dom_only_cfg = parse_cli_args(&s(&[
+            "mode_a_cpu",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--contender",
+            "lexbor_minimal",
+        ]))
+        .expect("single dom_parse_only contender allowed");
+        assert_eq!(dom_only_cfg.arm_a.stage(), "dom_parse_only");
+        assert_eq!(
+            dom_only_cfg
+                .arm_a
+                .effective_boilerplate_policy_str(dom_only_cfg.boilerplate_policy),
+            None
+        );
+    }
+
+    #[test]
+    fn macroblocks_alternate_abba_on_even_and_baab_on_odd_blocks() {
+        assert_eq!(
+            macroblock_slots(0),
+            [
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA
+            ]
+        );
+        assert_eq!(
+            macroblock_slots(1),
+            [
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB
+            ]
+        );
+        assert_eq!(
+            macroblock_slots(2),
+            [
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA
+            ]
+        );
+        assert_eq!(
+            macroblock_slots(3),
+            [
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB
+            ]
+        );
+
+        let mut observed = Vec::new();
+        let mut ns_a = [0u64; 4];
+        let mut ns_b = [0u64; 4];
+        let _ = execute_counter_balanced_macroblocks(4, 1, &mut ns_a, &mut ns_b, |slot| {
+            observed.push(slot);
+            1
+        });
+        assert_eq!(
+            observed,
+            vec![
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+                MacroSlot::ArmA,
+                MacroSlot::ArmA,
+                MacroSlot::ArmB,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexbor_stage_ir_executes_full_projection_matching_lexbor_pure_and_legacy() {
+        let html = r#"<!doctype html><html><body><nav><a href="/n">Nav</a></nav><main><article><h1>Title</h1><p>Substantive article paragraph with plenty of words for MainContentV1 extraction.</p></article></main><footer>Footer boilerplate text</footer></body></html>"#;
+        let url = validate_real_url("https://en.wikipedia.org/wiki/Stage_parity").unwrap();
+        let limits = build_parse_limits_with_policy(
+            DEFAULT_MAX_INPUT_BYTES,
+            BoilerplatePolicy::MainContentV1,
+        )
+        .unwrap();
+        let legacy_chunks = run_contender_once(Contender::Legacy, html, &url, limits);
+        let pure_chunks = run_contender_once(Contender::LexborPure, html, &url, limits);
+        let stage_ir_chunks = run_contender_once(Contender::LexborStageIr, html, &url, limits);
+        let dom_nodes = run_contender_once(Contender::LexborMinimal, html, &url, limits);
+
+        assert!(legacy_chunks > 0);
+        assert_eq!(pure_chunks, legacy_chunks);
+        assert_eq!(stage_ir_chunks, legacy_chunks);
+        assert!(dom_nodes > stage_ir_chunks);
+    }
+
+    #[test]
     fn cli_parses_contender_charset_max_input_bytes_and_pin_cpu() {
         let cfg = parse_cli_args(&s(&[
             "mode_a_cpu",
@@ -556,6 +660,7 @@ mod tests {
         assert_eq!(cfg.contender, Some(Contender::LexborStageIr));
         assert_eq!(cfg.arm_a, Contender::LexborStageIr);
         assert_eq!(cfg.arm_b, Contender::LexborStageIr);
+        assert_eq!(cfg.arm_a.stage(), "full_projection");
         assert_eq!(cfg.boilerplate_policy, BoilerplatePolicy::MainContentV1);
         assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
         assert_eq!(cfg.max_input_bytes, 33_554_432);

@@ -34,6 +34,26 @@ jobs:
             cloud_experiments/bench.rs \
             cloud_experiments/core_probe.rs \
             cloud_experiments/service_probe.rs
+      - name: Build pinned Lexbor static library and export environment for audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/athena-lexbor-audit
+          bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-audit
+          lib_dir="/tmp/athena-lexbor-audit/install-none/lib"
+          if [[ ! -f "${lib_dir}/liblexbor_static.a" && -f "/tmp/athena-lexbor-audit/install-none/lib64/liblexbor_static.a" ]]; then
+            lib_dir="/tmp/athena-lexbor-audit/install-none/lib64"
+          fi
+          inc_dir="/tmp/athena-lexbor-audit/install-none/include"
+          archive="/tmp/athena-lexbor-audit/lexbor-2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe.zip"
+          test -f "${lib_dir}/liblexbor_static.a"
+          test -d "${inc_dir}/lexbor"
+          test -f "${archive}"
+          {
+            echo "ATHENA_LEXBOR_LIB_DIR=${lib_dir}"
+            echo "ATHENA_LEXBOR_INCLUDE_DIR=${inc_dir}"
+            echo "ATHENA_LEXBOR_ARCHIVE=${archive}"
+          } >> "$GITHUB_ENV"
       - name: Run Clippy (-D warnings) across all 4 Cargo manifests
         shell: bash
         run: |
@@ -83,11 +103,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/athena-lexbor-ci
+          timeout --kill-after=15s 300s bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-ci
+          lib_dir="/tmp/athena-lexbor-ci/install-none/lib"
+          if [[ ! -f "${lib_dir}/liblexbor_static.a" && -f "/tmp/athena-lexbor-ci/install-none/lib64/liblexbor_static.a" ]]; then
+            lib_dir="/tmp/athena-lexbor-ci/install-none/lib64"
+          fi
+          inc_dir="/tmp/athena-lexbor-ci/install-none/include"
+          archive="/tmp/athena-lexbor-ci/lexbor-2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe.zip"
+          test -f "${lib_dir}/liblexbor_static.a"
+          test -d "${inc_dir}/lexbor"
+          test -f "${archive}"
+          export ATHENA_LEXBOR_LIB_DIR="${lib_dir}"
+          export ATHENA_LEXBOR_INCLUDE_DIR="${inc_dir}"
+          export ATHENA_LEXBOR_ARCHIVE="${archive}"
+          {
+            echo "ATHENA_LEXBOR_LIB_DIR=${lib_dir}"
+            echo "ATHENA_LEXBOR_INCLUDE_DIR=${inc_dir}"
+            echo "ATHENA_LEXBOR_ARCHIVE=${archive}"
+          } >> "$GITHUB_ENV"
           timeout --kill-after=15s 600s cargo build --locked --release --features research-probes --bin core_probe
           timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml --locked --release
           timeout --kill-after=15s 600s cargo build --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml --locked --release
           timeout --kill-after=15s 300s npm --prefix cloud_experiments/mcp_sdk/typescript ci --ignore-scripts --no-audit --no-fund
-          timeout --kill-after=15s 300s bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-ci
       - name: Run Linux-only process and service boundaries
         shell: bash
         run: |
@@ -194,7 +232,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/athena-lexbor-arm64
           bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-arm64
+          lib_dir="/tmp/athena-lexbor-arm64/install-none/lib"
+          if [[ ! -f "${lib_dir}/liblexbor_static.a" && -f "/tmp/athena-lexbor-arm64/install-none/lib64/liblexbor_static.a" ]]; then
+            lib_dir="/tmp/athena-lexbor-arm64/install-none/lib64"
+          fi
+          inc_dir="/tmp/athena-lexbor-arm64/install-none/include"
+          archive="/tmp/athena-lexbor-arm64/lexbor-2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe.zip"
+          test -f "${lib_dir}/liblexbor_static.a"
+          test -d "${inc_dir}/lexbor"
+          test -f "${archive}"
+          export ATHENA_LEXBOR_LIB_DIR="${lib_dir}"
+          export ATHENA_LEXBOR_INCLUDE_DIR="${inc_dir}"
+          export ATHENA_LEXBOR_ARCHIVE="${archive}"
+          {
+            echo "ATHENA_LEXBOR_LIB_DIR=${lib_dir}"
+            echo "ATHENA_LEXBOR_INCLUDE_DIR=${inc_dir}"
+            echo "ATHENA_LEXBOR_ARCHIVE=${archive}"
+          } >> "$GITHUB_ENV"
           cargo test --locked --all-targets --features research-probes
           cargo test --locked --manifest-path cloud_experiments/lexbor_adapter/Cargo.toml
           cargo test --locked --manifest-path cloud_experiments/mcp_sdk/rust/Cargo.toml
@@ -227,8 +283,32 @@ jobs:
           CARGO_BUILD_JOBS: '3'
         run: |
           set -euo pipefail
+          rm -rf /tmp/athena-lexbor-asan /tmp/athena-lexbor-tsan
           ATHENA_LEXBOR_SANITIZER=address_undefined bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-asan
-          ATHENA_LEXBOR_SANITIZER=thread bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-tsan
+          archive="/tmp/athena-lexbor-asan/lexbor-2ae88a1c6b5261830eff73ee12bb3cdf805f3cfe.zip"
+          test -f "${archive}"
+          ATHENA_LEXBOR_ARCHIVE_CACHE="${archive}" ATHENA_LEXBOR_SANITIZER=thread bash cloud_experiments/lexbor/build_and_smoke.sh /tmp/athena-lexbor-tsan
+          asan_lib_dir="/tmp/athena-lexbor-asan/install-address_undefined/lib"
+          if [[ ! -f "${asan_lib_dir}/liblexbor_static.a" && -f "/tmp/athena-lexbor-asan/install-address_undefined/lib64/liblexbor_static.a" ]]; then
+            asan_lib_dir="/tmp/athena-lexbor-asan/install-address_undefined/lib64"
+          fi
+          asan_inc_dir="/tmp/athena-lexbor-asan/install-address_undefined/include"
+          tsan_lib_dir="/tmp/athena-lexbor-tsan/install-thread/lib"
+          if [[ ! -f "${tsan_lib_dir}/liblexbor_static.a" && -f "/tmp/athena-lexbor-tsan/install-thread/lib64/liblexbor_static.a" ]]; then
+            tsan_lib_dir="/tmp/athena-lexbor-tsan/install-thread/lib64"
+          fi
+          tsan_inc_dir="/tmp/athena-lexbor-tsan/install-thread/include"
+          test -f "${asan_lib_dir}/liblexbor_static.a"
+          test -d "${asan_inc_dir}/lexbor"
+          test -f "${tsan_lib_dir}/liblexbor_static.a"
+          test -d "${tsan_inc_dir}/lexbor"
+          {
+            echo "ATHENA_LEXBOR_LIB_DIR=${asan_lib_dir}"
+            echo "ATHENA_LEXBOR_INCLUDE_DIR=${asan_inc_dir}"
+            echo "ATHENA_LEXBOR_ARCHIVE=${archive}"
+            echo "ATHENA_LEXBOR_TSAN_LIB_DIR=${tsan_lib_dir}"
+            echo "ATHENA_LEXBOR_TSAN_INCLUDE_DIR=${tsan_inc_dir}"
+          } >> "$GITHUB_ENV"
       - name: Run AddressSanitizer + LeakSanitizer on Lexbor FFI adapter and CloudBench
         shell: bash
         env:
@@ -247,6 +327,10 @@ jobs:
       - name: Run ThreadSanitizer on SingleFlight, SourceCache, and Bandit concurrency primitives
         shell: bash
         env:
+          ATHENA_LEXBOR_LIB_DIR: ${{ env.ATHENA_LEXBOR_TSAN_LIB_DIR }}
+          ATHENA_LEXBOR_INCLUDE_DIR: ${{ env.ATHENA_LEXBOR_TSAN_INCLUDE_DIR }}
+          ATHENA_LEXBOR_ARCHIVE: ${{ env.ATHENA_LEXBOR_ARCHIVE }}
+          ATHENA_LEXBOR_SANITIZER: thread
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -Zsanitizer=thread
           TSAN_OPTIONS: halt_on_error=1
         run: |
