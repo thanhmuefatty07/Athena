@@ -21,10 +21,13 @@ pub struct UntruncatedLcsMetrics {
 
 #[inline]
 fn is_combining_or_extend(ch: char) -> bool {
+    let u = ch as u32;
+    if u < 0x0300 {
+        return false;
+    }
     if unicode_normalization::char::canonical_combining_class(ch) > 0 {
         return true;
     }
-    let u = ch as u32;
     matches!(
         u,
         0x0300..=0x036F
@@ -73,15 +76,50 @@ fn is_mid_word_connector(ch: char) -> bool {
     matches!(ch, '\'' | '\u{2019}' | '_')
 }
 
+#[inline]
 fn push_lowercase(dst: &mut String, ch: char) {
-    for lc in ch.to_lowercase() {
-        dst.push(lc);
+    if ch.is_ascii() {
+        dst.push(ch.to_ascii_lowercase());
+    } else {
+        for lc in ch.to_lowercase() {
+            dst.push(lc);
+        }
     }
+}
+
+fn uax29_word_tokens_ascii(bytes: &[u8]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut cur_word = String::new();
+    for (idx, &b) in bytes.iter().enumerate() {
+        if b.is_ascii_alphanumeric() {
+            cur_word.push(b.to_ascii_lowercase() as char);
+        } else if b == b'_' {
+            cur_word.push('_');
+        } else if b == b'\''
+            && !cur_word.is_empty()
+            && bytes.get(idx + 1).is_some_and(u8::is_ascii_alphanumeric)
+        {
+            cur_word.push('\'');
+        } else if !cur_word.is_empty() {
+            tokens.push(std::mem::take(&mut cur_word));
+        }
+    }
+    if !cur_word.is_empty() {
+        tokens.push(cur_word);
+    }
+    tokens
 }
 
 /// Multilingual UAX #29-aligned word tokenizer with Unicode NFC normalization and scriptio-continua
 /// overlapping cluster bigrams + cluster unigrams matching `oracles_v5.py`.
 pub fn uax29_word_tokens(text: &str) -> Vec<String> {
+    if text.is_ascii() {
+        return uax29_word_tokens_ascii(text.as_bytes());
+    }
+    uax29_word_tokens_unicode(text)
+}
+
+fn uax29_word_tokens_unicode(text: &str) -> Vec<String> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum RunKind {
         None,
@@ -261,20 +299,17 @@ pub fn exact_token_lcs_len<T: Eq + Hash>(a: &[T], b: &[T]) -> usize {
 
     // Compact active symbol IDs in `short` -> contiguous rows of `limbs` u64 masks
     let mut dense_row: Vec<u32> = vec![u32::MAX; next_id as usize];
-    let mut pmasks: Vec<u64> = Vec::new();
     let mut row_count = 0u32;
-    for (pos, &sym) in short.iter().enumerate() {
-        let row = if dense_row[sym as usize] == u32::MAX {
-            let r = row_count;
-            dense_row[sym as usize] = r;
+    for &sym in short {
+        if dense_row[sym as usize] == u32::MAX {
+            dense_row[sym as usize] = row_count;
             row_count += 1;
-            pmasks.resize((row_count as usize) * limbs, 0u64);
-            r
-        } else {
-            dense_row[sym as usize]
-        };
-        let base = (row as usize) * limbs;
-        pmasks[base + (pos / 64)] |= 1u64 << (pos % 64);
+        }
+    }
+    let mut pmasks: Vec<u64> = vec![0u64; (row_count as usize) * limbs];
+    for (pos, &sym) in short.iter().enumerate() {
+        let row = dense_row[sym as usize] as usize;
+        pmasks[row * limbs + (pos / 64)] |= 1u64 << (pos % 64);
     }
 
     let mut v = vec![u64::MAX; limbs];
@@ -374,6 +409,9 @@ pub fn compute_untruncated_uax29_metrics(
 }
 
 pub fn compute_line_break_f1(pred_text: &str, gold_text: &str) -> f64 {
+    if !pred_text.contains('\n') || !gold_text.contains('\n') {
+        return 0.0;
+    }
     fn boundary_pairs(txt: &str) -> Vec<(String, String)> {
         let non_empty_lines: Vec<Vec<String>> = txt
             .lines()
@@ -558,6 +596,43 @@ mod tests {
         let m = compute_untruncated_uax29_metrics(nfd_latin, nfc_latin);
         assert!((m.uax29_f1 - 1.0).abs() < 1e-12);
         assert!((m.rouge_l_f1 - 1.0).abs() < 1e-12);
+
+        for cp in 0u32..0x0300 {
+            if let Some(ch) = char::from_u32(cp) {
+                assert_eq!(
+                    unicode_normalization::char::canonical_combining_class(ch),
+                    0
+                );
+            }
+        }
+        for sample in [
+            "",
+            "_",
+            "___",
+            "_a",
+            "'a",
+            "don't",
+            "_'9",
+            "a''b",
+            "a'_",
+            "A_B'C_9",
+            "Word0 word1\nWord2\tWORD3!",
+        ] {
+            assert_eq!(
+                uax29_word_tokens_ascii(sample.as_bytes()),
+                uax29_word_tokens_unicode(sample),
+                "ASCII/Unicode parity mismatch on {sample:?}"
+            );
+        }
+        for b in 0u8..=127u8 {
+            let ch = b as char;
+            let probe = format!("a{ch}Z _{ch}9 {ch}");
+            assert_eq!(
+                uax29_word_tokens_ascii(probe.as_bytes()),
+                uax29_word_tokens_unicode(&probe),
+                "ASCII/Unicode byte parity mismatch on byte {b}"
+            );
+        }
     }
 
     #[test]

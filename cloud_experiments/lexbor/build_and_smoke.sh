@@ -158,7 +158,13 @@ src_dir="${scratch}/lexbor-${commit}"
 build_dir="${scratch}/build-${sanitizer}"
 install_dir="${scratch}/install-${sanitizer}"
 
-cc_bin="${CC:-cc}"
+if [[ -n "${CC:-}" ]]; then
+    cc_bin="$CC"
+elif [[ "$sanitizer" != "none" ]] && command -v clang >/dev/null 2>&1; then
+    cc_bin="clang"
+else
+    cc_bin="cc"
+fi
 san_cflags=()
 san_ldflags=()
 if [[ "$sanitizer" == "address_undefined" ]]; then
@@ -205,7 +211,7 @@ if command -v cmake >/dev/null 2>&1; then
     run_step install cmake --install "$build_dir"
 else
     build_backend="posix_cc_script"
-    run_step build python3 - "$src_dir" "$build_dir" "$install_dir" "$san_cflags_joined" <<'PY'
+    run_step build env CC="$cc_bin" python3 - "$src_dir" "$build_dir" "$install_dir" "$san_cflags_joined" <<'PY'
 import concurrent.futures
 import os
 import pathlib
@@ -342,7 +348,7 @@ if [[ "$sanitizer" == "thread" ]] && rustc -V 2>/dev/null | grep -q -- '-nightly
     cur_target_rf_var="CARGO_TARGET_${upper_triple}_RUSTFLAGS"
     cur_target_rf="${!cur_target_rf_var:-${RUSTFLAGS:-}}"
     tsan_rf="$cur_target_rf"
-    if [[ -n "${CC:-}" && "$tsan_rf" != *"linker="* ]]; then
+    if [[ "$tsan_rf" != *"linker="* ]]; then
         tsan_rf="${tsan_rf:+$tsan_rf }-C linker=${cc_bin}"
     fi
     if [[ "$tsan_rf" != *"sanitizer=thread"* ]]; then
@@ -350,7 +356,7 @@ if [[ "$sanitizer" == "thread" ]] && rustc -V 2>/dev/null | grep -q -- '-nightly
     fi
     adapter_env+=("${cur_target_rf_var}=${tsan_rf}")
     adapter_cargo_args+=(--all-targets -Zbuild-std --target "$host_triple")
-elif [[ "$sanitizer" != "none" && -n "${CC:-}" ]]; then
+elif [[ "$sanitizer" != "none" ]]; then
     cur_rf="${RUSTFLAGS:-}"
     if [[ "$cur_rf" != *"linker="* && "$cur_rf" != *"sanitizer="* ]]; then
         adapter_env+=(RUSTFLAGS="${cur_rf:+$cur_rf }-C linker=${cc_bin}")

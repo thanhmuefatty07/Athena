@@ -18,7 +18,19 @@ jobs:
           toolchain: '1.99.1'
           components: rustfmt, clippy
       - name: Verify Phase A src/ immutability
-        run: git diff --exit-code src/
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code HEAD -- src/
+          test -z "$(git status --porcelain -- src/)"
+          ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
+          if [[ "$ref_name" == "impl/v5-infra-rust" ]] && git rev-parse --verify origin/wip/cloud-024-materialization >/dev/null 2>&1; then
+            base_sha="$(git merge-base HEAD origin/wip/cloud-024-materialization)"
+            git diff --exit-code "${base_sha}..HEAD" -- src/
+          elif [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -n "${GITHUB_BASE_REF:-}" ]] && git rev-parse --verify "origin/${GITHUB_BASE_REF}" >/dev/null 2>&1; then
+            base_sha="$(git merge-base HEAD "origin/${GITHUB_BASE_REF}")"
+            git diff --exit-code "${base_sha}..HEAD" -- src/
+          fi
       - name: Check formatting across all 4 Cargo manifests and standalone probes
         shell: bash
         run: |
@@ -258,7 +270,7 @@ jobs:
 
   nightly-sanitizers:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-10-24
     steps:
@@ -317,7 +329,7 @@ jobs:
             --all-targets
           cargo test --locked --target x86_64-unknown-linux-gnu \
             --manifest-path cloud_experiments/athena_cloudbench/Cargo.toml \
-            --lib
+            --lib --bins
       - name: Run ThreadSanitizer on SingleFlight, SourceCache, and Bandit concurrency primitives
         shell: bash
         env:

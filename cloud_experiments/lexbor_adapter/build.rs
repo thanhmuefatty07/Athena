@@ -58,63 +58,89 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
+fn resolve_cc_bin(sanitizer: SanitizerMode) -> String {
+    if let Some(explicit) = non_empty_env("CC") {
+        return explicit;
+    }
+    if sanitizer != SanitizerMode::None
+        && Command::new("clang")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    {
+        return "clang".to_owned();
+    }
+    "cc".to_owned()
+}
+
+fn emit_sanitizer_link_args(sanitizer: SanitizerMode, cc_bin: &str) {
     if sanitizer == SanitizerMode::None {
         return;
     }
+    let target_upper = env::var("TARGET")
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+        .replace('-', "_");
+    let target_rf = if target_upper.is_empty() {
+        String::new()
+    } else {
+        let var_name = format!("CARGO_TARGET_{target_upper}_RUSTFLAGS");
+        println!("cargo:rerun-if-env-changed={var_name}");
+        env::var(var_name).unwrap_or_default()
+    };
     let rustflags = format!(
-        "{} {}",
+        "{} {} {}",
         env::var("RUSTFLAGS").unwrap_or_default(),
-        env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default()
+        env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default(),
+        target_rf
     );
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let rust_has_asan = rustflags.contains("sanitizer=address");
+    let rust_has_tsan = rustflags.contains("sanitizer=thread");
     match sanitizer {
         SanitizerMode::None => {}
         SanitizerMode::AddressUndefined => {
-            if rustflags.contains("sanitizer=address") {
-                if target_os == "macos" {
-                    println!("cargo:rustc-link-arg=-fsanitize=undefined");
-                }
-            } else {
+            if !rust_has_asan {
                 println!("cargo:rustc-link-arg=-fsanitize=address,undefined");
             }
         }
         SanitizerMode::Thread => {
-            if !rustflags.contains("sanitizer=thread") {
+            if !rust_has_tsan {
                 println!("cargo:rustc-link-arg=-fsanitize=thread");
             }
         }
     }
-    if target_os == "macos" {
-        let cc_bin = env::var("CC").unwrap_or_else(|_| "cc".to_owned());
-        if let Ok(output) = Command::new(&cc_bin).arg("--print-runtime-dir").output()
-            && output.status.success()
-        {
-            let rt_dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let rt_path = Path::new(&rt_dir);
-            if !rt_dir.is_empty() && rt_path.is_dir() {
-                println!("cargo:rustc-link-search=native={rt_dir}");
-                println!("cargo:rustc-link-arg=-Wl,-rpath,{rt_dir}");
-                match sanitizer {
-                    SanitizerMode::None => {}
-                    SanitizerMode::AddressUndefined => {
-                        if !rustflags.contains("sanitizer=address") {
-                            if rt_path.join("libclang_rt.asan_osx_dynamic.dylib").is_file() {
-                                println!("cargo:rustc-link-lib=dylib=clang_rt.asan_osx_dynamic");
-                            } else if rt_path
-                                .join("libclang_rt.ubsan_osx_dynamic.dylib")
-                                .is_file()
-                            {
-                                println!("cargo:rustc-link-lib=dylib=clang_rt.ubsan_osx_dynamic");
-                            }
-                        }
+    let rust_owns_sanitizer_rt = match sanitizer {
+        SanitizerMode::None => false,
+        SanitizerMode::AddressUndefined => rust_has_asan,
+        SanitizerMode::Thread => rust_has_tsan,
+    };
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "macos"
+        && !rust_owns_sanitizer_rt
+        && let Ok(output) = Command::new(cc_bin).arg("--print-runtime-dir").output()
+        && output.status.success()
+    {
+        let rt_dir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let rt_path = Path::new(&rt_dir);
+        if !rt_dir.is_empty() && rt_path.is_dir() {
+            println!("cargo:rustc-link-search=native={rt_dir}");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{rt_dir}");
+            match sanitizer {
+                SanitizerMode::None => {}
+                SanitizerMode::AddressUndefined => {
+                    if rt_path.join("libclang_rt.asan_osx_dynamic.dylib").is_file() {
+                        println!("cargo:rustc-link-lib=dylib=clang_rt.asan_osx_dynamic");
+                    } else if rt_path
+                        .join("libclang_rt.ubsan_osx_dynamic.dylib")
+                        .is_file()
+                    {
+                        println!("cargo:rustc-link-lib=dylib=clang_rt.ubsan_osx_dynamic");
                     }
-                    SanitizerMode::Thread => {
-                        if !rustflags.contains("sanitizer=thread")
-                            && rt_path.join("libclang_rt.tsan_osx_dynamic.dylib").is_file()
-                        {
-                            println!("cargo:rustc-link-lib=dylib=clang_rt.tsan_osx_dynamic");
-                        }
+                }
+                SanitizerMode::Thread => {
+                    if rt_path.join("libclang_rt.tsan_osx_dynamic.dylib").is_file() {
+                        println!("cargo:rustc-link-lib=dylib=clang_rt.tsan_osx_dynamic");
                     }
                 }
             }
@@ -122,10 +148,9 @@ fn emit_sanitizer_link_args(sanitizer: SanitizerMode) {
     }
 }
 
-fn cc_supports_no_sanitize_function(out_dir: &Path) -> bool {
-    let cc_bin = non_empty_env("CC").unwrap_or_else(|| "cc".to_owned());
+fn cc_supports_no_sanitize_function(cc_bin: &str, out_dir: &Path) -> bool {
     let probe = out_dir.join(format!("probe_nofn_{}.o", std::process::id()));
-    let ok = Command::new(&cc_bin)
+    let ok = Command::new(cc_bin)
         .args([
             "-fsanitize=undefined",
             "-fno-sanitize=function",
@@ -224,11 +249,15 @@ fn main() {
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
     let shim_path = manifest_dir.join("src").join("lexbor_shim.c");
     let sanitizer = SanitizerMode::from_env();
+    let cc_bin = resolve_cc_bin(sanitizer);
 
     let (lib_dir, include_dir) = resolve_explicit_lexbor_dirs(sanitizer)
-        .unwrap_or_else(|| build_auto_lexbor(&manifest_dir, sanitizer));
+        .unwrap_or_else(|| build_auto_lexbor(&manifest_dir, sanitizer, &cc_bin));
 
     let mut shim_build = cc::Build::new();
+    if sanitizer != SanitizerMode::None {
+        shim_build.compiler(&cc_bin);
+    }
     shim_build
         .file(shim_path)
         .include(&include_dir)
@@ -247,12 +276,16 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=lexbor_static");
-    emit_sanitizer_link_args(sanitizer);
+    emit_sanitizer_link_args(sanitizer, &cc_bin);
 }
 
 /// Automatically extracts and builds static `liblexbor_static.a` strictly inside `OUT_DIR`
 /// (zero writes to `~/athena_data/v5_pinned`) when `ATHENA_LEXBOR_LIB_DIR` is unset.
-fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf, PathBuf) {
+fn build_auto_lexbor(
+    manifest_dir: &Path,
+    sanitizer: SanitizerMode,
+    cc_bin: &str,
+) -> (PathBuf, PathBuf) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by Cargo"));
     let auto_root = out_dir.join(format!("lexbor-auto-{}", sanitizer.slug()));
     let install_dir = auto_root.join("install");
@@ -307,6 +340,9 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
 
     if has_cmake {
         let mut cfg_cmd = Command::new("cmake");
+        if sanitizer != SanitizerMode::None {
+            cfg_cmd.env("CC", cc_bin);
+        }
         cfg_cmd.args([
             "-S",
             src_dir.to_str().expect("utf8 src_dir"),
@@ -328,7 +364,7 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
         if sanitizer != SanitizerMode::None {
             let mut flags: Vec<&str> = sanitizer.c_flags().to_vec();
             if sanitizer == SanitizerMode::AddressUndefined
-                && cc_supports_no_sanitize_function(&auto_root)
+                && cc_supports_no_sanitize_function(cc_bin, &auto_root)
             {
                 flags.push("-fno-sanitize=function");
             }
@@ -361,6 +397,9 @@ fn build_auto_lexbor(manifest_dir: &Path, sanitizer: SanitizerMode) -> (PathBuf,
         let mut c_files = Vec::new();
         collect_c_sources(&source_root, &mut c_files);
         let mut build = cc::Build::new();
+        if sanitizer != SanitizerMode::None {
+            build.compiler(cc_bin);
+        }
         build
             .cargo_metadata(false)
             .include(&source_root)
