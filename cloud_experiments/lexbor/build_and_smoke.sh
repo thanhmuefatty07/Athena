@@ -349,7 +349,7 @@ if [[ "$sanitizer" == "thread" ]] && rustc -V 2>/dev/null | grep -q -- '-nightly
         tsan_rf="${tsan_rf:+$tsan_rf }-Zsanitizer=thread"
     fi
     adapter_env+=("${cur_target_rf_var}=${tsan_rf}")
-    adapter_cargo_args+=(-Zbuild-std --target "$host_triple")
+    adapter_cargo_args+=(--all-targets -Zbuild-std --target "$host_triple")
 elif [[ "$sanitizer" != "none" && -n "${CC:-}" ]]; then
     cur_rf="${RUSTFLAGS:-}"
     if [[ "$cur_rf" != *"linker="* && "$cur_rf" != *"sanitizer="* ]]; then
