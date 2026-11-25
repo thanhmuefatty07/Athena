@@ -30,6 +30,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const WORKER_READY_MAGIC: &[u8; 4] = b"RDY\n";
+const DEFAULT_WATCHDOG_MS: u64 = 500;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -123,7 +124,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
     let mut qos = QosProfile::Worker;
     let mut workers: usize = 8;
     let mut pin_cpu: Option<usize> = Some(0);
-    let mut watchdog_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
+    let mut explicit_watchdog_ms: Option<u64> = None;
     let mut soft_budget_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
     let mut budget_clock = BudgetClock::ThreadCpu;
     let mut contender: Option<Contender> = None;
@@ -169,14 +170,24 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
             }
             "--watchdog-ms" => {
                 i += 1;
-                watchdog_ms = args
+                let parsed = args
                     .get(i)
                     .ok_or("missing --watchdog-ms")?
                     .parse::<u64>()
                     .map_err(|e| e.to_string())?;
-                if watchdog_ms == 0 {
+                if parsed == 0 {
                     return Err("--watchdog-ms must be >= 1".to_owned());
                 }
+                explicit_watchdog_ms = Some(parsed);
+            }
+            arg if arg.starts_with("--watchdog-ms=") => {
+                let parsed = arg["--watchdog-ms=".len()..]
+                    .parse::<u64>()
+                    .map_err(|e| e.to_string())?;
+                if parsed == 0 {
+                    return Err("--watchdog-ms must be >= 1".to_owned());
+                }
+                explicit_watchdog_ms = Some(parsed);
             }
             "--soft-budget-ms" => {
                 i += 1;
@@ -193,6 +204,9 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
                 i += 1;
                 budget_clock =
                     BudgetClock::parse(args.get(i).ok_or("missing --budget-clock value")?)?;
+            }
+            arg if arg.starts_with("--budget-clock=") => {
+                budget_clock = BudgetClock::parse(&arg["--budget-clock=".len()..])?;
             }
             "--contender" => {
                 i += 1;
@@ -249,6 +263,9 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
         );
     }
 
+    let watchdog_ms = explicit_watchdog_ms
+        .unwrap_or_else(|| soft_budget_ms.saturating_mul(10).max(DEFAULT_WATCHDOG_MS));
+
     Ok(PoolConfig {
         internal_slot,
         qos,
@@ -294,11 +311,13 @@ fn hash_projection(proj: &Projection) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-fn elapsed_thread_cpu_us(start_ns: Option<u128>) -> u64 {
-    match (start_ns, read_thread_cpu_time_ns()) {
-        (Some(t0), Some(t1)) => (t1.saturating_sub(t0) / 1_000) as u64,
-        _ => 0,
-    }
+fn thread_cpu_delta_ns_to_us(delta_ns: u128) -> u64 {
+    u64::try_from(delta_ns.div_ceil(1_000)).unwrap_or(u64::MAX)
+}
+
+fn elapsed_thread_cpu_us(start_ns: Option<u128>) -> Option<u64> {
+    let (t0, t1) = (start_ns?, read_thread_cpu_time_ns()?);
+    Some(thread_cpu_delta_ns_to_us(t1.saturating_sub(t0)))
 }
 
 fn burn_thread_cpu_ms(ms: u64) {
@@ -341,7 +360,7 @@ struct ArmRunOutcome {
     units: usize,
     blake3: String,
     elapsed_us: u64,
-    thread_cpu_us: u64,
+    thread_cpu_us: Option<u64>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -679,23 +698,23 @@ fn evaluate_worker_frame(
                         );
                         track_a_utf8_valid = ta.utf8_valid;
                         track_a_elapsed_us = Some(ta.elapsed_us);
-                        track_a_thread_cpu_us = Some(ta.thread_cpu_us);
+                        track_a_thread_cpu_us = ta.thread_cpu_us;
                         lexbor_pure_elapsed_us = Some(lx.elapsed_us);
-                        lexbor_pure_thread_cpu_us = Some(lx.thread_cpu_us);
+                        lexbor_pure_thread_cpu_us = lx.thread_cpu_us;
                         contender_timings_us
                             .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
                         contender_timings_us.insert(
                             Contender::LexborPure.as_str().to_owned(),
                             json!(lx.elapsed_us),
                         );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::Legacy.as_str().to_owned(),
-                            json!(ta.thread_cpu_us),
-                        );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::LexborPure.as_str().to_owned(),
-                            json!(lx.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = ta.thread_cpu_us {
+                            contender_thread_cpu_timings_us
+                                .insert(Contender::Legacy.as_str().to_owned(), json!(cpu_us));
+                        }
+                        if let Some(cpu_us) = lx.thread_cpu_us {
+                            contender_thread_cpu_timings_us
+                                .insert(Contender::LexborPure.as_str().to_owned(), json!(cpu_us));
+                        }
                         contender_elapsed_us = None;
                         contender_thread_cpu_us = None;
                         worker_elapsed_us = None;
@@ -724,16 +743,16 @@ fn evaluate_worker_frame(
                         );
                         track_a_utf8_valid = ta.utf8_valid;
                         track_a_elapsed_us = Some(ta.elapsed_us);
-                        track_a_thread_cpu_us = Some(ta.thread_cpu_us);
+                        track_a_thread_cpu_us = ta.thread_cpu_us;
                         contender_elapsed_us = Some(ta.elapsed_us);
-                        contender_thread_cpu_us = Some(ta.thread_cpu_us);
+                        contender_thread_cpu_us = ta.thread_cpu_us;
                         worker_elapsed_us = Some(ta.elapsed_us);
                         contender_timings_us
                             .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::Legacy.as_str().to_owned(),
-                            json!(ta.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = ta.thread_cpu_us {
+                            contender_thread_cpu_timings_us
+                                .insert(Contender::Legacy.as_str().to_owned(), json!(cpu_us));
+                        }
                         (
                             ta.status,
                             ta.units,
@@ -759,16 +778,16 @@ fn evaluate_worker_frame(
                         );
                         track_a_utf8_valid = bt.utf8_valid;
                         contender_elapsed_us = Some(bt.elapsed_us);
-                        contender_thread_cpu_us = Some(bt.thread_cpu_us);
+                        contender_thread_cpu_us = bt.thread_cpu_us;
                         worker_elapsed_us = Some(bt.elapsed_us);
                         contender_timings_us.insert(
                             Contender::Breakthrough.as_str().to_owned(),
                             json!(bt.elapsed_us),
                         );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::Breakthrough.as_str().to_owned(),
-                            json!(bt.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = bt.thread_cpu_us {
+                            contender_thread_cpu_timings_us
+                                .insert(Contender::Breakthrough.as_str().to_owned(), json!(cpu_us));
+                        }
                         (
                             "SKIPPED",
                             0,
@@ -794,18 +813,18 @@ fn evaluate_worker_frame(
                         );
                         track_a_utf8_valid = lx.utf8_valid;
                         lexbor_pure_elapsed_us = Some(lx.elapsed_us);
-                        lexbor_pure_thread_cpu_us = Some(lx.thread_cpu_us);
+                        lexbor_pure_thread_cpu_us = lx.thread_cpu_us;
                         contender_elapsed_us = Some(lx.elapsed_us);
-                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
+                        contender_thread_cpu_us = lx.thread_cpu_us;
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborPure.as_str().to_owned(),
                             json!(lx.elapsed_us),
                         );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::LexborPure.as_str().to_owned(),
-                            json!(lx.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = lx.thread_cpu_us {
+                            contender_thread_cpu_timings_us
+                                .insert(Contender::LexborPure.as_str().to_owned(), json!(cpu_us));
+                        }
                         (
                             "SKIPPED",
                             0,
@@ -831,16 +850,18 @@ fn evaluate_worker_frame(
                         );
                         track_a_utf8_valid = lx.utf8_valid;
                         contender_elapsed_us = Some(lx.elapsed_us);
-                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
+                        contender_thread_cpu_us = lx.thread_cpu_us;
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborStageIr.as_str().to_owned(),
                             json!(lx.elapsed_us),
                         );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::LexborStageIr.as_str().to_owned(),
-                            json!(lx.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = lx.thread_cpu_us {
+                            contender_thread_cpu_timings_us.insert(
+                                Contender::LexborStageIr.as_str().to_owned(),
+                                json!(cpu_us),
+                            );
+                        }
                         (
                             "SKIPPED",
                             0,
@@ -867,16 +888,18 @@ fn evaluate_worker_frame(
                         track_a_utf8_valid = lx.utf8_valid;
                         contender_dom_nodes = Some(lx.units);
                         contender_elapsed_us = Some(lx.elapsed_us);
-                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
+                        contender_thread_cpu_us = lx.thread_cpu_us;
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborMinimal.as_str().to_owned(),
                             json!(lx.elapsed_us),
                         );
-                        contender_thread_cpu_timings_us.insert(
-                            Contender::LexborMinimal.as_str().to_owned(),
-                            json!(lx.thread_cpu_us),
-                        );
+                        if let Some(cpu_us) = lx.thread_cpu_us {
+                            contender_thread_cpu_timings_us.insert(
+                                Contender::LexborMinimal.as_str().to_owned(),
+                                json!(cpu_us),
+                            );
+                        }
                         (
                             "SKIPPED",
                             0,
@@ -931,6 +954,44 @@ fn evaluate_worker_frame(
     })
 }
 
+fn evaluate_wall_soft_budget(
+    val: &Value,
+    wall_us: u64,
+    soft_budget_us: u64,
+    per_arm_exceeded: &mut serde_json::Map<String, Value>,
+) -> bool {
+    if let Some(timings) = val
+        .get("contender_timings_us")
+        .and_then(Value::as_object)
+        .filter(|m| !m.is_empty())
+    {
+        let mut any_arm_exceeded = false;
+        let mut sum_arm_us = 0u64;
+        for (name, v) in timings {
+            let us = v.as_u64().unwrap_or(0);
+            let over = us > soft_budget_us;
+            if over {
+                any_arm_exceeded = true;
+            }
+            sum_arm_us = sum_arm_us.saturating_add(us);
+            per_arm_exceeded.insert(name.clone(), json!(over));
+        }
+        if timings.len() >= 2 {
+            let ipc_overhead_us = wall_us.saturating_sub(sum_arm_us);
+            any_arm_exceeded || ipc_overhead_us > soft_budget_us
+        } else {
+            any_arm_exceeded || wall_us > soft_budget_us
+        }
+    } else {
+        let single_worker_us = val
+            .get("contender_elapsed_us")
+            .and_then(Value::as_u64)
+            .or_else(|| val.get("worker_elapsed_us").and_then(Value::as_u64))
+            .unwrap_or(0);
+        wall_us > soft_budget_us || single_worker_us > soft_budget_us
+    }
+}
+
 fn apply_soft_budget_to_response(
     val: &mut Value,
     wall_us: u64,
@@ -946,12 +1007,14 @@ fn apply_soft_budget_to_response(
             if let Some(cpu_timings) = val
                 .get("contender_thread_cpu_timings_us")
                 .and_then(Value::as_object)
-                .filter(|m| !m.is_empty())
+                .filter(|m| !m.is_empty() && m.values().any(|v| v.as_u64().is_some()))
             {
                 let mut any_arm_exceeded = false;
                 let mut sum_arm_cpu_us = 0u64;
                 for (name, v) in cpu_timings {
-                    let us = v.as_u64().unwrap_or(0);
+                    let Some(us) = v.as_u64() else {
+                        continue;
+                    };
                     let over = us > soft_budget_us;
                     if over {
                         any_arm_exceeded = true;
@@ -963,55 +1026,26 @@ fn apply_soft_budget_to_response(
                     .get("thread_cpu_us")
                     .and_then(Value::as_u64)
                     .unwrap_or(sum_arm_cpu_us);
-                if cpu_timings.len() >= 2 {
+                if per_arm_exceeded.len() >= 2 {
                     let extra_cpu_us = total_cpu_us.saturating_sub(sum_arm_cpu_us);
                     any_arm_exceeded || extra_cpu_us > soft_budget_us
                 } else {
                     any_arm_exceeded || total_cpu_us > soft_budget_us
                 }
             } else {
-                let single_cpu_us = val
-                    .get("contender_thread_cpu_us")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let total_cpu_us = val
-                    .get("thread_cpu_us")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(single_cpu_us);
-                total_cpu_us > soft_budget_us || single_cpu_us > soft_budget_us
+                let single_cpu_opt = val.get("contender_thread_cpu_us").and_then(Value::as_u64);
+                let total_cpu_opt = val.get("thread_cpu_us").and_then(Value::as_u64);
+                if single_cpu_opt.is_some() || total_cpu_opt.is_some() {
+                    let single_cpu_us = single_cpu_opt.unwrap_or(0);
+                    let total_cpu_us = total_cpu_opt.unwrap_or(single_cpu_us);
+                    total_cpu_us > soft_budget_us || single_cpu_us > soft_budget_us
+                } else {
+                    evaluate_wall_soft_budget(val, wall_us, soft_budget_us, &mut per_arm_exceeded)
+                }
             }
         }
         BudgetClock::Wall => {
-            if let Some(timings) = val
-                .get("contender_timings_us")
-                .and_then(Value::as_object)
-                .filter(|m| !m.is_empty())
-            {
-                let mut any_arm_exceeded = false;
-                let mut sum_arm_us = 0u64;
-                for (name, v) in timings {
-                    let us = v.as_u64().unwrap_or(0);
-                    let over = us > soft_budget_us;
-                    if over {
-                        any_arm_exceeded = true;
-                    }
-                    sum_arm_us = sum_arm_us.saturating_add(us);
-                    per_arm_exceeded.insert(name.clone(), json!(over));
-                }
-                if timings.len() >= 2 {
-                    let ipc_overhead_us = wall_us.saturating_sub(sum_arm_us);
-                    any_arm_exceeded || ipc_overhead_us > soft_budget_us
-                } else {
-                    any_arm_exceeded || wall_us > soft_budget_us
-                }
-            } else {
-                let single_worker_us = val
-                    .get("contender_elapsed_us")
-                    .and_then(Value::as_u64)
-                    .or_else(|| val.get("worker_elapsed_us").and_then(Value::as_u64))
-                    .unwrap_or(0);
-                wall_us > soft_budget_us || single_worker_us > soft_budget_us
-            }
+            evaluate_wall_soft_budget(val, wall_us, soft_budget_us, &mut per_arm_exceeded)
         }
     };
 
@@ -2017,6 +2051,29 @@ mod tests {
         assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
         assert_eq!(cfg.contender, Some(Contender::Breakthrough));
         assert_eq!(cfg.budget_clock, BudgetClock::ThreadCpu);
+        assert_eq!(cfg.soft_budget_ms, DEFAULT_SOFT_BUDGET_MS);
+        assert_eq!(cfg.watchdog_ms, DEFAULT_WATCHDOG_MS);
+
+        let scaled_watchdog_cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--soft-budget-ms",
+            "120",
+        ]))
+        .expect("scaled default watchdog");
+        assert_eq!(scaled_watchdog_cfg.watchdog_ms, 1_200);
+
+        let explicit_watchdog_cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--watchdog-ms=50",
+            "--budget-clock=wall",
+        ]))
+        .expect("explicit watchdog + =args");
+        assert_eq!(explicit_watchdog_cfg.watchdog_ms, 50);
+        assert_eq!(explicit_watchdog_cfg.budget_clock, BudgetClock::Wall);
 
         let wall_cfg = parse_cli_args(&s(&[
             "mode_b_pool",
@@ -2108,5 +2165,21 @@ mod tests {
             quadratic_cpu_pill["contender_soft_budget_exceeded"]["breakthrough"],
             true
         );
+
+        let mut missing_cpu_clock = json!({
+            "record_index": 2,
+            "status": "OK",
+            "worker_elapsed_us": 62_500_u64,
+            "thread_cpu_us": Value::Null,
+        });
+        apply_soft_budget_to_response(&mut missing_cpu_clock, 63_000, 50, BudgetClock::ThreadCpu);
+        assert_eq!(missing_cpu_clock["status"], "PAGE_QUARANTINED");
+        assert_eq!(missing_cpu_clock["soft_budget_exceeded"], true);
+
+        assert_eq!(thread_cpu_delta_ns_to_us(0), 0);
+        assert_eq!(thread_cpu_delta_ns_to_us(1), 1);
+        assert_eq!(thread_cpu_delta_ns_to_us(450), 1);
+        assert_eq!(thread_cpu_delta_ns_to_us(50_000_000), 50_000);
+        assert_eq!(thread_cpu_delta_ns_to_us(50_000_001), 50_001);
     }
 }

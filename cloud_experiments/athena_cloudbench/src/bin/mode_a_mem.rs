@@ -45,6 +45,7 @@ static TRACKING_BASE_C: AtomicUsize = AtomicUsize::new(0);
 static COMBINED_PEAK_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static IN_GROWTH_SAMPLE: AtomicBool = AtomicBool::new(false);
 static MEASURE_LOCK: Mutex<()> = Mutex::new(());
+static STAGED_INPUT_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 #[global_allocator]
 static GLOBAL_METERED_ALLOC: MeteredAlloc = MeteredAlloc;
@@ -213,6 +214,7 @@ where
     lexbor_set_growth_hook(Some(on_lexbor_growth));
     let _hook_guard = HookResetGuard;
 
+    release_allocator_free_pages();
     let os_before = read_os_memory_snapshot();
 
     let pthread_tok = current_pthread_token();
@@ -357,11 +359,17 @@ fn parse_cli_args(args: &[String]) -> Result<MemCliConfig, String> {
                     args.get(i).ok_or("missing --arm value")?,
                 )?);
             }
+            arg if arg.starts_with("--arm=") => {
+                saw_arm = Some(parse_arm_selection(&arg["--arm=".len()..])?);
+            }
             "--contender" => {
                 i += 1;
                 saw_contender = Some(parse_arm_selection(
                     args.get(i).ok_or("missing --contender value")?,
                 )?);
+            }
+            arg if arg.starts_with("--contender=") => {
+                saw_contender = Some(parse_arm_selection(&arg["--contender=".len()..])?);
             }
             "--url" => {
                 i += 1;
@@ -662,6 +670,27 @@ fn emit_mode_a_mem_report(
     Ok(())
 }
 
+fn should_stage_isolated_input(path: &str) -> Result<bool, String> {
+    let p = std::path::Path::new(path);
+    if p.starts_with("/dev") || p.starts_with("/proc") {
+        return Ok(true);
+    }
+    let lmeta = fs::symlink_metadata(p).map_err(|e| format!("failed to read {path}: {e}"))?;
+    if lmeta.file_type().is_symlink() {
+        let target_meta = fs::metadata(p).map_err(|e| format!("failed to read {path}: {e}"))?;
+        if !target_meta.is_file() {
+            return Ok(true);
+        }
+        if let Ok(canon) = fs::canonicalize(p)
+            && (canon.starts_with("/dev") || canon.starts_with("/proc"))
+        {
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    Ok(!lmeta.file_type().is_file())
+}
+
 fn run_isolated_arms_parent(
     cfg: &MemCliConfig,
     qos: &QosStatus,
@@ -669,13 +698,13 @@ fn run_isolated_arms_parent(
 ) -> Result<(), String> {
     let mut temp_guard = TempFileGuard(None);
     let child_html_arg: Option<String> = if let Some(path) = &cfg.html_path {
-        let meta = fs::metadata(path).map_err(|e| format!("failed to read {path}: {e}"))?;
-        if meta.is_file() {
+        if !should_stage_isolated_input(path)? {
             Some(path.clone())
         } else {
             let bytes = fs::read(path).map_err(|e| format!("failed to read {path}: {e}"))?;
+            let seq = STAGED_INPUT_SEQ.fetch_add(1, Ordering::Relaxed);
             let tmp_path = env::temp_dir().join(format!(
-                "athena-mode-a-mem-input-{}.html",
+                "athena-mode-a-mem-input-{}-{seq}.html",
                 std::process::id()
             ));
             fs::write(&tmp_path, &bytes)
@@ -991,8 +1020,7 @@ mod tests {
 
         let no_iso = parse_cli_args(&s(&[
             "mode_a_mem",
-            "--arm",
-            "all",
+            "--arm=all",
             "--no-isolate-arms",
             "--url",
             "https://en.wikipedia.org/wiki/Memory",
@@ -1000,6 +1028,9 @@ mod tests {
         .expect("valid --no-isolate-arms");
         assert_eq!(no_iso.contender, None);
         assert!(!no_iso.isolate_arms);
+
+        assert!(should_stage_isolated_input("/dev/stdin").unwrap());
+        assert!(should_stage_isolated_input("/proc/self/fd/0").unwrap());
 
         assert!(
             parse_cli_args(&s(&[

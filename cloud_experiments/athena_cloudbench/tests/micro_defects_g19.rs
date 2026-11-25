@@ -293,11 +293,25 @@ fn is_rustc_search_artifact(file_name: &str) -> bool {
         .any(|ext| file_name.ends_with(ext))
 }
 
+const CARGO_TREE_MAX_DEPTH: usize = 12;
+
 fn should_skip_cargo_subdir(name: &str) -> bool {
     matches!(
         name,
-        ".fingerprint" | "incremental" | ".git" | "doc" | "package" | "tmp"
-    )
+        ".fingerprint" | "fingerprint" | "incremental" | ".git" | "doc" | "package" | "tmp"
+    ) || name.ends_with(".dSYM")
+}
+
+fn canonical_or_clean(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn same_path_canonical(a: &Path, b: &Path) -> bool {
+    a == b || canonical_or_clean(a) == canonical_or_clean(b)
+}
+
+fn path_is_within(child: &Path, parent: &Path) -> bool {
+    child.starts_with(parent) || canonical_or_clean(child).starts_with(canonical_or_clean(parent))
 }
 
 fn active_profile_name(seed: &Path) -> Option<String> {
@@ -327,19 +341,23 @@ fn path_has_component(path: &Path, target: &str) -> bool {
 }
 
 fn push_unique_path(list: &mut Vec<PathBuf>, candidate: PathBuf) {
-    if !list.iter().any(|existing| existing == &candidate) {
+    if !list
+        .iter()
+        .any(|existing| same_path_canonical(existing, &candidate))
+    {
         list.push(candidate);
     }
 }
 
 fn expand_cargo_search_roots(seed: &Path, stop_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    let is_stopped = |p: &Path| p.parent().is_none() || stop_dirs.iter().any(|s| s == p);
+    let is_stopped =
+        |p: &Path| p.parent().is_none() || stop_dirs.iter().any(|s| same_path_canonical(s, p));
     if seed.exists() && !is_stopped(seed) {
         push_unique_path(&mut roots, seed.to_path_buf());
     }
     for (depth, anc) in seed.ancestors().enumerate() {
-        if depth > 6 || is_stopped(anc) {
+        if depth > 8 || is_stopped(anc) {
             break;
         }
         if anc.join("CACHEDIR.TAG").is_file() || anc.join(".rustc_info.json").is_file() {
@@ -349,7 +367,16 @@ fn expand_cargo_search_roots(seed: &Path, stop_dirs: &[PathBuf]) -> Vec<PathBuf>
         let Some(name) = anc.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if matches!(name, "deps" | "build" | "tests" | "examples")
+        if matches!(name, "debug" | "release") {
+            push_unique_path(&mut roots, anc.to_path_buf());
+            if let Some(target_dir) = anc.parent()
+                && !is_stopped(target_dir)
+                && (target_dir.join("CACHEDIR.TAG").is_file()
+                    || target_dir.join(".rustc_info.json").is_file())
+            {
+                push_unique_path(&mut roots, target_dir.to_path_buf());
+            }
+        } else if matches!(name, "deps" | "build" | "tests" | "examples")
             && let Some(profile_dir) = anc.parent()
             && !is_stopped(profile_dir)
         {
@@ -372,6 +399,7 @@ fn expand_cargo_search_roots(seed: &Path, stop_dirs: &[PathBuf]) -> Vec<PathBuf>
 
 fn resolve_env_target_dirs(
     raw_path: &Path,
+    active_seeds: &[&Path],
     cwd: Option<&Path>,
     manifest_dir: &Path,
     repo_root: &Path,
@@ -382,25 +410,40 @@ fn resolve_env_target_dirs(
     if raw_path.is_absolute() {
         return vec![raw_path.to_path_buf()];
     }
-    let mut out = Vec::new();
+    let mut candidates = Vec::new();
     if let Some(dir) = cwd {
         let joined = dir.join(raw_path);
         if joined.exists() {
-            push_unique_path(&mut out, joined);
+            push_unique_path(&mut candidates, joined);
         }
     }
     for base in [manifest_dir, repo_root] {
         let joined = base.join(raw_path);
         if joined.exists() {
-            push_unique_path(&mut out, joined);
+            push_unique_path(&mut candidates, joined);
         }
     }
-    if out.is_empty()
-        && let Some(dir) = cwd
-    {
-        out.push(dir.join(raw_path));
+    if candidates.is_empty() {
+        if let Some(dir) = cwd {
+            candidates.push(dir.join(raw_path));
+        }
+        return candidates;
     }
-    out
+
+    let containing_active: Vec<PathBuf> = candidates
+        .iter()
+        .filter(|cand| {
+            active_seeds
+                .iter()
+                .any(|seed| seed.exists() && path_is_within(seed, cand))
+        })
+        .cloned()
+        .collect();
+    if !containing_active.is_empty() {
+        containing_active
+    } else {
+        candidates
+    }
 }
 
 fn walk_cargo_tree(root: &Path, depth: usize, max_depth: usize, visit_file: &mut dyn FnMut(&Path)) {
@@ -446,6 +489,7 @@ fn extract_depinfo_rlibs(dep_file: &Path, prefix: &str, out: &mut Vec<PathBuf>) 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn find_rlibs_for_test_with_env(
     deps_dir: &Path,
     prefix: &str,
@@ -454,31 +498,20 @@ fn find_rlibs_for_test_with_env(
     current_exe: Option<&Path>,
     compile_time_bin: Option<&Path>,
     cwd: Option<&Path>,
+    manifest_dir: &Path,
+    repo_root: &Path,
 ) -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or(manifest_dir.as_path())
-        .to_path_buf();
     let stop_dirs = vec![
         std::env::temp_dir(),
-        manifest_dir.clone(),
-        repo_root.clone(),
+        manifest_dir.to_path_buf(),
+        repo_root.to_path_buf(),
     ];
     let preferred_profile =
         active_profile_name(deps_dir).or_else(|| current_exe.and_then(active_profile_name));
 
-    let mut primary_roots = expand_cargo_search_roots(deps_dir, &stop_dirs);
-    for env_opt in [cargo_target_dir, cargo_build_dir].into_iter().flatten() {
-        for resolved in resolve_env_target_dirs(env_opt, cwd, &manifest_dir, &repo_root) {
-            for r in expand_cargo_search_roots(&resolved, &stop_dirs) {
-                push_unique_path(&mut primary_roots, r);
-            }
-            if resolved.is_dir() {
-                push_unique_path(&mut primary_roots, resolved);
-            }
-        }
+    let mut active_seeds: Vec<&Path> = vec![deps_dir];
+    if let Some(exe) = current_exe {
+        active_seeds.push(exe);
     }
 
     let scan_roots = |roots: &[PathBuf], exe_for_depinfo: Option<&Path>| -> Vec<PathBuf> {
@@ -488,7 +521,7 @@ fn find_rlibs_for_test_with_env(
         }
         let mut discovered = Vec::new();
         for root in roots {
-            walk_cargo_tree(root, 0, 8, &mut |file_path| {
+            walk_cargo_tree(root, 0, CARGO_TREE_MAX_DEPTH, &mut |file_path| {
                 if file_path
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -518,12 +551,48 @@ fn find_rlibs_for_test_with_env(
         out
     };
 
-    let exe_in_primary = current_exe.filter(|exe| {
-        primary_roots
+    let mut active_roots = expand_cargo_search_roots(deps_dir, &stop_dirs);
+    if let Some(build_raw) = cargo_build_dir {
+        for resolved in
+            resolve_env_target_dirs(build_raw, &active_seeds, cwd, manifest_dir, repo_root)
+        {
+            for r in expand_cargo_search_roots(&resolved, &stop_dirs) {
+                push_unique_path(&mut active_roots, r);
+            }
+            if resolved.is_dir() {
+                push_unique_path(&mut active_roots, resolved);
+            }
+        }
+    }
+
+    let exe_in_active = current_exe.filter(|exe| {
+        active_roots
             .iter()
-            .any(|root| exe.starts_with(root) || deps_dir.starts_with(root))
+            .any(|root| path_is_within(exe, root) || path_is_within(deps_dir, root))
     });
-    let mut out = scan_roots(&primary_roots, exe_in_primary);
+    let mut out = scan_roots(&active_roots, exe_in_active);
+
+    let mut env_roots = Vec::new();
+    if let Some(target_raw) = cargo_target_dir {
+        for resolved in
+            resolve_env_target_dirs(target_raw, &active_seeds, cwd, manifest_dir, repo_root)
+        {
+            for r in expand_cargo_search_roots(&resolved, &stop_dirs) {
+                push_unique_path(&mut env_roots, r);
+            }
+            if resolved.is_dir() {
+                push_unique_path(&mut env_roots, resolved);
+            }
+        }
+    }
+    if out.is_empty() && !env_roots.is_empty() {
+        let exe_in_env = current_exe.filter(|exe| {
+            env_roots
+                .iter()
+                .any(|root| path_is_within(exe, root) || path_is_within(deps_dir, root))
+        });
+        out = scan_roots(&env_roots, exe_in_env);
+    }
 
     if out.is_empty() {
         let mut fallback_roots = Vec::new();
@@ -539,14 +608,21 @@ fn find_rlibs_for_test_with_env(
 
     assert!(
         !out.is_empty(),
-        "missing {prefix}*.rlib in {} (searched roots: {:?})",
+        "missing {prefix}*.rlib in {} (active_roots={:?}, env_roots={:?})",
         deps_dir.display(),
-        primary_roots
+        active_roots,
+        env_roots
     );
     out
 }
 
 fn find_rlibs_for_current_test(deps_dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(manifest_dir.as_path())
+        .to_path_buf();
     let target_env = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
     let build_env = std::env::var_os("CARGO_BUILD_BUILD_DIR").map(PathBuf::from);
     let exe = std::env::current_exe().ok();
@@ -560,9 +636,12 @@ fn find_rlibs_for_current_test(deps_dir: &Path, prefix: &str) -> Vec<PathBuf> {
         exe.as_deref(),
         Some(compile_bin),
         cwd.as_deref(),
+        &manifest_dir,
+        &repo_root,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_rustc_link_search_dirs_with_env(
     deps_dir: &Path,
     extra_rlibs: &[&Path],
@@ -570,21 +649,23 @@ fn collect_rustc_link_search_dirs_with_env(
     cargo_build_dir: Option<&Path>,
     current_exe: Option<&Path>,
     cwd: Option<&Path>,
+    manifest_dir: &Path,
+    repo_root: &Path,
 ) -> Vec<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or(manifest_dir.as_path())
-        .to_path_buf();
     let stop_dirs = vec![
         std::env::temp_dir(),
-        manifest_dir.clone(),
-        repo_root.clone(),
+        manifest_dir.to_path_buf(),
+        repo_root.to_path_buf(),
     ];
     let preferred_profile = active_profile_name(deps_dir)
         .or_else(|| extra_rlibs.first().and_then(|p| active_profile_name(p)))
         .or_else(|| current_exe.and_then(active_profile_name));
+
+    let mut active_seeds: Vec<&Path> = vec![deps_dir];
+    active_seeds.extend(extra_rlibs.iter().copied());
+    if let Some(exe) = current_exe {
+        active_seeds.push(exe);
+    }
 
     let mut dirs = Vec::new();
     for rlib in extra_rlibs {
@@ -605,7 +686,9 @@ fn collect_rustc_link_search_dirs_with_env(
         }
     }
     for env_opt in [cargo_target_dir, cargo_build_dir].into_iter().flatten() {
-        for resolved in resolve_env_target_dirs(env_opt, cwd, &manifest_dir, &repo_root) {
+        for resolved in
+            resolve_env_target_dirs(env_opt, &active_seeds, cwd, manifest_dir, repo_root)
+        {
             for r in expand_cargo_search_roots(&resolved, &stop_dirs) {
                 push_unique_path(&mut roots, r);
             }
@@ -617,7 +700,7 @@ fn collect_rustc_link_search_dirs_with_env(
 
     let mut discovered_dirs = Vec::new();
     for root in &roots {
-        walk_cargo_tree(root, 0, 8, &mut |file_path| {
+        walk_cargo_tree(root, 0, CARGO_TREE_MAX_DEPTH, &mut |file_path| {
             if file_path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -644,6 +727,12 @@ fn collect_rustc_link_search_dirs_with_env(
 }
 
 fn collect_rustc_link_search_dirs(deps_dir: &Path, extra_rlibs: &[&Path]) -> Vec<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(manifest_dir.as_path())
+        .to_path_buf();
     let target_env = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
     let build_env = std::env::var_os("CARGO_BUILD_BUILD_DIR").map(PathBuf::from);
     let exe = std::env::current_exe().ok();
@@ -655,6 +744,8 @@ fn collect_rustc_link_search_dirs(deps_dir: &Path, extra_rlibs: &[&Path]) -> Vec
         build_env.as_deref(),
         exe.as_deref(),
         cwd.as_deref(),
+        &manifest_dir,
+        &repo_root,
     )
 }
 
@@ -865,6 +956,11 @@ fn three_mode_binaries_pass_self_tests() {
 fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
     let base_tmp = std::env::temp_dir().join(format!("athena-w1-3-target-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base_tmp);
+    let sim_repo_root = base_tmp.join("sim_repo");
+    let sim_manifest_dir = sim_repo_root
+        .join("cloud_experiments")
+        .join("athena_cloudbench");
+    fs::create_dir_all(&sim_manifest_dir).unwrap();
 
     let v1_root = base_tmp.join("v1_custom_target");
     let v1_deps = v1_root.join("debug").join("deps");
@@ -889,15 +985,34 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         None,
         None,
         None,
+        &sim_manifest_dir,
+        &sim_repo_root,
     );
-    let found_v1_url =
-        find_rlibs_for_test_with_env(&v1_tests, "liburl-", Some(&v1_root), None, None, None, None);
+    let found_v1_url = find_rlibs_for_test_with_env(
+        &v1_tests,
+        "liburl-",
+        Some(&v1_root),
+        None,
+        None,
+        None,
+        None,
+        &sim_manifest_dir,
+        &sim_repo_root,
+    );
     assert_eq!(found_v1_core, vec![v1_core]);
     assert_eq!(found_v1_url, vec![v1_url]);
 
     let cwd_sim = base_tmp.join("workspace_cwd");
     let v2_rel = Path::new("test_target_new");
     let v2_root = cwd_sim.join(v2_rel);
+    let stale_repo_target_deps = sim_repo_root.join(v2_rel).join("debug").join("deps");
+    fs::create_dir_all(&stale_repo_target_deps).unwrap();
+    fs::write(
+        stale_repo_target_deps.join("libathena_core_v2-dead0000stale199.rlib"),
+        b"stale_repo_root_decoy",
+    )
+    .unwrap();
+
     let v2_test_exe_dir = v2_root
         .join("debug")
         .join("build")
@@ -932,6 +1047,12 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         .join("debug")
         .join(".fingerprint")
         .join("athena-core-v2-deadbeef");
+    let v2_unit_fp_dir = v2_root
+        .join("debug")
+        .join("build")
+        .join("athena-core-v2")
+        .join("aabbccddeeff0011")
+        .join("fingerprint");
 
     for d in [
         &v2_test_exe_dir,
@@ -940,6 +1061,7 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         &v2_bytes_dir,
         &v2_decoy_url_dir,
         &v2_fp_dir,
+        &v2_unit_fp_dir,
     ] {
         fs::create_dir_all(d).unwrap();
     }
@@ -965,6 +1087,11 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         b"fingerprint_decoy",
     )
     .unwrap();
+    fs::write(
+        v2_unit_fp_dir.join("libathena_core_v2-unitfp.rlib"),
+        b"unit_fingerprint_decoy",
+    )
+    .unwrap();
 
     let found_v2_core = find_rlibs_for_test_with_env(
         &v2_test_exe_dir,
@@ -974,6 +1101,8 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         None,
         None,
         Some(&cwd_sim),
+        &sim_manifest_dir,
+        &sim_repo_root,
     );
     let found_v2_url = find_rlibs_for_test_with_env(
         &v2_test_exe_dir,
@@ -983,6 +1112,8 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         None,
         None,
         Some(&cwd_sim),
+        &sim_manifest_dir,
+        &sim_repo_root,
     );
     assert_eq!(found_v2_core, vec![v2_core_unhashed.clone()]);
     assert_eq!(found_v2_url, vec![v2_url_hashed.clone()]);
@@ -994,11 +1125,40 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         None,
         None,
         Some(&cwd_sim),
+        &sim_manifest_dir,
+        &sim_repo_root,
     );
     assert!(link_dirs.contains(&v2_core_dir));
     assert!(link_dirs.contains(&v2_url_dir));
     assert!(link_dirs.contains(&v2_bytes_dir));
     assert!(!link_dirs.contains(&v2_fp_dir));
+    assert!(!link_dirs.contains(&v2_unit_fp_dir));
+    assert!(!link_dirs.contains(&stale_repo_target_deps));
+
+    let split_target_deps = base_tmp.join("split_target").join("debug").join("deps");
+    let split_build_root = base_tmp.join("external_build_cache");
+    let split_build_core_dir = split_build_root
+        .join("debug")
+        .join("build")
+        .join("athena-core-v2")
+        .join("778899aabbccddee")
+        .join("out");
+    fs::create_dir_all(&split_target_deps).unwrap();
+    fs::create_dir_all(&split_build_core_dir).unwrap();
+    let split_core_rlib = split_build_core_dir.join("libathena_core_v2.rlib");
+    fs::write(&split_core_rlib, b"split_build_dir_rlib").unwrap();
+    let found_split_core = find_rlibs_for_test_with_env(
+        &split_target_deps,
+        "libathena_core_v2-",
+        Some(&base_tmp.join("split_target")),
+        Some(&split_build_root),
+        None,
+        None,
+        None,
+        &sim_manifest_dir,
+        &sim_repo_root,
+    );
+    assert_eq!(found_split_core, vec![split_core_rlib]);
 
     let triple_root = base_tmp.join("triple_target");
     let triple_deps = triple_root
@@ -1017,6 +1177,8 @@ fn w1_3_custom_cargo_target_dir_resolves_rlibs_across_v1_and_v2_layouts() {
         None,
         None,
         None,
+        &sim_manifest_dir,
+        &sim_repo_root,
     );
     assert_eq!(found_triple, vec![triple_core]);
 
@@ -1076,6 +1238,34 @@ fn w1_5_mode_a_mem_arm_selection_and_process_isolation_prevent_cross_arm_contami
         .arg(&html_path)
         .output()
         .expect("run isolated all-arms mode_a_mem");
+
+    #[cfg(unix)]
+    {
+        use std::process::Stdio;
+        let stdin_file = fs::File::open(&html_path).expect("open html_path for stdin redirect");
+        let stdin_out = Command::new(env!("CARGO_BIN_EXE_mode_a_mem"))
+            .args([
+                "--arm",
+                "all",
+                "--isolate-arms",
+                "--url",
+                "https://en.wikipedia.org/wiki/Memory_protection",
+                "--html-file",
+                "/dev/stdin",
+            ])
+            .stdin(Stdio::from(stdin_file))
+            .output()
+            .expect("run isolated mode_a_mem with /dev/stdin file redirect");
+        assert!(
+            stdin_out.status.success(),
+            "isolated /dev/stdin mode_a_mem failed: {}",
+            String::from_utf8_lossy(&stdin_out.stderr)
+        );
+        let stdin_json: serde_json::Value = serde_json::from_slice(&stdin_out.stdout).unwrap();
+        assert_eq!(stdin_json["html_bytes"].as_u64(), Some(html.len() as u64));
+        assert_eq!(stdin_json["arms"].as_object().unwrap().len(), 5);
+    }
+
     let _ = fs::remove_dir_all(&tmp_dir);
     assert!(
         iso_out.status.success(),
@@ -1151,15 +1341,13 @@ fn w1_8_mode_b_pool_emits_thread_cpu_us_and_prevents_cfs_false_quarantines() {
             "1",
             "--soft-budget-ms",
             "50",
-            "--watchdog-ms",
-            "500",
             "--frames-in",
         ])
         .arg(&frames_path)
         .arg("--summary-out")
         .arg(&summary_cpu_path)
         .output()
-        .expect("run mode_b_pool default thread_cpu");
+        .expect("run mode_b_pool default thread_cpu without explicit --watchdog-ms");
     assert!(
         cpu_out.status.success(),
         "mode_b_pool thread_cpu failed: {}",
@@ -1191,6 +1379,9 @@ fn w1_8_mode_b_pool_emits_thread_cpu_us_and_prevents_cfs_false_quarantines() {
     assert_eq!(summary_cpu["ok_records"], 1);
     assert_eq!(summary_cpu["quarantined_records"], 1);
     assert_eq!(summary_cpu["soft_budget_exceeded_records"], 1);
+    assert_eq!(summary_cpu["hard_watchdog_timeouts"], 0);
+    assert_eq!(summary_cpu["worker_respawns"], 0);
+    assert_eq!(summary_cpu["watchdog_ms"], 500);
 
     let wall_out = Command::new(env!("CARGO_BIN_EXE_mode_b_pool"))
         .args([
