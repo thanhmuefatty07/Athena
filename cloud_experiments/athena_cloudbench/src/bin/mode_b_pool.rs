@@ -10,7 +10,7 @@ use athena_cloudbench::bench_common::{
 use athena_cloudbench::framing::{
     DEFAULT_MAX_FRAME_BYTES, RawWarcFrame, encode_raw_warc_frame, read_raw_warc_frame,
 };
-use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile};
+use athena_cloudbench::host_qos::{QosProfile, apply_qos_profile, read_thread_cpu_time_ns};
 use athena_core_v2::projection::{
     BoilerplatePolicy, ParseLimits, Projection, parse_html_breakthrough, parse_html_with_limits,
 };
@@ -31,6 +31,33 @@ use std::time::{Duration, Instant};
 
 const WORKER_READY_MAGIC: &[u8; 4] = b"RDY\n";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BudgetClock {
+    #[default]
+    ThreadCpu,
+    Wall,
+}
+
+impl BudgetClock {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "thread_cpu" | "thread-cpu" => Ok(Self::ThreadCpu),
+            "wall" => Ok(Self::Wall),
+            other => Err(format!(
+                "unsupported --budget-clock '{other}' (expected thread_cpu or wall)"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ThreadCpu => "thread_cpu",
+            Self::Wall => "wall",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PoolConfig {
     internal_slot: Option<usize>,
@@ -39,6 +66,7 @@ struct PoolConfig {
     pin_cpu: Option<usize>,
     watchdog_ms: u64,
     soft_budget_ms: u64,
+    budget_clock: BudgetClock,
     contender: Option<Contender>,
     boilerplate_policy: BoilerplatePolicy,
     charset_mode: CharsetMode,
@@ -59,6 +87,7 @@ struct PoolAccountingSummary {
     hard_watchdog_timeouts: usize,
     worker_respawns: usize,
     soft_budget_ms: u64,
+    budget_clock: &'static str,
     watchdog_ms: u64,
     stage: &'static str,
     boilerplate_policy: Option<&'static str>,
@@ -96,6 +125,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
     let mut pin_cpu: Option<usize> = Some(0);
     let mut watchdog_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
     let mut soft_budget_ms: u64 = DEFAULT_SOFT_BUDGET_MS;
+    let mut budget_clock = BudgetClock::ThreadCpu;
     let mut contender: Option<Contender> = None;
     let mut boilerplate_policy = BoilerplatePolicy::MainContentV1;
     let mut charset_mode = CharsetMode::Utf8Assumed;
@@ -159,6 +189,11 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
                     return Err("--soft-budget-ms must be >= 1".to_owned());
                 }
             }
+            "--budget-clock" => {
+                i += 1;
+                budget_clock =
+                    BudgetClock::parse(args.get(i).ok_or("missing --budget-clock value")?)?;
+            }
             "--contender" => {
                 i += 1;
                 contender = parse_contender_arg(args.get(i).ok_or("missing --contender value")?)?;
@@ -221,6 +256,7 @@ fn parse_cli_args(args: &[String]) -> Result<PoolConfig, String> {
         pin_cpu,
         watchdog_ms,
         soft_budget_ms,
+        budget_clock,
         contender,
         boilerplate_policy,
         charset_mode,
@@ -258,12 +294,54 @@ fn hash_projection(proj: &Projection) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
+fn elapsed_thread_cpu_us(start_ns: Option<u128>) -> u64 {
+    match (start_ns, read_thread_cpu_time_ns()) {
+        (Some(t0), Some(t1)) => (t1.saturating_sub(t0) / 1_000) as u64,
+        _ => 0,
+    }
+}
+
+fn burn_thread_cpu_ms(ms: u64) {
+    if ms == 0 {
+        return;
+    }
+    let target_ns = u128::from(ms)
+        .saturating_mul(1_000_000)
+        .saturating_add(250_000);
+    let wall_cap = Duration::from_millis(ms.saturating_mul(20).max(2_000));
+    let wall_start = Instant::now();
+    if let Some(cpu_start) = read_thread_cpu_time_ns() {
+        let mut acc = 1u64;
+        while read_thread_cpu_time_ns()
+            .unwrap_or(cpu_start)
+            .saturating_sub(cpu_start)
+            < target_ns
+            && wall_start.elapsed() < wall_cap
+        {
+            for _ in 0..256 {
+                acc = std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
+        }
+        let _ = std::hint::black_box(acc);
+    } else {
+        let target_wall = Duration::from_millis(ms);
+        let mut acc = 1u64;
+        while wall_start.elapsed() < target_wall {
+            for _ in 0..256 {
+                acc = std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
+        }
+        let _ = std::hint::black_box(acc);
+    }
+}
+
 struct ArmRunOutcome {
     utf8_valid: bool,
     status: &'static str,
     units: usize,
     blake3: String,
     elapsed_us: u64,
+    thread_cpu_us: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -276,10 +354,15 @@ fn run_timed_rust_arm(
     max_input_bytes: usize,
     charset_mode: CharsetMode,
     stall_ms: u64,
+    cfs_sleep_ms: u64,
 ) -> ArmRunOutcome {
     let t_arm = Instant::now();
+    let cpu_arm = read_thread_cpu_time_ns();
     if stall_ms > 0 {
-        thread::sleep(Duration::from_millis(stall_ms));
+        burn_thread_cpu_ms(stall_ms);
+    }
+    if cfs_sleep_ms > 0 {
+        thread::sleep(Duration::from_millis(cfs_sleep_ms));
     }
     let decoded = match decode_html_bytes(raw_body, raw_headers, max_input_bytes, charset_mode) {
         Ok(s) => s,
@@ -290,6 +373,7 @@ fn run_timed_rust_arm(
                 units: 0,
                 blake3: String::new(),
                 elapsed_us: t_arm.elapsed().as_micros() as u64,
+                thread_cpu_us: elapsed_thread_cpu_us(cpu_arm),
             };
         }
     };
@@ -310,6 +394,7 @@ fn run_timed_rust_arm(
         units,
         blake3,
         elapsed_us: t_arm.elapsed().as_micros() as u64,
+        thread_cpu_us: elapsed_thread_cpu_us(cpu_arm),
     }
 }
 
@@ -323,10 +408,15 @@ fn run_timed_lexbor_arm(
     max_input_bytes: usize,
     charset_mode: CharsetMode,
     stall_ms: u64,
+    cfs_sleep_ms: u64,
 ) -> ArmRunOutcome {
     let t_arm = Instant::now();
+    let cpu_arm = read_thread_cpu_time_ns();
     if stall_ms > 0 {
-        thread::sleep(Duration::from_millis(stall_ms));
+        burn_thread_cpu_ms(stall_ms);
+    }
+    if cfs_sleep_ms > 0 {
+        thread::sleep(Duration::from_millis(cfs_sleep_ms));
     }
     let decoded = match decode_html_bytes(raw_body, raw_headers, max_input_bytes, charset_mode) {
         Ok(s) => s,
@@ -337,6 +427,7 @@ fn run_timed_lexbor_arm(
                 units: 0,
                 blake3: String::new(),
                 elapsed_us: t_arm.elapsed().as_micros() as u64,
+                thread_cpu_us: elapsed_thread_cpu_us(cpu_arm),
             };
         }
     };
@@ -380,6 +471,7 @@ fn run_timed_lexbor_arm(
         units,
         blake3,
         elapsed_us: t_arm.elapsed().as_micros() as u64,
+        thread_cpu_us: elapsed_thread_cpu_us(cpu_arm),
     }
 }
 
@@ -482,20 +574,34 @@ fn evaluate_worker_frame(
     qos_profile: &'static str,
     base_limits: ParseLimits,
 ) -> Value {
+    let frame_cpu_start = read_thread_cpu_time_ns();
     let common_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-stall-ms").unwrap_or(0);
     let track_a_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-tracka-stall-ms")
         .unwrap_or(common_stall_ms);
     let lexbor_stall_ms = parse_header_u64(&frame.headers, b"x-athena-test-lexbor-stall-ms")
         .unwrap_or(common_stall_ms);
 
+    let common_cfs_sleep_ms =
+        parse_header_u64(&frame.headers, b"x-athena-test-cfs-sleep-ms").unwrap_or(0);
+    let track_a_cfs_sleep_ms =
+        parse_header_u64(&frame.headers, b"x-athena-test-tracka-cfs-sleep-ms")
+            .unwrap_or(common_cfs_sleep_ms);
+    let lexbor_cfs_sleep_ms =
+        parse_header_u64(&frame.headers, b"x-athena-test-lexbor-cfs-sleep-ms")
+            .unwrap_or(common_cfs_sleep_ms);
+
     let uri_utf8 = std::str::from_utf8(&frame.uri).ok();
     let parsed_url = uri_utf8.and_then(|u| validate_real_url(u).ok());
     let within_input_cap = frame.raw_body_bytes.len() <= cfg.max_input_bytes;
 
     let mut contender_timings_us = serde_json::Map::new();
+    let mut contender_thread_cpu_timings_us = serde_json::Map::new();
     let mut track_a_elapsed_us: Option<u64> = None;
+    let mut track_a_thread_cpu_us: Option<u64> = None;
     let mut lexbor_pure_elapsed_us: Option<u64> = None;
+    let mut lexbor_pure_thread_cpu_us: Option<u64> = None;
     let mut contender_elapsed_us: Option<u64> = None;
+    let mut contender_thread_cpu_us: Option<u64> = None;
     let mut worker_elapsed_us: Option<u64> = None;
     let mut contender_dom_nodes: Option<usize> = None;
     let mut track_a_utf8_valid = false;
@@ -512,7 +618,10 @@ fn evaluate_worker_frame(
     ) = match (uri_utf8, &parsed_url) {
         (_, None) | (None, _) => {
             if common_stall_ms > 0 {
-                thread::sleep(Duration::from_millis(common_stall_ms));
+                burn_thread_cpu_ms(common_stall_ms);
+            }
+            if common_cfs_sleep_ms > 0 {
+                thread::sleep(Duration::from_millis(common_cfs_sleep_ms));
             }
             (
                 "INVALID_RAW_URI",
@@ -528,7 +637,10 @@ fn evaluate_worker_frame(
         (Some(_), Some(url)) => {
             if !within_input_cap {
                 if common_stall_ms > 0 {
-                    thread::sleep(Duration::from_millis(common_stall_ms));
+                    burn_thread_cpu_ms(common_stall_ms);
+                }
+                if common_cfs_sleep_ms > 0 {
+                    thread::sleep(Duration::from_millis(common_cfs_sleep_ms));
                 }
                 (
                     "INPUT_EXCEEDS_MAX_BYTES",
@@ -552,6 +664,7 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             track_a_stall_ms,
+                            track_a_cfs_sleep_ms,
                         );
                         let lx = run_timed_lexbor_arm(
                             Contender::LexborPure,
@@ -562,17 +675,29 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             lexbor_stall_ms,
+                            lexbor_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = ta.utf8_valid;
                         track_a_elapsed_us = Some(ta.elapsed_us);
+                        track_a_thread_cpu_us = Some(ta.thread_cpu_us);
                         lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                        lexbor_pure_thread_cpu_us = Some(lx.thread_cpu_us);
                         contender_timings_us
                             .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
                         contender_timings_us.insert(
                             Contender::LexborPure.as_str().to_owned(),
                             json!(lx.elapsed_us),
                         );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::Legacy.as_str().to_owned(),
+                            json!(ta.thread_cpu_us),
+                        );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::LexborPure.as_str().to_owned(),
+                            json!(lx.thread_cpu_us),
+                        );
                         contender_elapsed_us = None;
+                        contender_thread_cpu_us = None;
                         worker_elapsed_us = None;
                         (
                             ta.status,
@@ -595,13 +720,20 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             track_a_stall_ms,
+                            track_a_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = ta.utf8_valid;
                         track_a_elapsed_us = Some(ta.elapsed_us);
+                        track_a_thread_cpu_us = Some(ta.thread_cpu_us);
                         contender_elapsed_us = Some(ta.elapsed_us);
+                        contender_thread_cpu_us = Some(ta.thread_cpu_us);
                         worker_elapsed_us = Some(ta.elapsed_us);
                         contender_timings_us
                             .insert(Contender::Legacy.as_str().to_owned(), json!(ta.elapsed_us));
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::Legacy.as_str().to_owned(),
+                            json!(ta.thread_cpu_us),
+                        );
                         (
                             ta.status,
                             ta.units,
@@ -623,13 +755,19 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             track_a_stall_ms,
+                            track_a_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = bt.utf8_valid;
                         contender_elapsed_us = Some(bt.elapsed_us);
+                        contender_thread_cpu_us = Some(bt.thread_cpu_us);
                         worker_elapsed_us = Some(bt.elapsed_us);
                         contender_timings_us.insert(
                             Contender::Breakthrough.as_str().to_owned(),
                             json!(bt.elapsed_us),
+                        );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::Breakthrough.as_str().to_owned(),
+                            json!(bt.thread_cpu_us),
                         );
                         (
                             "SKIPPED",
@@ -652,14 +790,21 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             lexbor_stall_ms,
+                            lexbor_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = lx.utf8_valid;
                         lexbor_pure_elapsed_us = Some(lx.elapsed_us);
+                        lexbor_pure_thread_cpu_us = Some(lx.thread_cpu_us);
                         contender_elapsed_us = Some(lx.elapsed_us);
+                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborPure.as_str().to_owned(),
                             json!(lx.elapsed_us),
+                        );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::LexborPure.as_str().to_owned(),
+                            json!(lx.thread_cpu_us),
                         );
                         (
                             "SKIPPED",
@@ -682,13 +827,19 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             lexbor_stall_ms,
+                            lexbor_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = lx.utf8_valid;
                         contender_elapsed_us = Some(lx.elapsed_us);
+                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborStageIr.as_str().to_owned(),
                             json!(lx.elapsed_us),
+                        );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::LexborStageIr.as_str().to_owned(),
+                            json!(lx.thread_cpu_us),
                         );
                         (
                             "SKIPPED",
@@ -711,14 +862,20 @@ fn evaluate_worker_frame(
                             cfg.max_input_bytes,
                             cfg.charset_mode,
                             lexbor_stall_ms,
+                            lexbor_cfs_sleep_ms,
                         );
                         track_a_utf8_valid = lx.utf8_valid;
                         contender_dom_nodes = Some(lx.units);
                         contender_elapsed_us = Some(lx.elapsed_us);
+                        contender_thread_cpu_us = Some(lx.thread_cpu_us);
                         worker_elapsed_us = Some(lx.elapsed_us);
                         contender_timings_us.insert(
                             Contender::LexborMinimal.as_str().to_owned(),
                             json!(lx.elapsed_us),
+                        );
+                        contender_thread_cpu_timings_us.insert(
+                            Contender::LexborMinimal.as_str().to_owned(),
+                            json!(lx.thread_cpu_us),
                         );
                         (
                             "SKIPPED",
@@ -736,10 +893,13 @@ fn evaluate_worker_frame(
         }
     };
 
+    let thread_cpu_us = elapsed_thread_cpu_us(frame_cpu_start);
+
     json!({
         "status": "OK",
         "worker_slot": slot,
         "qos": qos_profile,
+        "budget_clock": cfg.budget_clock.as_str(),
         "stage": pool_stage_str(cfg.contender),
         "boilerplate_policy": pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
         "charset_mode": cfg.charset_mode.as_str(),
@@ -753,57 +913,111 @@ fn evaluate_worker_frame(
         "track_a_chunks": track_a_chunks,
         "track_a_blake3": track_a_blake3,
         "track_a_elapsed_us": track_a_elapsed_us,
+        "track_a_thread_cpu_us": track_a_thread_cpu_us,
         "lexbor_pure_status": lexbor_status,
         "lexbor_pure_chunks": lexbor_chunks,
         "lexbor_pure_elapsed_us": lexbor_pure_elapsed_us,
+        "lexbor_pure_thread_cpu_us": lexbor_pure_thread_cpu_us,
         "contender_status": contender_status,
         "contender_chunks": contender_chunks,
         "contender_dom_nodes": contender_dom_nodes,
         "contender_blake3": contender_blake3,
         "contender_elapsed_us": contender_elapsed_us,
+        "contender_thread_cpu_us": contender_thread_cpu_us,
         "contender_timings_us": contender_timings_us,
+        "contender_thread_cpu_timings_us": contender_thread_cpu_timings_us,
         "worker_elapsed_us": worker_elapsed_us,
+        "thread_cpu_us": thread_cpu_us,
     })
 }
 
-fn apply_soft_budget_to_response(val: &mut Value, wall_us: u64, soft_budget_ms: u64) {
+fn apply_soft_budget_to_response(
+    val: &mut Value,
+    wall_us: u64,
+    soft_budget_ms: u64,
+    budget_clock: BudgetClock,
+) {
     let soft_budget_us = soft_budget_ms.saturating_mul(1_000);
     let status_is_ok = val.get("status").and_then(Value::as_str) == Some("OK");
 
     let mut per_arm_exceeded = serde_json::Map::new();
-    let exceeded = if let Some(timings) = val
-        .get("contender_timings_us")
-        .and_then(Value::as_object)
-        .filter(|m| !m.is_empty())
-    {
-        let mut any_arm_exceeded = false;
-        let mut sum_arm_us = 0u64;
-        for (name, v) in timings {
-            let us = v.as_u64().unwrap_or(0);
-            let over = us > soft_budget_us;
-            if over {
-                any_arm_exceeded = true;
+    let exceeded = match budget_clock {
+        BudgetClock::ThreadCpu => {
+            if let Some(cpu_timings) = val
+                .get("contender_thread_cpu_timings_us")
+                .and_then(Value::as_object)
+                .filter(|m| !m.is_empty())
+            {
+                let mut any_arm_exceeded = false;
+                let mut sum_arm_cpu_us = 0u64;
+                for (name, v) in cpu_timings {
+                    let us = v.as_u64().unwrap_or(0);
+                    let over = us > soft_budget_us;
+                    if over {
+                        any_arm_exceeded = true;
+                    }
+                    sum_arm_cpu_us = sum_arm_cpu_us.saturating_add(us);
+                    per_arm_exceeded.insert(name.clone(), json!(over));
+                }
+                let total_cpu_us = val
+                    .get("thread_cpu_us")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(sum_arm_cpu_us);
+                if cpu_timings.len() >= 2 {
+                    let extra_cpu_us = total_cpu_us.saturating_sub(sum_arm_cpu_us);
+                    any_arm_exceeded || extra_cpu_us > soft_budget_us
+                } else {
+                    any_arm_exceeded || total_cpu_us > soft_budget_us
+                }
+            } else {
+                let single_cpu_us = val
+                    .get("contender_thread_cpu_us")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let total_cpu_us = val
+                    .get("thread_cpu_us")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(single_cpu_us);
+                total_cpu_us > soft_budget_us || single_cpu_us > soft_budget_us
             }
-            sum_arm_us = sum_arm_us.saturating_add(us);
-            per_arm_exceeded.insert(name.clone(), json!(over));
         }
-        if timings.len() >= 2 {
-            let ipc_overhead_us = wall_us.saturating_sub(sum_arm_us);
-            any_arm_exceeded || ipc_overhead_us > soft_budget_us
-        } else {
-            any_arm_exceeded || wall_us > soft_budget_us
+        BudgetClock::Wall => {
+            if let Some(timings) = val
+                .get("contender_timings_us")
+                .and_then(Value::as_object)
+                .filter(|m| !m.is_empty())
+            {
+                let mut any_arm_exceeded = false;
+                let mut sum_arm_us = 0u64;
+                for (name, v) in timings {
+                    let us = v.as_u64().unwrap_or(0);
+                    let over = us > soft_budget_us;
+                    if over {
+                        any_arm_exceeded = true;
+                    }
+                    sum_arm_us = sum_arm_us.saturating_add(us);
+                    per_arm_exceeded.insert(name.clone(), json!(over));
+                }
+                if timings.len() >= 2 {
+                    let ipc_overhead_us = wall_us.saturating_sub(sum_arm_us);
+                    any_arm_exceeded || ipc_overhead_us > soft_budget_us
+                } else {
+                    any_arm_exceeded || wall_us > soft_budget_us
+                }
+            } else {
+                let single_worker_us = val
+                    .get("contender_elapsed_us")
+                    .and_then(Value::as_u64)
+                    .or_else(|| val.get("worker_elapsed_us").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                wall_us > soft_budget_us || single_worker_us > soft_budget_us
+            }
         }
-    } else {
-        let single_worker_us = val
-            .get("contender_elapsed_us")
-            .and_then(Value::as_u64)
-            .or_else(|| val.get("worker_elapsed_us").and_then(Value::as_u64))
-            .unwrap_or(0);
-        wall_us > soft_budget_us || single_worker_us > soft_budget_us
     };
 
     if let Some(obj) = val.as_object_mut() {
         obj.insert("soft_budget_ms".into(), json!(soft_budget_ms));
+        obj.insert("budget_clock".into(), json!(budget_clock.as_str()));
         obj.insert("soft_budget_exceeded".into(), json!(exceeded));
         if !per_arm_exceeded.is_empty() {
             obj.insert(
@@ -868,6 +1082,7 @@ fn summarize_pool_records(records: &[Value], cfg: &PoolConfig) -> PoolAccounting
         hard_watchdog_timeouts,
         worker_respawns,
         soft_budget_ms: cfg.soft_budget_ms,
+        budget_clock: cfg.budget_clock.as_str(),
         watchdog_ms: cfg.watchdog_ms,
         stage: pool_stage_str(cfg.contender),
         boilerplate_policy: pool_boilerplate_policy_str(cfg.contender, cfg.boilerplate_policy),
@@ -908,6 +1123,8 @@ impl ManagedWorker {
             .arg(cfg.watchdog_ms.to_string())
             .arg("--soft-budget-ms")
             .arg(cfg.soft_budget_ms.to_string())
+            .arg("--budget-clock")
+            .arg(cfg.budget_clock.as_str())
             .arg("--contender")
             .arg(cfg.contender.map(Contender::as_str).unwrap_or("all"))
             .arg("--boilerplate-policy")
@@ -993,6 +1210,11 @@ impl ManagedWorker {
             Some(pipe) => pipe.write_all(&wire).and_then(|()| pipe.flush()).is_err(),
             None => true,
         };
+        let budget_clock = self.cfg.budget_clock;
+        let err_soft_exceeded = move |wall_us: u64| match budget_clock {
+            BudgetClock::ThreadCpu => false,
+            BudgetClock::Wall => wall_us > soft_budget_us,
+        };
         if write_failed {
             self.kill_and_respawn()?;
             let wall_us = t0.elapsed().as_micros() as u64;
@@ -1003,10 +1225,12 @@ impl ManagedWorker {
                 "worker_slot": self.slot,
                 "worker_respawned": true,
                 "soft_budget_ms": self.cfg.soft_budget_ms,
-                "soft_budget_exceeded": wall_us > soft_budget_us,
+                "budget_clock": self.cfg.budget_clock.as_str(),
+                "soft_budget_exceeded": err_soft_exceeded(wall_us),
                 "uri_lossy": String::from_utf8_lossy(&frame.uri),
                 "raw_body_bytes": frame.raw_body_bytes.len(),
                 "wall_us": wall_us,
+                "thread_cpu_us": Value::Null,
             }));
         }
 
@@ -1024,10 +1248,12 @@ impl ManagedWorker {
                             "worker_slot": self.slot,
                             "worker_respawned": true,
                             "soft_budget_ms": self.cfg.soft_budget_ms,
-                            "soft_budget_exceeded": wall_us > soft_budget_us,
+                            "budget_clock": self.cfg.budget_clock.as_str(),
+                            "soft_budget_exceeded": err_soft_exceeded(wall_us),
                             "uri_lossy": String::from_utf8_lossy(&frame.uri),
                             "raw_body_bytes": frame.raw_body_bytes.len(),
                             "wall_us": wall_us,
+                            "thread_cpu_us": Value::Null,
                         }));
                     }
                 };
@@ -1035,7 +1261,12 @@ impl ManagedWorker {
                     obj.insert("record_index".into(), json!(record_index));
                     obj.insert("wall_us".into(), json!(wall_us));
                 }
-                apply_soft_budget_to_response(&mut val, wall_us, self.cfg.soft_budget_ms);
+                apply_soft_budget_to_response(
+                    &mut val,
+                    wall_us,
+                    self.cfg.soft_budget_ms,
+                    self.cfg.budget_clock,
+                );
                 Ok(val)
             }
             Ok(Err(pipe_err)) => {
@@ -1048,10 +1279,12 @@ impl ManagedWorker {
                     "worker_slot": self.slot,
                     "worker_respawned": true,
                     "soft_budget_ms": self.cfg.soft_budget_ms,
-                    "soft_budget_exceeded": wall_us > soft_budget_us,
+                    "budget_clock": self.cfg.budget_clock.as_str(),
+                    "soft_budget_exceeded": err_soft_exceeded(wall_us),
                     "uri_lossy": String::from_utf8_lossy(&frame.uri),
                     "raw_body_bytes": frame.raw_body_bytes.len(),
                     "wall_us": wall_us,
+                    "thread_cpu_us": Value::Null,
                 }))
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -1064,11 +1297,13 @@ impl ManagedWorker {
                     "worker_slot": self.slot,
                     "worker_respawned": true,
                     "soft_budget_ms": self.cfg.soft_budget_ms,
-                    "soft_budget_exceeded": elapsed_us > soft_budget_us,
+                    "budget_clock": self.cfg.budget_clock.as_str(),
+                    "soft_budget_exceeded": err_soft_exceeded(elapsed_us),
                     "uri_lossy": String::from_utf8_lossy(&frame.uri),
                     "raw_body_bytes": frame.raw_body_bytes.len(),
                     "watchdog_elapsed_us": elapsed_us,
                     "wall_us": t0.elapsed().as_micros() as u64,
+                    "thread_cpu_us": Value::Null,
                 }))
             }
             Err(RecvTimeoutError::Disconnected) => {
@@ -1081,10 +1316,12 @@ impl ManagedWorker {
                     "worker_slot": self.slot,
                     "worker_respawned": true,
                     "soft_budget_ms": self.cfg.soft_budget_ms,
-                    "soft_budget_exceeded": wall_us > soft_budget_us,
+                    "budget_clock": self.cfg.budget_clock.as_str(),
+                    "soft_budget_exceeded": err_soft_exceeded(wall_us),
                     "uri_lossy": String::from_utf8_lossy(&frame.uri),
                     "raw_body_bytes": frame.raw_body_bytes.len(),
                     "wall_us": wall_us,
+                    "thread_cpu_us": Value::Null,
                 }))
             }
         }
@@ -1228,6 +1465,7 @@ fn run_self_test() -> Result<(), String> {
         pin_cpu: None,
         watchdog_ms: 50,
         soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
+        budget_clock: BudgetClock::ThreadCpu,
         contender: None,
         boilerplate_policy: BoilerplatePolicy::MainContentV1,
         charset_mode: CharsetMode::Utf8Assumed,
@@ -1319,6 +1557,16 @@ fn run_self_test() -> Result<(), String> {
         .map_err(|e| e.to_string())?,
     );
 
+    let url_cfs = "https://en.wikipedia.org/wiki/Cfs_bandwidth_throttle";
+    let _ = validate_real_url(url_cfs)?;
+    let cfs_frame = encode_raw_warc_frame(
+        url_cfs.as_bytes(),
+        b"HTTP/1.1 200 OK\r\nX-Athena-Test-TrackA-Cfs-Sleep-Ms: 75\r\nContent-Type: text/html; charset=utf-8\r\n\r\n",
+        b"<html><body><main><article><h1>CFS Throttled Benign Page</h1><p>Under 1ms thread CPU with 75ms CFS sleep pause must not trigger false PAGE_QUARANTINED under thread_cpu clock.</p></article></main></body></html>",
+    )
+    .map_err(|e| e.to_string())?;
+    stream2.extend_from_slice(&cfs_frame);
+
     let cfg2 = PoolConfig {
         internal_slot: None,
         qos: QosProfile::Worker,
@@ -1326,6 +1574,7 @@ fn run_self_test() -> Result<(), String> {
         pin_cpu: None,
         watchdog_ms: 500,
         soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
+        budget_clock: BudgetClock::ThreadCpu,
         contender: None,
         boilerplate_policy: BoilerplatePolicy::MainContentV1,
         charset_mode: CharsetMode::SniffingEnabled,
@@ -1338,9 +1587,9 @@ fn run_self_test() -> Result<(), String> {
     };
 
     let results2 = execute_pool_stream(Cursor::new(stream2), &cfg2)?;
-    if results2.len() != 3 {
+    if results2.len() != 4 {
         return Err(format!(
-            "stream2 expected 3 records, got {}",
+            "stream2 expected 4 records, got {}",
             results2.len()
         ));
     }
@@ -1377,14 +1626,39 @@ fn run_self_test() -> Result<(), String> {
         ));
     }
 
+    if results2[3]["status"] != "OK"
+        || results2[3]["soft_budget_exceeded"] != false
+        || results2[3]["wall_us"].as_u64().unwrap_or(0) < 70_000
+        || results2[3]["thread_cpu_us"].as_u64().unwrap_or(u64::MAX) >= 40_000
+    {
+        return Err(format!(
+            "stream2 CFS sleep immunity under thread_cpu failed: {}",
+            results2[3]
+        ));
+    }
+
     let accounting2 = summarize_pool_records(&results2, &cfg2);
     if accounting2.soft_budget_exceeded_records != 1
-        || accounting2.ok_records != 2
+        || accounting2.ok_records != 3
         || accounting2.hard_watchdog_timeouts != 0
     {
         return Err(format!(
             "stream2 soft-budget accounting mismatch: {:?}",
             accounting2
+        ));
+    }
+
+    let mut cfg_wall = cfg2.clone();
+    cfg_wall.budget_clock = BudgetClock::Wall;
+    let results_wall = execute_pool_stream(Cursor::new(cfs_frame), &cfg_wall)?;
+    if results_wall.len() != 1
+        || results_wall[0]["status"] != "PAGE_QUARANTINED"
+        || results_wall[0]["quarantine_reason"] != "SOFT_BUDGET_50MS_EXCEEDED"
+        || results_wall[0]["soft_budget_exceeded"] != true
+    {
+        return Err(format!(
+            "wall budget_clock failed to quarantine 75ms wall pause: {:?}",
+            results_wall
         ));
     }
 
@@ -1544,6 +1818,7 @@ mod tests {
                 pin_cpu: None,
                 watchdog_ms: 500,
                 soft_budget_ms: DEFAULT_SOFT_BUDGET_MS,
+                budget_clock: BudgetClock::ThreadCpu,
                 contender: Some(contender),
                 boilerplate_policy: BoilerplatePolicy::MainContentV1,
                 charset_mode: CharsetMode::Utf8Assumed,
@@ -1555,7 +1830,7 @@ mod tests {
                 self_test: false,
             };
             let mut v = evaluate_worker_frame(&frame, &cfg, 0, "worker", base_limits);
-            apply_soft_budget_to_response(&mut v, 1_500, cfg.soft_budget_ms);
+            apply_soft_budget_to_response(&mut v, 1_500, cfg.soft_budget_ms, cfg.budget_clock);
             v
         };
 
@@ -1606,7 +1881,7 @@ mod tests {
                 "lexbor_pure": 29_000_u64,
             },
         });
-        apply_soft_budget_to_response(&mut dual_fast, 66_000, 50);
+        apply_soft_budget_to_response(&mut dual_fast, 66_000, 50, BudgetClock::Wall);
         assert_eq!(dual_fast["status"], "OK");
         assert_eq!(dual_fast["soft_budget_exceeded"], false);
         assert_eq!(dual_fast["contender_soft_budget_exceeded"]["legacy"], false);
@@ -1626,7 +1901,7 @@ mod tests {
                 "lexbor_pure": 8_000_u64,
             },
         });
-        apply_soft_budget_to_response(&mut one_slow, 67_000, 50);
+        apply_soft_budget_to_response(&mut one_slow, 67_000, 50, BudgetClock::Wall);
         assert_eq!(one_slow["status"], "PAGE_QUARANTINED");
         assert_eq!(one_slow["soft_budget_exceeded"], true);
         assert_eq!(one_slow["contender_soft_budget_exceeded"]["legacy"], true);
@@ -1659,12 +1934,15 @@ mod tests {
         ]))
         .expect("parse pool cli");
 
+        assert_eq!(cfg.budget_clock, BudgetClock::ThreadCpu);
+
         let mut slow_ok = json!({
             "record_index": 0,
             "status": "OK",
             "worker_elapsed_us": 62_500_u64,
+            "thread_cpu_us": 62_500_u64,
         });
-        apply_soft_budget_to_response(&mut slow_ok, 63_000, cfg.soft_budget_ms);
+        apply_soft_budget_to_response(&mut slow_ok, 63_000, cfg.soft_budget_ms, cfg.budget_clock);
         assert_eq!(slow_ok["status"], "PAGE_QUARANTINED");
         assert_eq!(slow_ok["quarantine_reason"], "SOFT_BUDGET_50MS_EXCEEDED");
         assert_eq!(slow_ok["soft_budget_exceeded"], true);
@@ -1674,8 +1952,9 @@ mod tests {
             "record_index": 1,
             "status": "OK",
             "worker_elapsed_us": 1_200_u64,
+            "thread_cpu_us": 900_u64,
         });
-        apply_soft_budget_to_response(&mut fast_ok, 1_500, cfg.soft_budget_ms);
+        apply_soft_budget_to_response(&mut fast_ok, 1_500, cfg.soft_budget_ms, cfg.budget_clock);
         assert_eq!(fast_ok["status"], "OK");
         assert_eq!(fast_ok["soft_budget_exceeded"], false);
 
@@ -1737,5 +2016,97 @@ mod tests {
         assert_eq!(cfg.boilerplate_policy, BoilerplatePolicy::FullDom);
         assert_eq!(cfg.charset_mode, CharsetMode::SniffingEnabled);
         assert_eq!(cfg.contender, Some(Contender::Breakthrough));
+        assert_eq!(cfg.budget_clock, BudgetClock::ThreadCpu);
+
+        let wall_cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--budget-clock",
+            "wall",
+        ]))
+        .expect("wall budget clock");
+        assert_eq!(wall_cfg.budget_clock, BudgetClock::Wall);
+
+        let cpu_cfg = parse_cli_args(&s(&[
+            "mode_b_pool",
+            "--url",
+            "https://en.wikipedia.org/wiki/Rust",
+            "--budget-clock",
+            "thread_cpu",
+        ]))
+        .expect("thread_cpu budget clock");
+        assert_eq!(cpu_cfg.budget_clock, BudgetClock::ThreadCpu);
+
+        assert!(
+            parse_cli_args(&s(&[
+                "mode_b_pool",
+                "--url",
+                "https://en.wikipedia.org/wiki/Rust",
+                "--budget-clock",
+                "monotonic_bogus",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cfs_sleep_pause_does_not_falsely_quarantine_under_thread_cpu_but_cpu_spike_does() {
+        let mut cfs_throttled = json!({
+            "record_index": 0,
+            "status": "OK",
+            "contender_elapsed_us": 81_200_u64,
+            "worker_elapsed_us": 81_200_u64,
+            "contender_thread_cpu_us": 620_u64,
+            "thread_cpu_us": 680_u64,
+            "contender_timings_us": {
+                "breakthrough": 81_200_u64,
+            },
+            "contender_thread_cpu_timings_us": {
+                "breakthrough": 620_u64,
+            },
+        });
+        let mut wall_copy = cfs_throttled.clone();
+
+        apply_soft_budget_to_response(&mut cfs_throttled, 82_000, 50, BudgetClock::ThreadCpu);
+        assert_eq!(cfs_throttled["status"], "OK");
+        assert_eq!(cfs_throttled["soft_budget_exceeded"], false);
+        assert_eq!(cfs_throttled["budget_clock"], "thread_cpu");
+        assert_eq!(
+            cfs_throttled["contender_soft_budget_exceeded"]["breakthrough"],
+            false
+        );
+
+        apply_soft_budget_to_response(&mut wall_copy, 82_000, 50, BudgetClock::Wall);
+        assert_eq!(wall_copy["status"], "PAGE_QUARANTINED");
+        assert_eq!(wall_copy["quarantine_reason"], "SOFT_BUDGET_50MS_EXCEEDED");
+        assert_eq!(wall_copy["soft_budget_exceeded"], true);
+        assert_eq!(wall_copy["budget_clock"], "wall");
+
+        let mut quadratic_cpu_pill = json!({
+            "record_index": 1,
+            "status": "OK",
+            "contender_elapsed_us": 64_000_u64,
+            "worker_elapsed_us": 64_000_u64,
+            "contender_thread_cpu_us": 63_400_u64,
+            "thread_cpu_us": 63_500_u64,
+            "contender_timings_us": {
+                "breakthrough": 64_000_u64,
+            },
+            "contender_thread_cpu_timings_us": {
+                "breakthrough": 63_400_u64,
+            },
+        });
+        apply_soft_budget_to_response(&mut quadratic_cpu_pill, 65_000, 50, BudgetClock::ThreadCpu);
+        assert_eq!(quadratic_cpu_pill["status"], "PAGE_QUARANTINED");
+        assert_eq!(
+            quadratic_cpu_pill["quarantine_reason"],
+            "SOFT_BUDGET_50MS_EXCEEDED"
+        );
+        assert_eq!(quadratic_cpu_pill["soft_budget_exceeded"], true);
+        assert_eq!(
+            quadratic_cpu_pill["contender_soft_budget_exceeded"]["breakthrough"],
+            true
+        );
     }
 }

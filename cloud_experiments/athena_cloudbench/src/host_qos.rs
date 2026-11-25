@@ -262,6 +262,52 @@ fn read_rusage_max_rss_bytes() -> u64 {
     }
 }
 
+/// Advises the host system allocator to return unused free pages to the OS kernel.
+pub fn release_allocator_free_pages() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut libc::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: Passing null zone and goal=0 relieves cached free pages across all malloc zones.
+        unsafe {
+            let _ = malloc_zone_pressure_relief(std::ptr::null_mut(), 0);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: `malloc_trim(0)` returns unused free arena pages to the Linux kernel.
+        unsafe {
+            let _ = libc::malloc_trim(0);
+        }
+    }
+}
+
+/// Reads per-thread CPU execution time in nanoseconds via `CLOCK_THREAD_CPUTIME_ID`.
+pub fn read_thread_cpu_time_ns() -> Option<u128> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut ts = std::mem::MaybeUninit::<libc::timespec>::zeroed();
+        // SAFETY: `ts` points to a valid writable `libc::timespec` populated by `clock_gettime`.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, ts.as_mut_ptr()) };
+        if rc == 0 {
+            // SAFETY: `clock_gettime` returned 0, initializing `ts`.
+            let init = unsafe { ts.assume_init() };
+            let secs = u128::try_from(init.tv_sec).ok()?;
+            let nsecs = u128::try_from(init.tv_nsec).ok()?;
+            Some(secs.saturating_mul(1_000_000_000).saturating_add(nsecs))
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +343,35 @@ Anonymous:          8100 kB
         let snap = read_os_memory_snapshot();
         assert!(snap.phys_footprint_bytes > 0);
         assert!(snap.max_rss_bytes > 0);
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn thread_cpu_clock_ignores_scheduler_sleep_and_tracks_cpu_work() {
+        let wall_start = std::time::Instant::now();
+        let cpu_before_sleep = read_thread_cpu_time_ns().expect("CLOCK_THREAD_CPUTIME_ID");
+        std::thread::sleep(std::time::Duration::from_millis(45));
+        let cpu_after_sleep = read_thread_cpu_time_ns().expect("CLOCK_THREAD_CPUTIME_ID");
+        let sleep_wall_ns = wall_start.elapsed().as_nanos();
+        let sleep_cpu_ns = cpu_after_sleep.saturating_sub(cpu_before_sleep);
+        assert!(sleep_wall_ns >= 40_000_000, "sleep_wall_ns={sleep_wall_ns}");
+        assert!(
+            sleep_cpu_ns < 15_000_000,
+            "sleeping thread must not accumulate wall sleep as CPU time: sleep_cpu_ns={sleep_cpu_ns}"
+        );
+
+        let mut acc = 1u64;
+        while read_thread_cpu_time_ns()
+            .expect("CLOCK_THREAD_CPUTIME_ID")
+            .saturating_sub(cpu_after_sleep)
+            < 5_000_000
+        {
+            for _ in 0..512 {
+                acc = std::hint::black_box(acc.wrapping_mul(6364136223846793005).wrapping_add(1));
+            }
+        }
+        assert_ne!(acc, 0);
+        let cpu_after_work = read_thread_cpu_time_ns().expect("CLOCK_THREAD_CPUTIME_ID");
+        assert!(cpu_after_work.saturating_sub(cpu_after_sleep) >= 5_000_000);
     }
 }
