@@ -321,11 +321,12 @@ fn prepare_utf8_input<'a>(
                 // Still check if an explicit non-UTF-8 <meta charset> would reinterpret ASCII?
                 // Valid UTF-8 has identical ASCII 0x00..0x7F and multibyte sequences rarely collide
                 // with valid legacy single-byte unless <meta charset> overrides high bytes.
-                let prefix_len = valid_utf8.len().min(2048);
-                let ascii_only = raw_body.iter().all(|&b| b < 0x80);
-                let has_meta_charset = raw_body[..prefix_len]
-                    .windows(7)
-                    .any(|w| w.eq_ignore_ascii_case(b"charset"));
+                let prefix_len = valid_utf8.len().min(4096);
+                let ascii_only = raw_body.iter().all(|&b| b < 0x80 && b != 0x1B);
+                let has_meta_charset = !ascii_only
+                    && raw_body[..prefix_len]
+                        .windows(7)
+                        .any(|w| w.eq_ignore_ascii_case(b"charset"));
                 if ascii_only || !has_meta_charset {
                     let trimmed = valid_utf8.strip_prefix('\u{FEFF}').unwrap_or(valid_utf8);
                     return Ok(Cow::Borrowed(trimmed));
@@ -1148,6 +1149,21 @@ mod tests {
         assert!(
             proj.chunks.iter().any(|c| c.text.contains("日本語")),
             "expected decoded 日本語 in chunks"
+        );
+
+        let iso2022_html = b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><main><p>\x1b$BF|K\\8l\x1b(B</p></main></body></html>";
+        let iso_proj = parse_and_project_pure_with_charset(
+            iso2022_html,
+            &[],
+            "https://www.w3.org/International/",
+            Limits::default(),
+            LexborCharsetMode::TranscodeWhatwg,
+        )
+        .expect("transcoded ISO-2022-JP projection");
+        assert!(
+            iso_proj.chunks.iter().any(|c| c.text.contains("日本語")),
+            "expected decoded 日本語 from 7-bit ISO-2022-JP in chunks, got {:?}",
+            iso_proj.chunks
         );
     }
 

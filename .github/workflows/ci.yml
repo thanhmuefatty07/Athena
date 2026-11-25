@@ -21,16 +21,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          PHASE_A_SHA="61a9cad911a05cdaf593db87ddbfdf2161d37481"
+          if ! git merge-base --is-ancestor "${PHASE_A_SHA}" HEAD; then
+            echo "Phase A freeze commit ${PHASE_A_SHA} is not an ancestor of HEAD ($(git rev-parse HEAD))" >&2
+            exit 1
+          fi
+          git diff --exit-code "${PHASE_A_SHA}..HEAD" -- src/
           git diff --exit-code HEAD -- src/
           test -z "$(git status --porcelain -- src/)"
-          ref_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}"
-          if [[ "$ref_name" == "impl/v5-infra-rust" ]] && git rev-parse --verify origin/wip/cloud-024-materialization >/dev/null 2>&1; then
-            base_sha="$(git merge-base HEAD origin/wip/cloud-024-materialization)"
-            git diff --exit-code "${base_sha}..HEAD" -- src/
-          elif [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" && -n "${GITHUB_BASE_REF:-}" ]] && git rev-parse --verify "origin/${GITHUB_BASE_REF}" >/dev/null 2>&1; then
-            base_sha="$(git merge-base HEAD "origin/${GITHUB_BASE_REF}")"
-            git diff --exit-code "${base_sha}..HEAD" -- src/
-          fi
       - name: Check formatting across all 4 Cargo manifests and standalone probes
         shell: bash
         run: |

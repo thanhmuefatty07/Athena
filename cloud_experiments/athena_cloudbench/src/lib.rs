@@ -225,11 +225,12 @@ pub mod bench_common {
                     && !has_utf16_bom(raw_body)
                     && let Ok(valid_utf8) = std::str::from_utf8(raw_body)
                 {
-                    let prefix_len = valid_utf8.len().min(2048);
-                    let ascii_only = raw_body.iter().all(|&b| b < 0x80);
-                    let has_meta_charset = raw_body[..prefix_len]
-                        .windows(7)
-                        .any(|w| w.eq_ignore_ascii_case(b"charset"));
+                    let prefix_len = valid_utf8.len().min(4096);
+                    let ascii_only = raw_body.iter().all(|&b| b < 0x80 && b != 0x1B);
+                    let has_meta_charset = !ascii_only
+                        && raw_body[..prefix_len]
+                            .windows(7)
+                            .any(|w| w.eq_ignore_ascii_case(b"charset"));
                     if ascii_only || !has_meta_charset {
                         let trimmed = valid_utf8.strip_prefix('\u{FEFF}').unwrap_or(valid_utf8);
                         return Ok(Cow::Borrowed(trimmed));
@@ -300,6 +301,97 @@ mod bench_common_tests {
         )
         .expect("Shift_JIS decodes in sniffing_enabled mode");
         assert!(dec.contains("日本語"), "decoded={dec}");
+    }
+
+    #[test]
+    fn decode_html_bytes_routes_7bit_iso_2022_jp_meta_charset_through_whatwg_transcoder() {
+        let iso2022_html = b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><main><p>\x1b$BF|K\\8l\x1b(B</p></main></body></html>";
+        assert!(iso2022_html.iter().all(|&b| b < 0x80));
+
+        let assumed = decode_html_bytes(
+            iso2022_html,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::Utf8Assumed,
+        )
+        .expect("7-bit ISO-2022-JP is valid ASCII/UTF-8 bytes in utf8_assumed mode");
+        assert!(matches!(assumed, std::borrow::Cow::Borrowed(_)));
+        assert!(!assumed.contains("日本語"));
+
+        let sniffed = decode_html_bytes(
+            iso2022_html,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("ISO-2022-JP decodes via WHATWG <meta charset> sniffing");
+        assert!(matches!(sniffed, std::borrow::Cow::Owned(_)));
+        assert!(sniffed.contains("日本語"), "sniffed={sniffed}");
+        assert!(!sniffed.contains('\x1b'), "sniffed={sniffed}");
+
+        let mut padded_iso2022 = Vec::from(&b"<html><head><!-- "[..]);
+        padded_iso2022.extend(std::iter::repeat_n(b'a', 2200));
+        padded_iso2022.extend_from_slice(
+            b" --><meta http-equiv=\"Content-Type\" content=\"text/html; charset=ISO-2022-JP\"></head><body><p>\x1b$BF|K\\8l\x1b(B</p></body></html>",
+        );
+        let sniffed_padded = decode_html_bytes(
+            &padded_iso2022,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("ISO-2022-JP beyond 2 KiB within 4 KiB prescan decodes");
+        assert!(
+            sniffed_padded.contains("日本語"),
+            "sniffed_padded={sniffed_padded}"
+        );
+
+        let pure_ascii_meta = b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><p>Plain ASCII</p></body></html>";
+        let borrowed_ascii = decode_html_bytes(
+            pure_ascii_meta,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("pure ASCII without ESC stays borrowed");
+        assert!(matches!(borrowed_ascii, std::borrow::Cow::Borrowed(_)));
+
+        let utf8_ansi_no_meta =
+            "<html><body><pre>\x1b[31m日本語\x1b[0m</pre></body></html>".as_bytes();
+        let borrowed_utf8 = decode_html_bytes(
+            utf8_ansi_no_meta,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("UTF-8 with ESC but no meta charset stays borrowed");
+        assert!(matches!(borrowed_utf8, std::borrow::Cow::Borrowed(_)));
+        assert!(borrowed_utf8.contains("日本語"));
+
+        let empty_sniffed = decode_html_bytes(
+            b"",
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("empty input decodes cleanly");
+        assert_eq!(empty_sniffed, "");
+        assert!(decode_html_bytes(b"abc", &[], 3, CharsetMode::SniffingEnabled).is_ok());
+        assert!(decode_html_bytes(b"abcd", &[], 3, CharsetMode::SniffingEnabled).is_err());
+
+        let unclosed_iso2022 =
+            b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><p>\x1b$BF|K\\8l";
+        let unclosed_decoded = decode_html_bytes(
+            unclosed_iso2022,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("unclosed ISO-2022-JP stream flushes cleanly at EOF");
+        assert!(
+            unclosed_decoded.contains("日本語"),
+            "unclosed={unclosed_decoded}"
+        );
     }
 
     #[test]
