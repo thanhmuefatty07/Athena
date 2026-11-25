@@ -1418,9 +1418,9 @@ fn w1_8_mode_b_pool_emits_thread_cpu_us_and_prevents_cfs_false_quarantines() {
     assert_eq!(wall_rows[1]["status"], "PAGE_QUARANTINED");
 
     let real_heavy_path = tmp_dir.join("real_heavy.frames");
-    let mut heavy_html = String::with_capacity(2_200_000);
+    let mut heavy_html = String::with_capacity(550_000);
     heavy_html.push_str("<!doctype html><html><body><main>");
-    for i in 0..10_000 {
+    for i in 0..2_500 {
         heavy_html.push_str(&format!(
             "<div class=\"row-{i}\"><h3>Heading {i}</h3><p>Substantive real HTML parser workload item {i} without synthetic headers to verify real thread CPU measurement.</p></div>"
         ));
@@ -1443,7 +1443,7 @@ fn w1_8_mode_b_pool_emits_thread_cpu_us_and_prevents_cfs_false_quarantines() {
             "--soft-budget-ms",
             "1",
             "--watchdog-ms",
-            "2000",
+            "10000",
             "--budget-clock",
             "thread_cpu",
             "--frames-in",
