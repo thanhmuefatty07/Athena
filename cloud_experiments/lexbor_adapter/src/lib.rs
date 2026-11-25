@@ -299,6 +299,21 @@ fn has_utf16_bom(bytes: &[u8]) -> bool {
         && ((bytes[0] == 0xFE && bytes[1] == 0xFF) || (bytes[0] == 0xFF && bytes[1] == 0xFE))
 }
 
+fn has_whatwg_replacement_label(prefix: &[u8]) -> bool {
+    const LABELS: [&[u8]; 5] = [
+        b"replacement",
+        b"hz-gb-2312",
+        b"iso-2022-kr",
+        b"csiso2022kr",
+        b"iso-2022-cn",
+    ];
+    LABELS.iter().any(|label| {
+        prefix
+            .windows(label.len())
+            .any(|w| w.eq_ignore_ascii_case(label))
+    })
+}
+
 fn prepare_utf8_input<'a>(
     raw_body: &'a [u8],
     raw_headers: &[u8],
@@ -321,15 +336,20 @@ fn prepare_utf8_input<'a>(
                 // Still check if an explicit non-UTF-8 <meta charset> would reinterpret ASCII?
                 // Valid UTF-8 has identical ASCII 0x00..0x7F and multibyte sequences rarely collide
                 // with valid legacy single-byte unless <meta charset> overrides high bytes.
-                let prefix_len = valid_utf8.len().min(4096);
-                let ascii_only = raw_body.iter().all(|&b| b < 0x80 && b != 0x1B);
-                let has_meta_charset = !ascii_only
-                    && raw_body[..prefix_len]
-                        .windows(7)
-                        .any(|w| w.eq_ignore_ascii_case(b"charset"));
-                if ascii_only || !has_meta_charset {
-                    let trimmed = valid_utf8.strip_prefix('\u{FEFF}').unwrap_or(valid_utf8);
+                if let Some(trimmed) = valid_utf8.strip_prefix('\u{FEFF}') {
                     return Ok(Cow::Borrowed(trimmed));
+                }
+                let prefix = &raw_body[..raw_body.len().min(4096)];
+                let has_meta_charset = prefix
+                    .windows(7)
+                    .any(|w| w.eq_ignore_ascii_case(b"charset"));
+                let ascii_only = !has_meta_charset
+                    || (!has_whatwg_replacement_label(prefix)
+                        && raw_body
+                            .iter()
+                            .all(|&b| b < 0x80 && b != 0x1B && b != 0x0E && b != 0x0F));
+                if ascii_only {
+                    return Ok(Cow::Borrowed(valid_utf8));
                 }
             }
             let max_out = max_input_bytes.saturating_mul(3).min(u32::MAX as usize);
@@ -727,12 +747,13 @@ pub fn parse_tree_with_limits_and_profile(
     limits: ParseLimits,
     profile: LexborAttrProfile,
 ) -> Result<LexborTree, LexborError> {
-    let mode = if !has_utf16_bom(html) && std::str::from_utf8(html).is_ok() {
-        LexborCharsetMode::StrictUtf8
-    } else {
-        LexborCharsetMode::TranscodeWhatwg
-    };
-    parse_tree_with_limits_profile_and_charset(html, &[], limits, profile, mode)
+    parse_tree_with_limits_profile_and_charset(
+        html,
+        &[],
+        limits,
+        profile,
+        LexborCharsetMode::TranscodeWhatwg,
+    )
 }
 
 pub fn parse_tree_with_profile(
@@ -803,12 +824,13 @@ pub fn parse_and_project_pure(
     base_url: &str,
     limits: ParseLimits,
 ) -> Result<Projection, LexborError> {
-    let mode = if !has_utf16_bom(html) && std::str::from_utf8(html).is_ok() {
-        LexborCharsetMode::StrictUtf8
-    } else {
-        LexborCharsetMode::TranscodeWhatwg
-    };
-    parse_and_project_pure_with_charset(html, &[], base_url, limits, mode)
+    parse_and_project_pure_with_charset(
+        html,
+        &[],
+        base_url,
+        limits,
+        LexborCharsetMode::TranscodeWhatwg,
+    )
 }
 
 pub fn parse_tree(html: &str, limits: ParseLimits) -> Result<LexborTree, String> {
@@ -1164,6 +1186,54 @@ mod tests {
             iso_proj.chunks.iter().any(|c| c.text.contains("日本語")),
             "expected decoded 日本語 from 7-bit ISO-2022-JP in chunks, got {:?}",
             iso_proj.chunks
+        );
+
+        let auto_proj = parse_and_project_pure(
+            iso2022_html,
+            "https://www.w3.org/International/",
+            Limits::default(),
+        )
+        .expect("parse_and_project_pure decodes 7-bit ISO-2022-JP");
+        assert!(
+            auto_proj.chunks.iter().any(|c| c.text.contains("日本語")),
+            "expected parse_and_project_pure to decode 日本語, got {:?}",
+            auto_proj.chunks
+        );
+
+        let auto_tree = parse_tree_with_profile(iso2022_html, LexborAttrProfile::Minimal)
+            .expect("parse_tree_with_profile decodes 7-bit ISO-2022-JP");
+        assert!(
+            auto_tree.nodes.iter().any(|n| n.text.contains("日本語")),
+            "expected parse_tree_with_profile to decode 日本語"
+        );
+
+        let iso_so_si =
+            b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><main><p>A\x0eB\x0fC</p></main></body></html>";
+        let so_si_proj = parse_and_project_pure(
+            iso_so_si,
+            "https://www.w3.org/International/",
+            Limits::default(),
+        )
+        .expect("ISO-2022-JP SO/SI projection");
+        assert!(
+            so_si_proj
+                .chunks
+                .iter()
+                .any(|c| c.text.contains("A\u{FFFD}B\u{FFFD}C")),
+            "expected SO/SI replacement in chunks, got {:?}",
+            so_si_proj.chunks
+        );
+
+        let hz_html =
+            b"<html><head><meta charset=\"HZ-GB-2312\"></head><body><main><p>~{4F60597D~}</p></main></body></html>";
+        assert!(
+            parse_and_project_pure(
+                hz_html,
+                "https://www.w3.org/International/",
+                Limits::default()
+            )
+            .is_err(),
+            "7-bit HZ-GB-2312 replacement encoding must be rejected"
         );
     }
 

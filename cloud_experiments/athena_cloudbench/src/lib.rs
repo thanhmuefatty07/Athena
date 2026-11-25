@@ -201,6 +201,21 @@ pub mod bench_common {
             && ((bytes[0] == 0xFE && bytes[1] == 0xFF) || (bytes[0] == 0xFF && bytes[1] == 0xFE))
     }
 
+    fn has_whatwg_replacement_label(prefix: &[u8]) -> bool {
+        const LABELS: [&[u8]; 5] = [
+            b"replacement",
+            b"hz-gb-2312",
+            b"iso-2022-kr",
+            b"csiso2022kr",
+            b"iso-2022-cn",
+        ];
+        LABELS.iter().any(|label| {
+            prefix
+                .windows(label.len())
+                .any(|w| w.eq_ignore_ascii_case(label))
+        })
+    }
+
     /// Strict-UTF8 or WHATWG-sniffed HTML decoding without `String::from_utf8_lossy`.
     pub fn decode_html_bytes<'a>(
         raw_body: &'a [u8],
@@ -225,15 +240,20 @@ pub mod bench_common {
                     && !has_utf16_bom(raw_body)
                     && let Ok(valid_utf8) = std::str::from_utf8(raw_body)
                 {
-                    let prefix_len = valid_utf8.len().min(4096);
-                    let ascii_only = raw_body.iter().all(|&b| b < 0x80 && b != 0x1B);
-                    let has_meta_charset = !ascii_only
-                        && raw_body[..prefix_len]
-                            .windows(7)
-                            .any(|w| w.eq_ignore_ascii_case(b"charset"));
-                    if ascii_only || !has_meta_charset {
-                        let trimmed = valid_utf8.strip_prefix('\u{FEFF}').unwrap_or(valid_utf8);
+                    if let Some(trimmed) = valid_utf8.strip_prefix('\u{FEFF}') {
                         return Ok(Cow::Borrowed(trimmed));
+                    }
+                    let prefix = &raw_body[..raw_body.len().min(4096)];
+                    let has_meta_charset = prefix
+                        .windows(7)
+                        .any(|w| w.eq_ignore_ascii_case(b"charset"));
+                    let ascii_only = !has_meta_charset
+                        || (!has_whatwg_replacement_label(prefix)
+                            && raw_body
+                                .iter()
+                                .all(|&b| b < 0x80 && b != 0x1B && b != 0x0E && b != 0x0F));
+                    if ascii_only {
+                        return Ok(Cow::Borrowed(valid_utf8));
                     }
                 }
                 let max_out = max_input_bytes.saturating_mul(3).min(u32::MAX as usize);
@@ -392,6 +412,98 @@ mod bench_common_tests {
             unclosed_decoded.contains("日本語"),
             "unclosed={unclosed_decoded}"
         );
+
+        let iso2022_so_si =
+            b"<html><head><meta charset=\"ISO-2022-JP\"></head><body><p>A\x0eB\x0fC</p></body></html>";
+        let sniffed_so_si = decode_html_bytes(
+            iso2022_so_si,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("ISO-2022-JP SO/SI bytes route through WHATWG decoder");
+        let header_so_si = decode_html_bytes(
+            iso2022_so_si,
+            b"Content-Type: text/html; charset=ISO-2022-JP\r\n",
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("HTTP header ISO-2022-JP SO/SI decode");
+        assert_eq!(sniffed_so_si.as_ref(), header_so_si.as_ref());
+        assert!(
+            sniffed_so_si.contains("A\u{FFFD}B\u{FFFD}C"),
+            "sniffed_so_si={sniffed_so_si}"
+        );
+
+        let hz_html =
+            b"<html><head><meta charset=\"HZ-GB-2312\"></head><body><p>~{4F60597D~}</p></body></html>";
+        assert!(
+            decode_html_bytes(
+                hz_html,
+                &[],
+                DEFAULT_MAX_INPUT_BYTES,
+                CharsetMode::SniffingEnabled,
+            )
+            .is_err(),
+            "7-bit HZ-GB-2312 maps to WHATWG replacement codec and must be rejected"
+        );
+        let utf8_mentioning_hz =
+            b"<html><head><meta charset=\"UTF-8\"><title>hz-gb-2312 note</title></head><body><p>Plain ASCII</p></body></html>";
+        let utf8_hz_ok = decode_html_bytes(
+            utf8_mentioning_hz,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("UTF-8 page mentioning hz-gb-2312 in title decodes cleanly");
+        assert!(utf8_hz_ok.contains("Plain ASCII"));
+
+        let meta_tag = b"<meta charset=\"ISO-2022-JP\">";
+        let prefix_pad = 4096 - 16 - meta_tag.len();
+        let mut exact_4096 = Vec::from(&b"<html><head><!--"[..]);
+        exact_4096.extend(std::iter::repeat_n(b'x', prefix_pad - 3));
+        exact_4096.extend_from_slice(b"-->");
+        exact_4096.extend_from_slice(meta_tag);
+        assert_eq!(exact_4096.len(), 4096);
+        exact_4096.extend_from_slice(b"</head><body><p>\x1b$BF|K\\8l\x1b(B</p></body></html>");
+        let decoded_4096 = decode_html_bytes(
+            &exact_4096,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("meta ending at exact byte 4096 decodes ISO-2022-JP");
+        assert!(decoded_4096.contains("日本語"));
+
+        let mut straddle_4096 = Vec::from(&b"<html><head><!--"[..]);
+        straddle_4096.extend(std::iter::repeat_n(b'x', 4092 - 19 - 6));
+        straddle_4096.extend_from_slice(b"--><meta charset=\"ISO-2022-JP\"></head><body><p>\x1b$BF|K\\8l\x1b(B</p></body></html>");
+        let straddle_sniffed = decode_html_bytes(
+            &straddle_4096,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("meta straddling 4096 boundary decodes consistently");
+        let straddle_hdr_parity = athena_lexbor_adapter_research::transcode_html_whatwg_utf8(
+            &straddle_4096,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES * 3,
+        )
+        .expect("direct transcode parity");
+        assert_eq!(straddle_sniffed.as_ref(), straddle_hdr_parity.as_str());
+
+        let bom_override =
+            b"\xEF\xBB\xBF<html><head><meta charset=\"ISO-2022-JP\"></head><body><p>\x1b$BF|K\\8l\x1b(B</p></body></html>";
+        let bom_decoded = decode_html_bytes(
+            bom_override,
+            &[],
+            DEFAULT_MAX_INPUT_BYTES,
+            CharsetMode::SniffingEnabled,
+        )
+        .expect("UTF-8 BOM overrides meta charset per WHATWG");
+        assert!(matches!(bom_decoded, std::borrow::Cow::Borrowed(_)));
+        assert!(!bom_decoded.starts_with('\u{FEFF}'));
     }
 
     #[test]
